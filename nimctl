@@ -1422,7 +1422,7 @@ render_dashboard() {
 }
 dash_footer() {
   local k; declare -A extra=([svc]="" [models]="" [use]="" [sys]="")
-  for k in "${!DASH_FN[@]}"; do extra[${DASH_GROUP[$k]}]+="  ${B}$k${R} $(t "${DASH_LABEL[$k]}")"; done
+  for k in $(printf '%s\n' "${!DASH_FN[@]}" | sort); do extra[${DASH_GROUP[$k]}]+="  ${B}$k${R} $(t "${DASH_LABEL[$k]}")"; done
   printf "  ${D}%-8s${R} ${B}s${R} %s  ${B}x${R} %s  ${B}r${R} %s%b\n" "$(t grp_svc)" "$(t k_s)" "$(t k_x)" "$(t k_r)" "${extra[svc]}"
   printf "  ${D}%-8s${R} ${B}a${R} %s  ${B}p${R} %s  ${B}1-4${R} %s  ${B}f${R} %s  ${B}t${R} %s%b\n" "$(t grp_models)" "$(t k_a)" "$(t k_p)" "$(t k_1234)" "$(t k_f)" "$(t k_t)" "${extra[models]}"
   printf "  ${D}%-8s${R} ${B}c${R} %s  ${B}w${R} %s  ${B}e${R} %s%b\n" "$(t grp_use)" "$(t k_c)" "$(t k_w)" "$(t k_e)" "${extra[use]}"
@@ -1432,7 +1432,7 @@ dash_help() {
   sect "$(t help_title)"
   local rows=(s:k_s:h_start x:k_x:h_stop r:k_r:h_restart a:k_a:h_auto p:k_p:h_check "1-4:k_1234:h_pick" f:k_f:h_find t:k_t:h_test c:k_c:h_code w:k_w:h_chat e:k_e:h_env k:k_k:h_key d:k_d:h_doctor i:k_i:h_install l:k_l:h_logs u:k_u:h_update "?:k_help:h_help" q:k_q:h_quit)
   local r k; for r in "${rows[@]}"; do IFS=: read -r k _ h <<<"$r"; printf "  ${B}%-4s${R} %s\n" "$k" "$(t "$h")"; done
-  for k in "${!DASH_FN[@]}"; do printf "  ${B}%-4s${R} %s\n" "$k" "$(t "h_${DASH_FN[$k]#cmd_}")"; done
+  for k in $(printf '%s\n' "${!DASH_FN[@]}" | sort); do printf "  ${B}%-4s${R} %s\n" "$k" "$(t "h_${DASH_FN[$k]#cmd_}")"; done
   info "$(t help_foot)"
 }
 dash_reprobe_if_stale() {

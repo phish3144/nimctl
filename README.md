@@ -48,6 +48,13 @@ One key per action, no Enter. The result of the last action stays on screen, not
 you (configuration changed → `r`, key about to expire, a systemd unit failed), `?` explains every key, and
 everything is also a command for scripts.
 
+## Contents
+
+[Why nimctl](#why-nimctl) · [Quick start](#quick-start) · [Commands](#commands) · [Model slots](#the-four-model-slots) ·
+[Claude Code](#claude-code) · [Chat accounts](#chat-accounts) · [How it works](#how-it-works) · [Configuration](#configuration) ·
+[Requirements](#requirements-and-compatibility) · [Uninstall](#uninstall) · [Troubleshooting](#troubleshooting) · [FAQ](#faq) ·
+[Development](#development) · [Deutsch](#deutsch--kurzfassung)
+
 ## Why nimctl
 
 | Problem with doing it by hand | What nimctl does |
@@ -63,8 +70,8 @@ everything is also a command for scripts.
 
 ## Quick start
 
-Linux (Ubuntu/Debian, Fedora, Arch, Alpine) and WSL2; macOS with `brew install bash jq`. Requires `bash ≥ 4.4`,
-`curl`, `jq`; the installer adds `jq`/`curl` with your package manager if they are missing.
+Requires `bash ≥ 4.4`, `curl` and `jq`; the installer adds `jq`/`curl` with your package manager if they are missing
+(see [Requirements and compatibility](#requirements-and-compatibility)).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash
@@ -95,7 +102,8 @@ nimctl chat       # opens http://localhost:3000
 |---|---|
 | `nimctl` | Dashboard (runs the wizard on first start) |
 | `nimctl setup [--yes]` | Re-run the wizard; `--yes` answers every question with its safe default |
-| `nimctl start` / `stop` / `restart` | Proxy (LiteLLM, :4000) and chat (Open WebUI, :3000) |
+| `nimctl start` | Start the proxy (LiteLLM, :4000) and the chat (Open WebUI, :3000) |
+| `nimctl stop` / `nimctl restart` | Stop or restart both services (systemd-managed services stay under systemd) |
 | `nimctl status [--json]` | Dashboard once, non-interactive; JSON for scripts; exit code reflects the state |
 | `nimctl check` | Probe the configured models with a real request (tool calls for `code`/`review`) |
 | `nimctl auto [slot…]` | Re-select models automatically, all slots or e.g. `nimctl auto code` |
@@ -106,7 +114,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl proxy` | Anthropic-format round-trip through the proxy for all slots (what Claude Code sees) |
 | `nimctl code [--model <slot\|id>] [--think] [args]` | Launch Claude Code against the proxy (`claude` args pass through) |
 | `nimctl chat` | Start chat if needed and open it in the browser |
-| `nimctl chat users` / `passwd [email]` / `reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin |
+| `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin; `nimctl accounts` opens the same as a menu |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -118,6 +126,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl models` | Print the catalog, one id per line |
 | `nimctl completion bash\|zsh` | Shell completion script |
 | `nimctl help [command]` | Help |
+| `nimctl version` | Print the version |
 
 Global options: `--yes` (never ask; safe defaults), `--lang de|en`, `--json` (with `status`), `NO_COLOR=1`.
 
@@ -231,12 +240,42 @@ All optional, via environment variables:
 | `NIMCTL_MAX_OUTPUT_TOKENS` | `8192` | Output cap for Claude Code |
 | `NIMCTL_RPM` | unset | Per-model requests/minute in the LiteLLM config (LiteLLM then refuses excess requests locally instead of forwarding them) |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
+| `NIMCTL_KEY_WARN_DAYS` | `165` | Key age in days after which the dashboard warns (NVIDIA keys last ~180 days) |
+| `NIMCTL_WEBUI_PYTHON` | auto | Python interpreter with `bcrypt` for `nimctl chat passwd` (default: the Open WebUI environment) |
+| `NIMCTL_REPO` | `phish3144/nimctl` | GitHub repository used by the installer and `nimctl update` (forks) |
+| `NIMCTL_UPDATE_URL` | GitHub raw URL | Base URL for `nimctl update` (mirrors, tests) |
+| `NIMCTL_INTERACTIVE` | auto | `1` forces prompts when stdin is not a terminal (expect scripts, tests); `0` forces the non-interactive path |
 | `NIMCTL_YES` | `0` | `1` = like `--yes` everywhere |
 | `NO_COLOR` | | Disable colours (status glyphs stay distinguishable) |
 
 Autostart at login: `nimctl install systemd` (or dashboard → `i` → `3`) creates `systemd --user` units `nimctl-proxy`
 and `nimctl-chat`; the dashboard and `nimctl restart` keep them under systemd. The watchdog timer (`i` → `6`) runs
 `nimctl watch` hourly.
+
+## Requirements and compatibility
+
+| | |
+|---|---|
+| Shell | bash ≥ 4.4 (the script refuses older versions with a clear message) |
+| Tools | `curl`, `jq`, `awk`; optional: `ss`/`lsof` (port owner), `flock`, `notify-send`, `systemctl` |
+| Installed by the wizard | `uv`, `litellm[proxy]`, `open-webui` (Python 3.11 via uv), `@anthropic-ai/claude-code` (needs `npm`) |
+| Tested | Ubuntu 24.04 (CI runs the full suite on every push) |
+| Expected to work | Debian, Fedora, Arch, Alpine, WSL2 (package managers `apt`, `dnf`, `pacman`, `apk`; browser via `wslview`/`explorer.exe`) |
+| Untested | macOS with `brew install bash jq` (all GNU-only calls have BSD fallbacks; autostart needs systemd and is Linux-only) |
+
+Nothing else runs at install time: the script is one file you can read before piping it into `bash`.
+
+## Uninstall
+
+```bash
+nimctl stop                                   # stop proxy and chat
+nimctl install                                # → 4 removes the systemd units and the watchdog timer, if you enabled them
+rm -rf ~/.nimctl ~/.local/bin/nimctl          # config, logs, chat data (chats and uploads live in ~/.nimctl/webui-data)
+uv tool uninstall litellm open-webui          # the tools the wizard installed, if you no longer need them
+npm uninstall -g @anthropic-ai/claude-code    # only if nimctl installed it for you
+```
+
+Remove the `PATH` and `completion` lines the installer added to `~/.bashrc` / `~/.zshrc` if you like; they are harmless.
 
 ## Claude Code on open models – what to expect
 
