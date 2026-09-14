@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# nimctl – NVIDIA NIM for Claude Code and a local chat, without the hassle.
+# https://github.com/phish3144/nimctl   ·   MIT License
+set -u
+VERSION="1.0.0"
+NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
+
+# ── Paths & constants ─────────────────────────────────────────────────────────
+NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
+CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"
+LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"
+MODEL_CACHE="$NIM_DIR/models.cache"
+API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
+PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"
+PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
+MASTER_KEY="sk-nimctl-local"
+KEY_URL="https://build.nvidia.com/settings/api-keys"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# Candidate patterns per slot, in order of preference. Matched against the live
+# catalog, so renamed/dated IDs (…-0813) keep working. First pattern that answers wins.
+# shellcheck disable=SC2034
+CAND_CODE=(deepseek-v4-pro laguna-xs glm-5 qwen3-coder kimi-k3 nemotron-3-ultra nemotron-3-super)
+# shellcheck disable=SC2034
+CAND_FAST=(deepseek-v4-flash nemotron-3.5-lightning nemotron-3-nano glm-5.*flash nemotron-3-super)
+# shellcheck disable=SC2034
+CAND_CHAT=(nemotron-3-super nemotron-3-ultra deepseek-v4-flash llama-4-maverick mistral-medium)
+
+# ── Language ──────────────────────────────────────────────────────────────────
+L="de"; [[ "${NIMCTL_LANG:-${LANG:-de}}" == en* ]] && L="en"
+declare -A T_de T_en
+# shellcheck disable=SC2034
+T_de=(
+  [title]="NVIDIA NIM · Steuerzentrale" [key]="API-Key" [key_ok]="gültig" [key_none]="kein Key → k"
+  [key_bad]="ungültig/abgelaufen → k" [key_off]="NVIDIA nicht erreichbar" [key_unk]="nicht geprüft"
+  [checked]="geprüft" [proxy]="Proxy" [chat]="Chat" [tools]="Werkzeuge" [up]="läuft" [down]="aus"
+  [models]="Modelle" [answers]="antwortet" [unprobed]="nicht geprüft → p" [slots_hint]="code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat"
+  [k_s]="Start" [k_x]="Stop" [k_r]="Neustart" [k_p]="Modelle prüfen" [k_a]="Modelle automatisch wählen"
+  [k_123]="Slot manuell wählen" [k_f]="Modell finden" [k_t]="Modell testen" [k_c]="Claude Code" [k_w]="Chat öffnen"
+  [k_k]="Key" [k_d]="Doctor" [k_i]="Installation" [k_l]="Logs" [k_q]="Beenden" [enter]="[Enter]"
+  [bye]="Dienste laufen weiter. Stoppen: nimctl stop" [unknown]="unbekannte Taste"
+  [probing]="prüfe %d Modell(e) mit echter Anfrage (max. %ss) …" [no_endpoint]="kein Endpoint für diesen Account"
+  [timeout]="Timeout nach %ss" [ratelimit]="Rate-Limit (429)" [noanswer]="keine Antwort"
+  [search]="Suchbegriff (z.B. deepseek, laguna, glm, nemotron)" [nohit]="keine Treffer" [toomany]="%d Treffer – enger filtern (max. %d)"
+  [pick_slot]="Modell für Slot %s" [pick_hint]="Suchbegriff (Enter = bereits geprüfte Modelle)" [number]="Nummer (Enter = abbrechen)"
+  [force]="Trotzdem setzen? [j/N]" [unchanged]="nicht geändert" [restart_q]="Dienste neu starten, damit es wirkt? [J/n]"
+  [auto_title]="Automatische Modellwahl" [auto_slot]="Slot %s: prüfe %d Kandidaten …" [auto_pick]="→ %s gewählt (%s ms)"
+  [auto_none]="kein Kandidat antwortet – Slot bleibt: %s" [auto_done]="Fertig. Ergebnis:"
+  [test_which]="1) code  2) fast  3) chat  4) ID eingeben" [test_prompt]="Prompt (Enter = Standardfrage)"
+  [test_default]="Antworte in einem Satz auf Deutsch: Was ist NVIDIA NIM?" [reply]="Antwort" [tokens]="Tokens"
+  [claude_missing]="claude fehlt → i" [proxy_starting]="Proxy läuft nicht – starte …" [claude_start]="Claude Code mit %s (fast: %s) · beenden mit /exit"
+  [key_title]="API-Key" [key_help]="Erzeugen: %s  (beginnt mit nvapi-, 6 Monate gültig)" [key_cur]="prüfe aktuellen Key …"
+  [key_enter]="Neuen Key eingeben (Enter = behalten): " [key_prefix]="Key muss mit nvapi- beginnen" [key_saved]="gültig – gespeichert"
+  [key_rej]="nicht akzeptiert (%s) – alter Key bleibt" [checking]="prüfe … "
+  [svc_already]="%s läuft bereits" [svc_missing]="%s fehlt → i" [svc_nokey]="kein API-Key → k" [svc_up]="%s läuft  http://localhost:%s"
+  [svc_fail]="%s startet nicht → l" [svc_stopped]="%s gestoppt" [svc_foreign]="%s läuft, wurde aber nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
+  [waiting]="warte auf Port %s … %ss" [browser]="Chat: http://localhost:%s"
+  [inst_title]="Installation" [inst_missing]="fehlt" [inst_menu]="1) alles Fehlende installieren  2) Aliase  3) Autostart (systemd)  Enter = zurück: "
+  [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_sysd]="Autostart aktiv" [inst_fail]="%s fehlgeschlagen"
+  [doc_title]="Doctor – Diagnose" [doc_fix]="Beheben? [J/n] "
+  [wz_welcome]="Willkommen! Dieser Assistent richtet alles ein: Key, Werkzeuge, Modelle, Dienste." [wz_step]="Schritt %d/5 · %s"
+  [wz_key]="API-Key" [wz_key_hint]="Falls du noch keinen hast: %s öffnen, 'Generate API Key', kopieren." [wz_key_in]="Key einfügen (Eingabe unsichtbar): "
+  [wz_tools]="Werkzeuge" [wz_tools_ok]="alles vorhanden" [wz_tools_q]="Fehlende jetzt installieren (dauert 2–5 Min.)? [J/n] "
+  [wz_models]="Modelle" [wz_models_hint]="Ich teste Kandidaten pro Slot parallel und nehme das schnellste, das antwortet."
+  [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten? [J/n] " [wz_done]="Fertig!"
+  [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen"
+  [sudo_jq]="jq/curl fehlen – installiere mit sudo apt-get …" [update_ok]="nimctl aktualisiert auf Version" [update_fail]="Update fehlgeschlagen"
+  [usage]="Nutzung: nimctl [setup|start|stop|restart|status|check|auto|find <text>|test [id]|code|chat|doctor|logs|install|update|version]"
+)
+# shellcheck disable=SC2034
+T_en=(
+  [title]="NVIDIA NIM · Control Center" [key]="API key" [key_ok]="valid" [key_none]="no key → k"
+  [key_bad]="invalid/expired → k" [key_off]="NVIDIA unreachable" [key_unk]="not checked"
+  [checked]="checked" [proxy]="Proxy" [chat]="Chat" [tools]="Tools" [up]="up" [down]="down"
+  [models]="Models" [answers]="responds" [unprobed]="not probed → p" [slots_hint]="code = Claude Code · fast = side tasks & fallback · chat = browser chat"
+  [k_s]="Start" [k_x]="Stop" [k_r]="Restart" [k_p]="Probe models" [k_a]="Auto-select models"
+  [k_123]="pick slot manually" [k_f]="Find model" [k_t]="Test model" [k_c]="Claude Code" [k_w]="Open chat"
+  [k_k]="Key" [k_d]="Doctor" [k_i]="Install" [k_l]="Logs" [k_q]="Quit" [enter]="[Enter]"
+  [bye]="Services keep running. Stop: nimctl stop" [unknown]="unknown key"
+  [probing]="probing %d model(s) with a real request (max %ss) …" [no_endpoint]="no endpoint for this account"
+  [timeout]="timeout after %ss" [ratelimit]="rate limit (429)" [noanswer]="no answer"
+  [search]="Search term (e.g. deepseek, laguna, glm, nemotron)" [nohit]="no matches" [toomany]="%d matches – narrow down (max %d)"
+  [pick_slot]="Model for slot %s" [pick_hint]="Search term (Enter = already probed models)" [number]="Number (Enter = cancel)"
+  [force]="Set anyway? [y/N]" [unchanged]="unchanged" [restart_q]="Restart services to apply? [Y/n]"
+  [auto_title]="Automatic model selection" [auto_slot]="Slot %s: probing %d candidates …" [auto_pick]="→ picked %s (%s ms)"
+  [auto_none]="no candidate responds – slot stays: %s" [auto_done]="Done. Result:"
+  [test_which]="1) code  2) fast  3) chat  4) enter ID" [test_prompt]="Prompt (Enter = default question)"
+  [test_default]="Answer in one sentence: what is NVIDIA NIM?" [reply]="Reply" [tokens]="tokens"
+  [claude_missing]="claude missing → i" [proxy_starting]="Proxy not running – starting …" [claude_start]="Claude Code with %s (fast: %s) · quit with /exit"
+  [key_title]="API key" [key_help]="Create: %s  (starts with nvapi-, valid 6 months)" [key_cur]="checking current key …"
+  [key_enter]="Enter new key (Enter = keep): " [key_prefix]="Key must start with nvapi-" [key_saved]="valid – saved"
+  [key_rej]="rejected (%s) – old key kept" [checking]="checking … "
+  [svc_already]="%s already running" [svc_missing]="%s missing → i" [svc_nokey]="no API key → k" [svc_up]="%s up  http://localhost:%s"
+  [svc_fail]="%s failed to start → l" [svc_stopped]="%s stopped" [svc_foreign]="%s is running but was not started by nimctl" [svc_wasdown]="%s was not running"
+  [waiting]="waiting for port %s … %ss" [browser]="Chat: http://localhost:%s"
+  [inst_title]="Installation" [inst_missing]="missing" [inst_menu]="1) install everything missing  2) aliases  3) autostart (systemd)  Enter = back: "
+  [inst_alias]="Commands available: nimctl, nimctl code" [inst_sysd]="autostart enabled" [inst_fail]="%s failed"
+  [doc_title]="Doctor – diagnosis" [doc_fix]="Fix it? [Y/n] "
+  [wz_welcome]="Welcome! This wizard sets up everything: key, tools, models, services." [wz_step]="Step %d/5 · %s"
+  [wz_key]="API key" [wz_key_hint]="No key yet? Open %s, 'Generate API Key', copy it." [wz_key_in]="Paste key (input hidden): "
+  [wz_tools]="Tools" [wz_tools_ok]="all present" [wz_tools_q]="Install missing tools now (2–5 min)? [Y/n] "
+  [wz_models]="Models" [wz_models_hint]="I probe candidates per slot in parallel and pick the fastest one that responds."
+  [wz_start]="Services" [wz_start_q]="Start proxy and chat now? [Y/n] " [wz_done]="Done!"
+  [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser"
+  [sudo_jq]="jq/curl missing – installing with sudo apt-get …" [update_ok]="nimctl updated to version" [update_fail]="update failed"
+  [usage]="Usage: nimctl [setup|start|stop|restart|status|check|auto|find <text>|test [id]|code|chat|doctor|logs|install|update|version]"
+)
+t() { local -n _tab="T_$L"; printf '%s' "${_tab[$1]:-$1}"; }
+tf() { local k="$1"; shift; printf "$(t "$k")" "$@"; } # with format args
+yes_re='^[jJyY]$'; no_re='^[nN]$'
+
+# ── Colors & UI ───────────────────────────────────────────────────────────────
+if [[ -t 1 ]] && command -v tput >/dev/null && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
+  B=$(tput bold); D=$(tput dim); R=$(tput sgr0); GRN=$(tput setaf 2); RED=$(tput setaf 1); YEL=$(tput setaf 3); BLU=$(tput setaf 4); CYN=$(tput setaf 6)
+else B=""; D=""; R=""; GRN=""; RED=""; YEL=""; BLU=""; CYN=""; fi
+OK="${GRN}●${R}"; NO="${RED}●${R}"; WA="${YEL}●${R}"; GR="${D}○${R}"
+ok()   { printf "  %s %s\n" "$OK" "$*"; }
+bad()  { printf "  %s %s\n" "$NO" "$*"; }
+warn() { printf "  %s %s\n" "$WA" "$*"; }
+info() { printf "  ${D}%s${R}\n" "$*"; }
+hr()   { printf "${D}%s${R}\n" "──────────────────────────────────────────────────────────────"; }
+sect() { printf "\n${B}${CYN}%s${R}\n" "$*"; hr; }
+banner() {
+  [[ -t 1 ]] && clear
+  printf "${B}${BLU}╔══════════════════════════════════════════════════════════════╗\n"
+  printf "║  %-42s %s  ║\n" "$(t title)" "$(date '+%d.%m.%Y %H:%M')"
+  printf "╚══════════════════════════════════════════════════════════════╝${R}\n"
+}
+has() { command -v "$1" >/dev/null 2>&1; }
+port_open() { timeout 1 bash -c "</dev/tcp/127.0.0.1/$1" >/dev/null 2>&1; }
+
+# ── Config & state ────────────────────────────────────────────────────────────
+load_conf() {
+  mkdir -p "$NIM_DIR" "$LOG_DIR" "$PID_DIR"; touch "$PROBES"
+  NVIDIA_API_KEY="${NVIDIA_API_KEY:-}"; MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""
+  KEY_STATE="unknown"; KEY_TIME=0
+  # shellcheck disable=SC1090
+  [[ -f "$CONF" ]] && source "$CONF"
+  # shellcheck disable=SC1090
+  [[ -f "$STATE" ]] && source "$STATE"
+  export NVIDIA_API_KEY
+}
+save_conf() { printf 'NVIDIA_API_KEY="%s"\nMODEL_CODE="%s"\nMODEL_FAST="%s"\nMODEL_CHAT="%s"\n' "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" >"$CONF"; chmod 600 "$CONF"; }
+save_state() { printf 'KEY_STATE="%s"\nKEY_TIME=%s\n' "$KEY_STATE" "$KEY_TIME" >"$STATE"; }
+configured() { [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" && -n "$MODEL_CHAT" ]]; }
+
+PROBE_RES=""; PROBE_MS=""; PROBE_T=""
+probe_get() { local line; line=$(grep -P "^\Q$1\E\t" "$PROBES" 2>/dev/null | tail -n1); PROBE_RES=$(echo "$line" | cut -f2); PROBE_MS=$(echo "$line" | cut -f3); PROBE_T=$(echo "$line" | cut -f4); }
+probe_set() { grep -vP "^\Q$1\E\t" "$PROBES" >"$PROBES.tmp" 2>/dev/null || true; printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-}" "$(date +%H:%M)" >>"$PROBES.tmp"; mv "$PROBES.tmp" "$PROBES"; }
+
+write_litellm_yaml() {
+  cat >"$LITELLM_YAML" <<EOF
+# generated by nimctl – change models via the dashboard, not here
+model_list:
+  - model_name: nim-code
+    litellm_params: { model: openai/$MODEL_CODE, api_base: $API_BASE, api_key: os.environ/NVIDIA_API_KEY, max_tokens: 16384 }
+  - model_name: nim-fast
+    litellm_params: { model: openai/$MODEL_FAST, api_base: $API_BASE, api_key: os.environ/NVIDIA_API_KEY, max_tokens: 8192 }
+  - model_name: nim-chat
+    litellm_params: { model: openai/$MODEL_CHAT, api_base: $API_BASE, api_key: os.environ/NVIDIA_API_KEY }
+litellm_settings: { drop_params: true, num_retries: 3, request_timeout: 300 }
+router_settings:
+  fallbacks: [ { nim-code: ["nim-fast"] }, { nim-chat: ["nim-fast"] } ]
+general_settings: { master_key: $MASTER_KEY }
+EOF
+}
+
+# ── API ───────────────────────────────────────────────────────────────────────
+check_key() {
+  if [[ -z "$NVIDIA_API_KEY" ]]; then KEY_STATE="none"; KEY_TIME=$(date +%s); save_state; return 1; fi
+  local code; code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$API_BASE/models" -H "Authorization: Bearer $NVIDIA_API_KEY" 2>/dev/null)
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+  case "$code" in 200) KEY_STATE="ok";; 401|403) KEY_STATE="invalid";; 000) KEY_STATE="offline";; *) KEY_STATE="http$code";; esac
+  KEY_TIME=$(date +%s); save_state; [[ "$KEY_STATE" == ok ]]
+}
+key_fresh() { (( $(date +%s) - KEY_TIME < 300 )); }
+refresh_models() {
+  local json; json=$(curl -s -m 15 "$API_BASE/models" -H "Authorization: Bearer $NVIDIA_API_KEY")
+  echo "$json" | jq -e '.data' >/dev/null 2>&1 || return 1
+  echo "$json" | jq -r '.data[].id' | sort >"$MODEL_CACHE"
+}
+models_cached() { { [[ ! -s "$MODEL_CACHE" ]] || (( $(date +%s) - $(stat -c %Y "$MODEL_CACHE") > 3600 )); } && { refresh_models || return 1; }; cat "$MODEL_CACHE"; }
+
+probe_one() { # → "ok <ms>" | error text
+  local out err t0; t0=$(date +%s%N)
+  out=$(curl -s -m "$PROBE_TIMEOUT" "$API_BASE/chat/completions" -H "Authorization: Bearer $NVIDIA_API_KEY" -H "Content-Type: application/json" \
+    -d "$(jq -n --arg m "$1" '{model:$m,messages:[{role:"user",content:"Hi"}],max_tokens:5}')")
+  if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then echo "ok $(( ($(date +%s%N) - t0) / 1000000 ))"; return; fi
+  err=$(echo "$out" | jq -r '.error.message // .detail // .message // .' 2>/dev/null | tr '\n' ' ' | head -c 140)
+  [[ -z "$out" ]] && err="$(tf timeout "$PROBE_TIMEOUT")"
+  case "$err" in *"Not found for account"*|*Function*) err="$(t no_endpoint)";; *429*|*"Too Many"*) err="$(t ratelimit)";; esac
+  echo "${err:-$(t noanswer)}"
+}
+probe_many() { # parallel; stores results; prints table
+  local tmp; tmp=$(mktemp -d); local i=0 id
+  printf "  ${D}%s${R}\n" "$(tf probing "$#" "$PROBE_TIMEOUT")"
+  for id in "$@"; do ( probe_one "$id" >"$tmp/$i" ) & ((i++)); done; wait
+  i=0
+  for id in "$@"; do
+    local res; res=$(cat "$tmp/$i")
+    if [[ "$res" == ok* ]]; then probe_set "$id" ok "${res#ok }"; printf "  %s %-48s %s %s ms\n" "$OK" "$id" "$(t answers)" "${res#ok }"
+    else probe_set "$id" "$res"; printf "  %s %-48s %s\n" "$NO" "$id" "$res"; fi
+    ((i++))
+  done
+  rm -rf "$tmp"
+}
+
+auto_select() { # auto_select code|fast|chat → sets MODEL_x
+  local slot="$1" var="MODEL_${1^^}" arr="CAND_${1^^}[@]" pat cands=() m
+  local catalog; catalog=$(models_cached) || { bad "catalog"; return 1; }
+  for pat in "${!arr}"; do while read -r m; do [[ -n "$m" && ! " ${cands[*]} " == *" $m "* ]] && cands+=("$m"); done < <(echo "$catalog" | grep -iE -- "$pat" | head -n 3); done
+  ((${#cands[@]})) || { bad "$(tf auto_none "${!var:--}")"; return 1; }
+  printf "\n  ${B}%s${R}\n" "$(tf auto_slot "$slot" "${#cands[@]}")"
+  probe_many "${cands[@]}"
+  for pat in "${!arr}"; do
+    local best="" best_ms=999999
+    for m in "${cands[@]}"; do
+      [[ "$m" =~ $pat ]] || echo "$m" | grep -qiE -- "$pat" || continue
+      probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
+      (( PROBE_MS < best_ms )) && { best="$m"; best_ms=$PROBE_MS; }
+    done
+    if [[ -n "$best" ]]; then printf -v "$var" '%s' "$best"; ok "$(tf auto_pick "$best" "$best_ms")"; save_conf; write_litellm_yaml; return 0; fi
+  done
+  bad "$(tf auto_none "${!var:--}")"; return 1
+}
+auto_all() { sect "$(t auto_title)"; auto_select code; auto_select fast; auto_select chat; printf "\n  %s\n" "$(t auto_done)"; slot_line 1 code "$MODEL_CODE"; slot_line 2 fast "$MODEL_FAST"; slot_line 3 chat "$MODEL_CHAT"; }
+
+# ── Services ──────────────────────────────────────────────────────────────────
+svc_pid() { local f="$PID_DIR/$1.pid"; [[ -f "$f" ]] && cat "$f"; }
+svc_running() { local pid; pid=$(svc_pid "$1"); [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && return 0; [[ "$1" == proxy ]] && port_open "$PROXY_PORT" || { [[ "$1" == chat ]] && port_open "$CHAT_PORT"; }; }
+wait_port() { local i=0 sp='|/-\'; while ((i < $2 * 2)); do port_open "$1" && { printf "\r%50s\r" ""; return 0; }; printf "\r  %s %s " "${sp:i%4:1}" "$(tf waiting "$1" "$((i/2))")"; sleep 0.5; ((i++)); done; printf "\r%50s\r" ""; return 1; }
+start_proxy() {
+  svc_running proxy && { info "$(tf svc_already "$(t proxy)")"; return 0; }
+  has litellm || { bad "$(tf svc_missing litellm)"; return 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }
+  write_litellm_yaml
+  NVIDIA_API_KEY="$NVIDIA_API_KEY" nohup litellm --config "$LITELLM_YAML" --port "$PROXY_PORT" >"$LOG_DIR/litellm.log" 2>&1 &
+  echo $! >"$PID_DIR/proxy.pid"
+  wait_port "$PROXY_PORT" 90 && ok "$(tf svc_up "$(t proxy)" "$PROXY_PORT")" || { bad "$(tf svc_fail "$(t proxy)")"; tail -n 8 "$LOG_DIR/litellm.log"; return 1; }
+}
+start_chat() {
+  svc_running chat && { info "$(tf svc_already "$(t chat)")"; return 0; }
+  has open-webui || { bad "$(tf svc_missing open-webui)"; return 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }
+  OPENAI_API_BASE_URL="$API_BASE" OPENAI_API_KEY="$NVIDIA_API_KEY" ENABLE_OLLAMA_API=false DEFAULT_MODELS="$MODEL_CHAT" \
+  DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true nohup open-webui serve --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 &
+  echo $! >"$PID_DIR/chat.pid"
+  wait_port "$CHAT_PORT" 150 && ok "$(tf svc_up "$(t chat)" "$CHAT_PORT")" || { bad "$(tf svc_fail "$(t chat)")"; tail -n 8 "$LOG_DIR/open-webui.log"; return 1; }
+}
+stop_svc() {
+  local pid; pid=$(svc_pid "$1")
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then kill "$pid" 2>/dev/null; sleep 1; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null; ok "$(tf svc_stopped "$1")"
+  elif svc_running "$1"; then warn "$(tf svc_foreign "$1")"; else info "$(tf svc_wasdown "$1")"; fi
+  rm -f "$PID_DIR/$1.pid"
+}
+start_all() { start_proxy; start_chat; }
+stop_all()  { stop_svc proxy; stop_svc chat; }
+restart_if_running() { if svc_running proxy || svc_running chat; then printf "  %s " "$(t restart_q)"; local a; read -r a; [[ "$a" =~ $no_re ]] || { stop_all; start_all; }; fi; }
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+slot_line() {
+  local m="${3:--}" flag txt
+  probe_get "$m"
+  case "$PROBE_RES" in ok) flag="$OK"; txt="${D}$(t answers) · ${PROBE_MS} ms · $PROBE_T${R}";; "") flag="$GR"; txt="${D}$(t unprobed)${R}";; *) flag="$NO"; txt="${RED}$PROBE_RES${R}";; esac
+  [[ "$m" == "-" ]] && { flag="$GR"; txt="${D}→ a${R}"; }
+  printf "  ${B}%s${R}  %-5s %-42s %s %s\n" "$1" "$2" "$m" "$flag" "$txt"
+}
+dashboard() {
+  banner
+  local kf kt
+  case "$KEY_STATE" in ok) kf="$OK"; kt="$(t key_ok)  ${D}(${NVIDIA_API_KEY:0:10}… · $(t checked) $(date -d @"$KEY_TIME" +%H:%M))${R}";;
+    none) kf="$NO"; kt="$(t key_none)";; invalid) kf="$NO"; kt="$(t key_bad)";; offline) kf="$WA"; kt="$(t key_off)";; *) kf="$GR"; kt="${D}$(t key_unk)${R}";; esac
+  printf "  %-9s %s %s\n" "$(t key)" "$kf" "$kt"
+  local pf cf; svc_running proxy && pf="$OK $(t up)" || pf="$NO $(t down)"; svc_running chat && cf="$OK $(t up)" || cf="$NO $(t down)"
+  printf "  %-9s %-14s :%s     %-6s %-14s :%s\n" "$(t proxy)" "$pf" "$PROXY_PORT" "$(t chat)" "$cf" "$CHAT_PORT"
+  local tl="" x; for x in litellm open-webui claude; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
+  printf "  %-9s %s\n" "$(t tools)" "$tl"
+  sect "$(t models)"; slot_line 1 code "$MODEL_CODE"; slot_line 2 fast "$MODEL_FAST"; slot_line 3 chat "$MODEL_CHAT"; info "$(t slots_hint)"
+  printf "\n"; hr
+  printf "  ${B}s${R} %s  ${B}x${R} %s  ${B}r${R} %s  ${B}a${R} %s  ${B}p${R} %s\n" "$(t k_s)" "$(t k_x)" "$(t k_r)" "$(t k_a)" "$(t k_p)"
+  printf "  ${B}1${R}/${B}2${R}/${B}3${R} %s  ${B}f${R} %s  ${B}t${R} %s\n" "$(t k_123)" "$(t k_f)" "$(t k_t)"
+  printf "  ${B}c${R} %s  ${B}w${R} %s  ${B}k${R} %s  ${B}d${R} %s  ${B}i${R} %s  ${B}l${R} %s  ${B}q${R} %s\n" "$(t k_c)" "$(t k_w)" "$(t k_k)" "$(t k_d)" "$(t k_i)" "$(t k_l)" "$(t k_q)"
+  hr; printf "  > "
+}
+
+# ── Actions ───────────────────────────────────────────────────────────────────
+act_key() {
+  sect "$(t key_title)"; info "$(tf key_help "$KEY_URL")"
+  if [[ -n "$NVIDIA_API_KEY" ]]; then printf "  %s " "$(t key_cur)"; check_key && printf "%s %s\n" "$OK" "$(t key_ok)" || printf "%s %s\n" "$NO" "$KEY_STATE"; fi
+  printf "  %s" "$(t key_enter)"; local k; read -rs k; printf "\n"; [[ -z "$k" ]] && return 0
+  set_key "$k"
+}
+set_key() { # set_key <key> → validates & saves
+  [[ "$1" == nvapi-* ]] || { bad "$(t key_prefix)"; return 1; }
+  local old="$NVIDIA_API_KEY"; NVIDIA_API_KEY="$1"; export NVIDIA_API_KEY
+  printf "  %s" "$(t checking)"
+  if check_key; then printf "%s %s\n" "$OK" "$(t key_saved)"; save_conf; rm -f "$MODEL_CACHE"; : >"$PROBES"; return 0; fi
+  printf "%s %s\n" "$NO" "$(tf key_rej "$KEY_STATE")"; NVIDIA_API_KEY="$old"; export NVIDIA_API_KEY; [[ -n "$old" ]] && check_key >/dev/null; return 1
+}
+act_probe() { sect "$(t k_p)"; probe_many "${MODEL_CODE:-x}" "${MODEL_FAST:-x}" "${MODEL_CHAT:-x}"; }
+act_find() {
+  sect "$(t k_f)"; local f="${1:-}"; [[ -z "$f" ]] && { printf "  %s: " "$(t search)"; read -r f; }; [[ -z "$f" ]] && return
+  local list n; list=$(models_cached | grep -i -- "$f") || { bad "$(t nohit)"; return; }; n=$(echo "$list" | wc -l)
+  ((n > 12)) && { warn "$(tf toomany "$n" 12)"; echo "$list" | sed 's/^/     /'; return; }
+  # shellcheck disable=SC2046
+  probe_many $(echo "$list" | tr '\n' ' ')
+}
+act_pick() {
+  local slot="$1" var="MODEL_${1^^}" f list n choice sel
+  sect "$(tf pick_slot "$slot")"; printf "  %s: " "$(t pick_hint)"; read -r f
+  if [[ -z "$f" ]]; then list=$(cut -f1 "$PROBES" | sort -u); else list=$(models_cached | grep -i -- "$f"); fi
+  [[ -z "$list" ]] && { bad "$(t nohit)"; return 1; }; n=$(echo "$list" | wc -l); ((n > 30)) && { warn "$(tf toomany "$n" 30)"; return 1; }
+  local i=1 id res note
+  while read -r id; do probe_get "$id"; res="$PROBE_RES"; note=""
+    case "$res" in ok) res="$OK"; note="${D}${PROBE_MS} ms${R}";; "") res="$GR";; *) note="${D}– $res${R}"; res="$NO";; esac
+    printf "  %s %2d) %-48s %s\n" "$res" "$i" "$id" "$note"; ((i++)); done <<<"$list"
+  printf "  %s: " "$(t number)"; read -r choice; [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= n)) || return 1
+  sel=$(echo "$list" | sed -n "${choice}p"); probe_get "$sel"
+  if [[ "$PROBE_RES" != ok ]]; then probe_many "$sel"; probe_get "$sel"; [[ "$PROBE_RES" == ok ]] || { printf "  %s " "$(t force)"; read -r a; [[ "$a" =~ $yes_re ]] || { info "$(t unchanged)"; return 1; }; }; fi
+  printf -v "$var" '%s' "$sel"; save_conf; write_litellm_yaml; ok "$slot → $sel"; restart_if_running
+}
+act_test() {
+  local model="${1:-}" prompt json t0 out; sect "$(t k_t)"
+  if [[ -z "$model" ]]; then printf "  %s: " "$(t test_which)"; local c; read -r c
+    case "$c" in 1) model="$MODEL_CODE";; 2) model="$MODEL_FAST";; 3) model="$MODEL_CHAT";; 4) printf "  ID: "; read -r model;; *) return;; esac; fi
+  printf "  %s: " "$(t test_prompt)"; read -r prompt; [[ -z "$prompt" ]] && prompt="$(t test_default)"
+  json=$(jq -n --arg m "$model" --arg p "$prompt" '{model:$m,messages:[{role:"user",content:$p}],max_tokens:300}')
+  printf "  ${D}%s … (max 180s)${R}\n" "$model"; t0=$(date +%s)
+  out=$(curl -s -m 180 "$API_BASE/chat/completions" -H "Authorization: Bearer $NVIDIA_API_KEY" -H "Content-Type: application/json" -d "$json")
+  if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then
+    probe_set "$model" ok "$(( ($(date +%s) - t0) * 1000 ))"
+    local content; content=$(echo "$out" | jq -r '.choices[0].message.content // ""'); [[ -z "$content" ]] && content="$(echo "$out" | jq -r '.choices[0].message.reasoning_content // ""' | head -c 500) [reasoning]"
+    printf "\n${GRN}┌ %s${R}\n" "$(t reply)"; echo "$content" | fold -s -w 72 | sed "s/^/${GRN}│${R} /"
+    printf "${GRN}└${R} %s %s · %ss\n" "$(t tokens)" "$(echo "$out" | jq -r '.usage.total_tokens // "?"')" "$(( $(date +%s) - t0 ))"
+  else local err; err=$(probe_one "$model"); probe_set "$model" "$err"; bad "$model: $err"; fi
+}
+act_code() {
+  has claude || { bad "$(t claude_missing)"; return 1; }
+  svc_running proxy || { info "$(t proxy_starting)"; start_proxy || return 1; }
+  ok "$(tf claude_start "$MODEL_CODE" "$MODEL_FAST")"
+  ANTHROPIC_BASE_URL="http://localhost:$PROXY_PORT" ANTHROPIC_AUTH_TOKEN="$MASTER_KEY" ANTHROPIC_MODEL="nim-code" \
+  ANTHROPIC_SMALL_FAST_MODEL="nim-fast" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude "$@"
+}
+act_chat() { svc_running chat || start_chat || return 1; (xdg-open "http://localhost:$CHAT_PORT" >/dev/null 2>&1 &); ok "$(tf browser "$CHAT_PORT")"; }
+act_logs() { sect "$(t k_l)"; printf "  1) LiteLLM  2) Open WebUI  (Ctrl+C): "; local c; read -r c; case "$c" in 1) tail -n 40 -f "$LOG_DIR/litellm.log";; 2) tail -n 40 -f "$LOG_DIR/open-webui.log";; esac; }
+
+# ── Installation ──────────────────────────────────────────────────────────────
+inst_base()    { has jq && has curl && has bc && return; info "$(t sudo_jq)"; sudo apt-get install -y jq curl bc || bad "$(tf inst_fail apt)"; }
+inst_uv()      { has uv && return; curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && ok "uv" || bad "$(tf inst_fail uv)"; }
+inst_litellm() { has litellm && return; inst_uv; uv tool install 'litellm[proxy]' >/dev/null 2>&1 && ok "litellm" || bad "$(tf inst_fail litellm)"; }
+inst_webui()   { has open-webui && return; inst_uv; uv tool install open-webui --python 3.11 >/dev/null 2>&1 && ok "open-webui" || bad "$(tf inst_fail open-webui)"; }
+inst_claude()  { has claude && return; has npm || { bad "npm: sudo apt install nodejs npm"; return 1; }; npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 && ok "claude" || bad "$(tf inst_fail claude)"; }
+inst_all()     { inst_base; inst_uv; inst_litellm; inst_webui; inst_claude; }
+inst_alias() {
+  local rc="$HOME/.bashrc" self; self=$(readlink -f "$0")
+  grep -qF ".local/bin" "$rc" 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$rc"
+  [[ "$self" == "$HOME/.local/bin/nimctl" ]] || { mkdir -p "$HOME/.local/bin"; ln -sf "$self" "$HOME/.local/bin/nimctl"; }
+  ok "$(t inst_alias)"
+}
+inst_systemd() {
+  has systemctl || return 1; mkdir -p "$HOME/.config/systemd/user"; local n self; self=$(readlink -f "$0")
+  for n in proxy chat; do printf '[Unit]\nDescription=nimctl %s\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" >"$HOME/.config/systemd/user/nimctl-$n.service"; done
+  systemctl --user daemon-reload && systemctl --user enable --now nimctl-proxy nimctl-chat && ok "$(t inst_sysd)" || bad "$(tf inst_fail systemd)"
+}
+fg_service() { case "$1" in proxy) write_litellm_yaml; exec litellm --config "$LITELLM_YAML" --port "$PROXY_PORT";;
+  chat) OPENAI_API_BASE_URL="$API_BASE" OPENAI_API_KEY="$NVIDIA_API_KEY" ENABLE_OLLAMA_API=false DEFAULT_MODELS="$MODEL_CHAT" DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true exec open-webui serve --port "$CHAT_PORT";; esac; }
+act_install() {
+  sect "$(t inst_title)"; local x; for x in uv jq litellm open-webui claude; do has "$x" && ok "$x" || bad "$x $(t inst_missing)"; done
+  printf "  %s" "$(t inst_menu)"; local c; read -r c; case "$c" in 1) inst_all; inst_alias;; 2) inst_alias;; 3) inst_systemd;; esac
+}
+
+# ── Doctor ────────────────────────────────────────────────────────────────────
+doctor() {
+  sect "$(t doc_title)"; local issues=0
+  has curl && ok curl || { bad "curl"; ((issues++)); }
+  has jq && ok jq || { bad "jq"; ((issues++)); }
+  if curl -s -m 5 -o /dev/null "$API_BASE/models"; then ok "$API_BASE"; else bad "$API_BASE ($(t key_off))"; ((issues++)); fi
+  check_key && ok "$(t key) $(t key_ok)" || { bad "$(t key): $KEY_STATE"; ((issues++)); }
+  local x; for x in litellm open-webui claude; do has "$x" && ok "$x $(command -v "$x")" || { bad "$x $(t inst_missing)"; ((issues++)); }; done
+  for x in "$PROXY_PORT:proxy" "$CHAT_PORT:chat"; do local p="${x%%:*}" n="${x##*:}"
+    if svc_running "$n"; then ok "$n :$p"; elif port_open "$p"; then warn "$n :$p $(tf svc_foreign "$n")"; ((issues++)); else info "$n :$p $(t down)"; fi; done
+  if [[ "$KEY_STATE" == ok ]] && configured; then probe_many "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT"
+    local m; for m in "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT"; do probe_get "$m"; [[ "$PROBE_RES" == ok ]] || ((issues++)); done; fi
+  ((issues == 0)) && { printf "\n"; ok "OK"; return 0; }
+  printf "\n  %s" "$(t doc_fix)"; local a; read -r a; [[ "$a" =~ $no_re ]] && return 1
+  inst_all; [[ "$KEY_STATE" != ok ]] && act_key
+  if [[ "$KEY_STATE" == ok ]]; then local bad_slot=0; for m in "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT"; do probe_get "$m"; [[ "$PROBE_RES" == ok ]] || bad_slot=1; done; ((bad_slot)) && auto_all; fi
+}
+
+# ── Setup wizard ──────────────────────────────────────────────────────────────
+wizard() {
+  banner; printf "  %s\n" "$(t wz_welcome)"
+  sect "$(tf wz_step 1 "$(t wz_key)")"
+  inst_base
+  if check_key; then ok "$(t key) $(t key_ok) (${NVIDIA_API_KEY:0:10}…)"
+  else
+    info "$(tf wz_key_hint "$KEY_URL")"; (xdg-open "$KEY_URL" >/dev/null 2>&1 &)
+    local k; while true; do printf "  %s" "$(t wz_key_in)"; read -rs k; printf "\n"; [[ -z "$k" ]] && continue; set_key "$k" && break; done
+  fi
+  sect "$(tf wz_step 2 "$(t wz_tools)")"
+  local missing=0 x; for x in uv litellm open-webui claude; do has "$x" && ok "$x" || { bad "$x $(t inst_missing)"; missing=1; }; done
+  if ((missing)); then printf "  %s" "$(t wz_tools_q)"; local a; read -r a; [[ "$a" =~ $no_re ]] || inst_all; fi
+  inst_alias
+  sect "$(tf wz_step 3 "$(t wz_models)")"; info "$(t wz_models_hint)"
+  auto_select code; auto_select fast; auto_select chat
+  sect "$(tf wz_step 4 "$(t wz_start)")"
+  printf "  %s" "$(t wz_start_q)"; read -r a; [[ "$a" =~ $no_re ]] || start_all
+  sect "$(tf wz_step 5 "$(t wz_done)")"; slot_line 1 code "$MODEL_CODE"; slot_line 2 fast "$MODEL_FAST"; slot_line 3 chat "$MODEL_CHAT"
+  printf "\n  %b\n\n" "$(t wz_next)"
+}
+
+# ── Self update ───────────────────────────────────────────────────────────────
+self_update() {
+  local self tmp; self=$(readlink -f "$0"); tmp=$(mktemp)
+  if curl -fsSL "https://raw.githubusercontent.com/$NIMCTL_REPO/main/nimctl" -o "$tmp" && bash -n "$tmp"; then
+    chmod +x "$tmp"; mv "$tmp" "$self"; ok "$(t update_ok) $(grep -m1 '^VERSION=' "$self" | cut -d'"' -f2)"
+  else rm -f "$tmp"; bad "$(t update_fail)"; return 1; fi
+}
+
+# ── Main loop & CLI ───────────────────────────────────────────────────────────
+main_loop() {
+  key_fresh || check_key >/dev/null
+  while true; do
+    dashboard; local c; read -r c || exit 0; printf "\n"
+    case "$c" in
+      s|S) start_all;; x|X) stop_all;; r|R) stop_all; start_all;; a|A) auto_all; restart_if_running;; p|P) act_probe;;
+      1) act_pick code;; 2) act_pick fast;; 3) act_pick chat;; f|F) act_find;; t|T) act_test;;
+      c|C) act_code;; w|W) act_chat;; k|K) act_key; restart_if_running;; d|D) doctor;; i|I) act_install;; l|L) act_logs;;
+      q|Q|0) info "$(t bye)"; exit 0;; "") continue;; *) bad "$(t unknown): $c";;
+    esac
+    printf "\n  ${D}%s${R}" "$(t enter)"; read -r || exit 0
+  done
+}
+main() {
+  load_conf
+  case "${1:-}" in
+    version|-v|--version) echo "nimctl $VERSION"; exit 0;;
+    help|-h|--help) echo "$(t usage)"; exit 0;;
+  esac
+  has curl && has jq || { [[ "${1:-}" =~ ^(setup|install)$ ]] || { echo "$(t sudo_jq)"; inst_base; }; }
+  case "${1:-}" in
+    "")       configured || { wizard; exit; }; main_loop;;
+    setup)    wizard;;
+    status)   key_fresh || check_key >/dev/null; dashboard; printf "\n";;
+    start)    start_all;; stop) stop_all;; restart) stop_all; start_all;;
+    check)    probe_many "${MODEL_CODE:-x}" "${MODEL_FAST:-x}" "${MODEL_CHAT:-x}";;
+    auto)     auto_all;;
+    find)     shift; act_find "${1:-}";;
+    models)   models_cached;;
+    test)     shift; act_test "${1:-}";;
+    code)     shift; act_code "$@";;
+    chat)     act_chat;;
+    doctor)   doctor;;
+    logs)     act_logs;; install) act_install;;
+    update)   self_update;;
+    _fg)      fg_service "$2";;
+    *) echo "$(t usage)"; exit 2;;
+  esac
+}
+[[ "${BASH_SOURCE[0]}" == "$0" ]] && main "$@"
