@@ -22,8 +22,8 @@ All notable changes to this project are documented here. Format follows
 - `nimctl bench`: time to first token, tokens/s and tool-calling per model from a streamed request.
 - `nimctl chat users | passwd [email] | reset`: manage Open WebUI accounts from the CLI, including resetting the
   admin password or wiping all accounts so the next signup becomes admin. Dashboard key `n`.
-- `nimctl watch`: probes the slots, replaces dead models, restarts the proxy, logs and notifies; `nimctl install` can
-  install an hourly `systemd --user` timer for it.
+- `nimctl watch`: probes the slots, replaces dead models, restarts the proxy, logs and notifies; the wizard offers the
+  hourly `systemd --user` timer for it, `nimctl install` can add it later.
 - `nimctl completion bash|zsh`, installable from the install menu.
 - `nimctl status --json` and documented exit codes (0 ok, 1 key, 2 proxy down, 3 prerequisite, 4 dead model, 64 usage error);
   `nimctl doctor --fix`; `nimctl setup --yes` with `NIMCTL_API_KEY` for unattended setups; `nimctl key <key>`;

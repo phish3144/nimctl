@@ -17,5 +17,5 @@ check "--yes answers a destructive question in a terminal too" "gelöscht|delete
 check "--lang with a space" "^Usage:" < <(timeout 10 "$N" --lang en help)
 # the dashboard mock-up in the README lists the same footer keys as the real dashboard
 real=$(printf 'q\n' | NIMCTL_LANG=en timeout 30 "$N" 2>/dev/null | strip | grep -E '^  (Services|Models|Use|System) ' | sed 's/  */ /g' | head -n 4)
-doc=$(sed -n '/^```$/,/^```$/p' "$README" | grep -E '^  (Services|Models|Use|System) ' | sed 's/  */ /g' | head -n 4)
+doc=$(awk '/^\$ nimctl$/{p=1} p && /^```$/{exit} p' "$README" | grep -E '^  (Services|Models|Use|System) ' | sed 's/  */ /g' | head -n 4)
 [[ "$real" == "$doc" ]] && pass "README dashboard footer matches the real one" || { fail "README dashboard footer differs"; printf '       | real: %s\n       | doc:  %s\n' "$real" "$doc"; }
