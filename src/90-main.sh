@@ -1,9 +1,10 @@
 # ── CLI: help, dispatch, exit codes ───────────────────────────────────────────
 # Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 tools/prerequisites · 4 a configured model does not respond
+# · 64 usage error (unknown command or argument, sysexits EX_USAGE)
 T_de+=(
   [usage]="Nutzung: nimctl [Befehl] [Optionen]   (ohne Befehl: Dashboard, beim ersten Start der Assistent)"
-  [usage_flags]="Globale Optionen: --yes (Fragen mit sicherer Vorgabe beantworten) · --lang de|en · --json (bei status) · NO_COLOR=1"
-  [usage_codes]="Exit-Codes: 0 ok · 1 Key fehlt/ungültig · 2 Proxy läuft nicht · 3 Voraussetzung fehlt · 4 ein gewähltes Modell antwortet nicht"
+  [usage_flags]="Globale Optionen: --yes (jede Frage mit Ja beantworten) · --lang=de|en · --json (bei status, stats) · NO_COLOR=1"
+  [usage_codes]="Exit-Codes: 0 ok · 1 Key fehlt/ungültig · 2 Proxy läuft nicht · 3 Voraussetzung fehlt · 4 ein gewähltes Modell antwortet nicht · 64 falsche Nutzung"
   [usage_more]="Details: nimctl help <Befehl>   ·   Doku: https://github.com/%s"
   [h_setup]="Assistent: Key, Werkzeuge, Modelle, Dienste (--yes für Skripte, Key aus NIMCTL_API_KEY)"
   [h_start]="Proxy (LiteLLM) und Chat (Open WebUI) starten" [h_stop]="beide Dienste stoppen" [h_restart]="beide Dienste neu starten"
@@ -20,8 +21,8 @@ T_de+=(
 )
 T_en+=(
   [usage]="Usage: nimctl [command] [options]   (no command: dashboard; the wizard on first start)"
-  [usage_flags]="Global options: --yes (answer questions with their safe default) · --lang de|en · --json (with status) · NO_COLOR=1"
-  [usage_codes]="Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 prerequisite missing · 4 a selected model does not respond"
+  [usage_flags]="Global options: --yes (answer every question with yes) · --lang=de|en · --json (with status, stats) · NO_COLOR=1"
+  [usage_codes]="Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 prerequisite missing · 4 a selected model does not respond · 64 usage error"
   [usage_more]="Details: nimctl help <command>   ·   Docs: https://github.com/%s"
   [h_setup]="wizard: key, tools, models, services (--yes for scripts, key from NIMCTL_API_KEY)"
   [h_start]="start proxy (LiteLLM) and chat (Open WebUI)" [h_stop]="stop both services" [h_restart]="restart both services"
@@ -44,7 +45,7 @@ usage() {
   for c in $(declare -F | awk '{print $3}' | grep '^cmd_' | sed 's/^cmd_//' | sort); do [[ " ${COMMANDS[*]} " == *" $c "* ]] || printf "  %-${w}s %s\n" "$c" "$(t "h_$c")"; done
   printf '\n%s\n%s\n%s\n' "$(t usage_flags)" "$(t usage_codes)" "$(tf usage_more "$NIMCTL_REPO")"
 }
-help_cmd() { local c="${1:-}"; [[ -z "$c" ]] && { usage; return 0; }; local h; h=$(t "h_$c"); [[ "$h" == "h_$c" ]] && { bad "$(t unknown): $c"; usage; return 2; }; printf '  nimctl %s\n  %s\n' "$c" "$h"; }
+help_cmd() { local c="${1:-}"; [[ -z "$c" ]] && { usage; return 0; }; local h; h=$(t "h_$c"); [[ "$h" == "h_$c" ]] && { bad "$(t unknown): $c"; usage; return 64; }; printf '  nimctl %s\n  %s\n' "$c" "$h"; }
 status_code() { # bit flags for scripts
   local rc=0 s m; [[ "$KEY_STATE" == ok ]] || rc=$((rc | 1)); svc_running proxy || rc=$((rc | 2))
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); [[ -n "$m" ]] || continue; probe_get "$m"; [[ "$PROBE_RES" == ok || -z "$PROBE_RES" ]] || rc=$((rc | 4)); done; return $rc
@@ -68,8 +69,12 @@ status_json() {
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
 JSON=0   # set by the global --json flag; commands and modules read it instead of parsing their own argv
 main() {
-  local args=() a rc=0
-  for a in "$@"; do case "$a" in --yes|-y) YES=1;; --json) JSON=1;; --lang=*) L="${a#*=}"; [[ "$L" == de ]] || L=en;; --no-color) :;; *) args+=("$a");; esac; done
+  local args=() rc=0
+  while (( $# )); do
+    case "$1" in --yes|-y) YES=1;; --json) JSON=1;; --lang=*) L="${1#*=}"; [[ "$L" == de ]] || L=en;; --lang) shift; L="${1:-}"; [[ "$L" == de ]] || L=en;;
+      --no-color) :;; *) args+=("$1");; esac
+    (( $# )) && shift
+  done
   set -- ${args[@]+"${args[@]}"}
   local cmd="${1:-}"; (( $# )) && shift
   case "$cmd" in version|-v|--version) echo "nimctl $VERSION"; exit 0;; help|-h|--help) help_cmd "${1:-}"; exit $?;; esac
@@ -82,20 +87,20 @@ main() {
     start)    start_all;; stop) stop_all;; restart) restart_all;;
     check)    act_probe;;
     auto)     if (( $# )); then auto_select "$@"; else auto_all; fi; rc=$?; restart_if_running; exit $rc;;
-    pick)     [[ -n "${1:-}" && " ${SLOTS[*]} " == *" $1 "* ]] || { bad "$(t invalid): ${1:-}"; exit 2; }; act_pick "$1" "${2:-}";;
+    pick)     [[ -n "${1:-}" && " ${SLOTS[*]} " == *" $1 "* ]] || { bad "$(t invalid): ${1:-}"; exit 64; }; act_pick "$1" "${2:-}";;
     find)     act_find "${1:-}";;
     models)   models_cached;;
     test)     act_test "${1:-}" "${2:-}";;
     code)     act_code "$@";;
-    chat)     case "${1:-}" in ""|open) act_chat_open;; *) if declare -F chat_admin >/dev/null; then chat_admin "$@"; else bad "$(t unknown): $1"; exit 2; fi;; esac;;
+    chat)     case "${1:-}" in ""|open) act_chat_open;; *) if declare -F chat_admin >/dev/null; then chat_admin "$@"; else bad "$(t unknown): $1"; exit 64; fi;; esac;;
     env)      act_env;;
     key)      if [[ -n "${1:-}" ]]; then set_key "$1"; else act_key; fi; rc=$?; (( rc == 0 )) && restart_if_running; (( rc == 3 )) && rc=0; exit $rc;;
     doctor)   doctor "${1:-}";;
     proxy)    svc_running proxy || { bad "$(t proxy_down)"; exit 2; }; act_proxy;;
     logs)     act_logs "$@";;
-    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 2; };; esac;;
+    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 64; };; esac;;
     update)   self_update "${1:-}";;
     _fg)      fg_service "${1:-}";;
-    *)        if declare -F "cmd_$cmd" >/dev/null; then "cmd_$cmd" "$@"; else bad "$(t unknown): $cmd"; printf '\n'; usage; exit 2; fi;;
+    *)        if declare -F "cmd_$cmd" >/dev/null; then "cmd_$cmd" "$@"; else bad "$(t unknown): $cmd"; printf '\n'; usage; exit 64; fi;;
   esac
 }

@@ -112,7 +112,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
            write_litellm_yaml; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
-    *) exit 2;;
+    *) exit 64;;
   esac
 }
 unit_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; }

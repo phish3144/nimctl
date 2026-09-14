@@ -12,6 +12,9 @@ missing=(); while read -r f; do [[ -e "$ROOT/$f" ]] || missing+=("$f"); done < <
 ((${#missing[@]} == 0)) && pass "README relative links resolve" || fail "README links broken: ${missing[*]}"
 grep -q 'bash ≥ 4.4' "$README" && grep -q 'bash-4.4' "$README" && pass "README states the bash 4.4 requirement" || fail "README bash requirement"
 v=$(grep -m1 '^VERSION=' "$N" | cut -d'"' -f2); grep -q "^## \[$v\]" "$ROOT/CHANGELOG.md" && pass "CHANGELOG has an entry for $v" || fail "CHANGELOG entry for $v"
+grep -q "NVIDIA NIM $v " "$README" && pass "README demo shows the current version $v" || fail "README demo version is stale (expected $v)"
+check "--yes answers a destructive question in a terminal too" "gelöscht|deleted|Konten|accounts" < <(NIMCTL_LANG=de timeout 20 "$N" chat reset --yes 2>&1)
+check "--lang with a space" "^Usage:" < <(timeout 10 "$N" --lang en help)
 # the dashboard mock-up in the README lists the same footer keys as the real dashboard
 real=$(printf 'q\n' | NIMCTL_LANG=en timeout 30 "$N" 2>/dev/null | strip | grep -E '^  (Services|Models|Use|System) ' | sed 's/  */ /g' | head -n 4)
 doc=$(sed -n '/^```$/,/^```$/p' "$README" | grep -E '^  (Services|Models|Use|System) ' | sed 's/  */ /g' | head -n 4)

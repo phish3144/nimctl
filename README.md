@@ -27,8 +27,8 @@ $ nimctl
 Models
 ────────────────────────────────────────────────────────────────────────────────────
   1  code    deepseek-ai/deepseek-v4-pro-0813         ✓ responds ·   655 ms · 3 min ago  ✓
-  2  fast    deepseek-ai/deepseek-v4-flash-0731       ✓ responds ·    95 ms · 3 min ago
-  3  chat    nvidia/nemotron-3-super-120b             ✓ responds ·    92 ms · 3 min ago
+  2  fast    deepseek-ai/deepseek-v4-flash-0731       ✓ responds ·    95 ms · 3 min ago  ·
+  3  chat    nvidia/nemotron-3-super-120b             ✓ responds ·    92 ms · 3 min ago  ·
   4  review  nvidia/nemotron-3-ultra-550b-a55b        ✓ responds ·  1520 ms · 3 min ago  ✓
   code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model for nimctl code --model review
 
@@ -52,8 +52,8 @@ everything is also a command for scripts.
 
 [Why nimctl](#why-nimctl) · [Quick start](#quick-start) · [Commands](#commands) · [Model slots](#the-four-model-slots) ·
 [Claude Code](#claude-code) · [Chat accounts](#chat-accounts) · [How it works](#how-it-works) · [Configuration](#configuration) ·
-[Requirements](#requirements-and-compatibility) · [Uninstall](#uninstall) · [Troubleshooting](#troubleshooting) · [FAQ](#faq) ·
-[Development](#development) · [Deutsch](#deutsch--kurzfassung)
+[Requirements](#requirements-and-compatibility) · [Uninstall](#uninstall) · [What to expect](#claude-code-on-open-models--what-to-expect) ·
+[Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Development](#development) · [Deutsch](#deutsch--kurzfassung) · [License](#license)
 
 ## Why nimctl
 
@@ -114,7 +114,8 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl proxy` | Anthropic-format round-trip through the proxy for all slots (what Claude Code sees) |
 | `nimctl code [--model <slot\|id>] [--think] [args]` | Launch Claude Code against the proxy (`claude` args pass through) |
 | `nimctl chat` | Start chat if needed and open it in the browser |
-| `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin; `nimctl accounts` opens the same as a menu |
+| `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin |
+| `nimctl accounts` | The same three account actions as an interactive menu (dashboard key `n`) |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -128,21 +129,24 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl help [command]` | Help |
 | `nimctl version` | Print the version |
 
-Global options: `--yes` (never ask; safe defaults), `--lang de|en`, `--json` (with `status`), `NO_COLOR=1`.
+Global options: `--yes` (answer every question with yes, including restarts and account resets; unattended runs without
+it take the safe default and never change anything), `--lang=de|en`, `--json` (with `status` and `stats`), `NO_COLOR=1`.
 
 Exit codes: `0` ok · `1` key missing/invalid · `2` proxy not running · `3` prerequisite missing · `4` a selected model
-does not respond. `status` combines them as bit flags, so `nimctl status >/dev/null || alert` works in cron.
+does not respond · `64` usage error (unknown command or argument). `status`, `check` and `watch` report the state codes;
+`status` combines `1`, `2` and `4` as bit flags, so `nimctl status >/dev/null || alert` works in cron.
 
 ## The four model slots
 
 | Slot | Used for | Default candidates (first pattern with a responding model wins) |
 |---|---|---|
 | `code` | Claude Code main model – must make tool calls | deepseek-v4-pro · laguna-xs · glm-5 · qwen3-coder · kimi-k3 · nemotron-3-ultra · nemotron-3-super |
-| `fast` | Claude Code side tasks (`ANTHROPIC_SMALL_FAST_MODEL`) and LiteLLM fallback on 429 | deepseek-v4-flash · nemotron-3.5-lightning · nemotron-3-nano · glm-5-flash · nemotron-3-super |
+| `fast` | Claude Code side tasks (`ANTHROPIC_SMALL_FAST_MODEL`) and LiteLLM fallback on 429 | deepseek-v4-flash · nemotron-3.5-lightning · nemotron-3-nano · glm-5.\*flash · nemotron-3-super |
 | `chat` | Browser chat default model | nemotron-3-super · nemotron-3-ultra · deepseek-v4-flash · llama-4-maverick · mistral-medium |
 | `review` | Big, slow model for `nimctl code --model review` – must make tool calls | nemotron-3-ultra · kimi-k3 · deepseek-v4-pro · glm-5 · nemotron-3-super |
 
-Selection rule: the candidate patterns are tried in order; the first pattern that has a responding model (with tool
+Selection rule: the candidates are case-insensitive regular expressions matched against the catalog (`glm-5.*flash` also
+matches `glm-5.3-flash`); they are tried in order; the first pattern that has a responding model (with tool
 calling for `code`/`review`) wins, and latency only decides between several matches of the same pattern. Quality
 before speed. The top candidate gets a second attempt with double timeout when it only timed out (cold start).
 
@@ -189,8 +193,8 @@ nimctl chat passwd me@example.com --admin
 nimctl chat reset                  # wipe all accounts; the next signup becomes admin again
 ```
 
-Writes stop the chat briefly (SQLite) and start it again. Unattended: `NIMCTL_CHAT_PASSWORD=… nimctl chat passwd
-me@example.com --yes`.
+`reset` asks for confirmation and then requires typing `RESET`; `--yes` skips both. Writes stop the chat briefly
+(SQLite) and start it again. Unattended: `NIMCTL_CHAT_PASSWORD=… nimctl chat passwd me@example.com --yes`.
 
 ## How it works
 
@@ -203,8 +207,8 @@ me@example.com --yes`.
 Everything lives in `~/.nimctl` (mode 700):
 
 ```
-config          API key, chosen models, proxy master key (chmod 600)
-state           key check time, key entry date
+config          API key, chosen models, extra models added via --model, proxy master key (chmod 600)
+state           key state (ok/invalid/offline/none), time of the last check, date the key was entered
 litellm.yaml    generated proxy config – do not edit, use the dashboard
 probes          last probe result per model (ok/error, latency, time, tool calling)
 bench           bench results
@@ -213,12 +217,14 @@ candidates      optional: your own candidate patterns per slot
 logs/           litellm.log, open-webui.log, watch.log
 run/            pid files and start times
 webui-data/     chat history, uploaded documents, users
+.lock           internal write lock for the probe and bench files
 ```
 
 Security notes: the proxy's master key is generated per installation and both services listen on `127.0.0.1` only
 (`NIMCTL_BIND=0.0.0.0` to expose them deliberately). The API key never appears on a command line. Model ids from the
-catalog are validated before they touch any file; the config is parsed, never sourced. `nimctl update` verifies the
-download against `SHA256SUMS`.
+catalog are validated before they touch any file; the config is parsed, never sourced. `install.sh` and `nimctl update`
+verify the downloaded script against `SHA256SUMS` from this repository before installing it. The installer is one short
+file; read it before piping it into `bash`.
 
 ## Configuration
 
@@ -237,6 +243,7 @@ All optional, via environment variables:
 | `NIMCTL_API_KEY` | | Key for unattended `setup --yes` (also `NVIDIA_API_KEY`) |
 | `NIMCTL_CAND_CODE` etc. | built-in lists | Candidate patterns per slot, space separated |
 | `NIMCTL_CHAT_VIA_PROXY` | `0` | `1` = Open WebUI talks to the proxy (retries, fallbacks, curated model list) |
+| `NIMCTL_CHAT_PASSWORD` | | New password for `nimctl chat passwd` in unattended runs |
 | `NIMCTL_MAX_OUTPUT_TOKENS` | `8192` | Output cap for Claude Code |
 | `NIMCTL_RPM` | unset | Per-model requests/minute in the LiteLLM config (LiteLLM then refuses excess requests locally instead of forwarding them) |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
@@ -259,7 +266,7 @@ and `nimctl-chat`; the dashboard and `nimctl restart` keep them under systemd. T
 | Shell | bash ≥ 4.4 (the script refuses older versions with a clear message) |
 | Tools | `curl`, `jq`, `awk`; optional: `ss`/`lsof` (port owner), `flock`, `notify-send`, `systemctl` |
 | Installed by the wizard | `uv`, `litellm[proxy]`, `open-webui` (Python 3.11 via uv), `@anthropic-ai/claude-code` (needs `npm`) |
-| Tested | Ubuntu 24.04 (CI runs the full suite on every push) |
+| Tested | Ubuntu 24.04 (CI runs the full suite on every push and pull request) |
 | Expected to work | Debian, Fedora, Arch, Alpine, WSL2 (package managers `apt`, `dnf`, `pacman`, `apk`; browser via `wslview`/`explorer.exe`) |
 | Untested | macOS with `brew install bash jq` (all GNU-only calls have BSD fallbacks; autostart needs systemd and is Linux-only) |
 
@@ -316,7 +323,7 @@ split into `src/` for maintenance; `build.sh` produces the single file you insta
 ```bash
 git clone https://github.com/phish3144/nimctl && cd nimctl
 ./build.sh                                     # src/*.sh → nimctl + SHA256SUMS
-shellcheck -S warning nimctl install.sh tests/run.sh tests/cases/*.sh
+shellcheck -S warning nimctl build.sh install.sh tests/run.sh tests/cases/*.sh   # CI uses shellcheck 0.9.0
 bash tests/run.sh                              # offline: mock API + fake services, ~3 min
 ```
 
