@@ -396,7 +396,8 @@ bash tests/run.sh                              # offline: mock API + fake servic
 
 The test suite simulates a valid/invalid key, a listed-but-dead model, a 40-second model, a cold model, an overloaded
 model, models without tool calling, streaming, config injection, stale pid files, foreign listeners, headless setup,
-self-update and the installer. See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout.
+self-update and the installer. See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout and how a release is cut
+(the *Release* workflow publishes `nimctl` and `SHA256SUMS` under [Releases](https://github.com/phish3144/nimctl/releases)).
 
 ---
 

@@ -15,6 +15,8 @@ All notable changes to this project are documented here. Format follows
   systemd unit `nimctl-ide`, `nimctl start|stop|restart` include the IDE once it is enabled. The wizard offers it.
 - `NIMCTL_IDE_EXTENSIONS` installs additional Open VSX extensions (e.g. `RooVeterinaryInc.roo-cline`),
   `NIMCTL_IDE_CONTEXT` sets the context length Continue assumes for the models.
+- Release workflow (`.github/workflows/release.yml`): a tag push or a manual run publishes the GitHub release with
+  `nimctl` and `SHA256SUMS` attached and the changelog section as notes.
 
 ## [1.1.0] – 2026-09-14
 
