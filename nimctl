@@ -131,6 +131,10 @@ rule() { local n="${1:-$COLS}" s; s=$(printf '%*s' "$n" ''); printf '%s%s%s\n' "
 sect() { printf "\n${B}${CYN}%s${R}\n" "$*"; rule; }
 strip_ansi() { sed 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
 trunc() { local s="$1" n="$2"; (( ${#s} > n )) && s="${s:0:n-1}$G_ELL"; printf '%s' "$s"; }   # trunc <text> <width>
+# Module registry for the dashboard: dash_register <key> <function> <label-i18n-key> [svc|models|use|sys].
+# Lives here (not in 50-dashboard.sh) so modules numbered below 50 can register at top level.
+declare -A DASH_FN=() DASH_LABEL=() DASH_GROUP=()
+dash_register() { DASH_FN[$1]="$2"; DASH_LABEL[$1]="$3"; DASH_GROUP[$1]="${4:-use}"; }
 banner() { # banner <title> [right text]
   [[ -t 1 && "${NO_CLEAR:-0}" == 0 ]] && clear
   local right="${2:-$(date '+%Y-%m-%d %H:%M')}"
@@ -785,6 +789,579 @@ act_install() {
     6) declare -F inst_watch_timer >/dev/null && inst_watch_timer || bad "$(t invalid): $REPLY";; "") return 0;; *) bad "$(t invalid): $REPLY"; return 1;; esac
 }
 
+# ══════ 45-stats.sh ══════
+# ── Stats: what is the proxy doing? ──────────────────────────────────────────
+# $LOG_DIR/litellm.log is truncated on every proxy start (src/30-services.sh), so every number here is
+# "since proxy start". LiteLLM's own log format varies between versions, so parsing is pattern-based and
+# defensive rather than tied to one exact layout:
+#   (a) uvicorn access lines: INFO:     127.0.0.1:51234 - "POST /v1/messages HTTP/1.1" 200 OK
+#   (b) any line mentioning "fallback" (case-insensitive)
+#   (c) any line with " 429", "RateLimit" or "rate limit" (case-insensitive)
+#   (d) any line containing "Error" or "Traceback"
+T_de+=(
+  [stats_none]="noch keine Daten – nimctl start" [stats_since]="seit %s" [stats_since_unknown]="unbekannter Zeitpunkt"
+  [stats_total]="Anfragen gesamt: %d" [stats_class]="2xx: %d · 4xx: %d · 429: %d · 5xx: %d"
+  [stats_fallbacks]="Fallbacks: %d" [stats_ratelimited]="Rate-Limits: %d" [stats_errors]="Fehler: %d" [stats_paths]="Häufigste Pfade:"
+  [stats_summary_line]="%s · %d Anfragen · %d× 429 · %d Fallbacks"
+  [h_stats]="Auswertung des Proxy-Logs: Anfragen, Status-Codes, Fallbacks, Rate-Limits (--json)"
+)
+T_en+=(
+  [stats_none]="no data yet – nimctl start" [stats_since]="since %s" [stats_since_unknown]="unknown time"
+  [stats_total]="requests total: %d" [stats_class]="2xx: %d · 4xx: %d · 429: %d · 5xx: %d"
+  [stats_fallbacks]="fallbacks: %d" [stats_ratelimited]="rate-limited: %d" [stats_errors]="errors: %d" [stats_paths]="top paths:"
+  [stats_summary_line]="%s · %d requests · %d× 429 · %d fallbacks"
+  [h_stats]="proxy log summary: requests, status codes, fallbacks, rate limits (--json)"
+)
+
+stats_raw() { # stats_raw <logfile> → one awk pass over the log; TSV: "TOTAL c2 c4 c429 c5 FB RL ERR" then "PATH <path> <count>"
+  awk '
+    {
+      n = split($0, q, "\"")                       # quoted uvicorn access segment: "METHOD PATH HTTP/x.y"
+      if (n >= 3 && index(q[2], "HTTP/") > 0) {
+        split(q[2], rq, " "); split(q[3], sp, " ")
+        path = rq[2]; code = sp[1]
+        if (code ~ /^[0-9][0-9][0-9]$/) {
+          total++; paths[path]++
+          if (code == "429") c429++
+          else if (substr(code, 1, 1) == "2") c2++
+          else if (substr(code, 1, 1) == "4") c4++
+          else if (substr(code, 1, 1) == "5") c5++
+        }
+      }
+      low = tolower($0)
+      if (index(low, "fallback") > 0) fb++
+      if (index($0, " 429") > 0 || index(low, "ratelimit") > 0 || index(low, "rate limit") > 0) rl++
+      if (index($0, "Error") > 0 || index($0, "Traceback") > 0) err++
+    }
+    END {
+      printf "TOTAL\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", total+0, c2+0, c4+0, c429+0, c5+0, fb+0, rl+0, err+0
+      for (p in paths) printf "PATH\t%s\t%d\n", p, paths[p]
+    }
+  ' "$1" 2>/dev/null
+}
+stats_started() { local s; s=$(cat "$PID_DIR/proxy.started" 2>/dev/null); [[ "$s" =~ ^[0-9]+$ ]] && printf '%s' "$s"; }
+
+stats_summary() { # one fast line for the dashboard; prints nothing when there is no data, never fails
+  local log="$LOG_DIR/litellm.log"; [[ -s "$log" ]] || return 0
+  local line total c429 fb started since_h
+  line=$(stats_raw "$log" | awk -F'\t' '$1=="TOTAL"{print; exit}')
+  [[ -n "$line" ]] || return 0
+  IFS=$'\t' read -r _ total _ _ c429 _ fb _ _ <<<"$line"
+  total="${total:-0}"; c429="${c429:-0}"; fb="${fb:-0}"
+  started=$(stats_started); [[ -n "$started" ]] && since_h=$(fmt_time "$started" '+%H:%M') || since_h="$(t stats_since_unknown)"
+  tf stats_summary_line "$(tf stats_since "$since_h")" "$total" "$c429" "$fb"
+}
+cmd_stats() { # cmd_stats [--json] – the global --json flag arrives as $JSON (src/90-main.sh)
+  local json="${JSON:-0}" a; for a in "$@"; do [[ "$a" == --json ]] && json=1; done
+  local log="$LOG_DIR/litellm.log"
+  if [[ ! -s "$log" ]]; then
+    if (( json )); then jq -n --arg m "$(t stats_none)" '{data:false,message:$m}'; else sect "$(t k_g)"; info "$(t stats_none)"; fi
+    return 0
+  fi
+  local raw line total c2 c4 c429 c5 fb rl err
+  raw=$(stats_raw "$log"); line=$(printf '%s\n' "$raw" | awk -F'\t' '$1=="TOTAL"{print; exit}')
+  IFS=$'\t' read -r _ total c2 c4 c429 c5 fb rl err <<<"$line"
+  total="${total:-0}"; c2="${c2:-0}"; c4="${c4:-0}"; c429="${c429:-0}"; c5="${c5:-0}"; fb="${fb:-0}"; rl="${rl:-0}"; err="${err:-0}"
+  local started since_h=""; started=$(stats_started); [[ -n "$started" ]] && since_h=$(fmt_time "$started" '+%H:%M')
+  local top=(); mapfile -t top < <(printf '%s\n' "$raw" | awk -F'\t' '$1=="PATH"{print $2"\t"$3}' | sort -t$'\t' -k2,2nr | head -n5)
+  if (( json )); then
+    local paths_json="[]"
+    if ((${#top[@]})); then
+      paths_json=$(printf '%s\n' "${top[@]}" | jq -R -s 'split("\n") | map(select(length>0) | split("\t")) | map({path:.[0], count:(.[1]|tonumber)})')
+    fi
+    jq -n --arg total "$total" --arg c2 "$c2" --arg c4 "$c4" --arg c429 "$c429" --arg c5 "$c5" \
+      --arg fb "$fb" --arg rl "$rl" --arg err "$err" --arg started "$started" --arg since_h "$since_h" --argjson paths "$paths_json" \
+      '{requests:{total:($total|tonumber),by_status:{"2xx":($c2|tonumber),"4xx":($c4|tonumber),"429":($c429|tonumber),"5xx":($c5|tonumber)}},
+        fallbacks:($fb|tonumber), rate_limited:($rl|tonumber), errors:($err|tonumber), paths:$paths,
+        since:(if $started=="" then null else ($started|tonumber) end), since_human:(if $since_h=="" then null else $since_h end)}'
+    return 0
+  fi
+  sect "$(t k_g)"
+  out "  $(tf stats_since "${since_h:-$(t stats_since_unknown)}")"
+  out "  $(tf stats_total "$total")"
+  out "  $(tf stats_class "$c2" "$c4" "$c429" "$c5")"
+  out "  $(tf stats_fallbacks "$fb")"
+  out "  $(tf stats_ratelimited "$rl")"
+  out "  $(tf stats_errors "$err")"
+  if ((${#top[@]})); then
+    out ""; out "  $(t stats_paths)"
+    local row path cnt
+    for row in "${top[@]}"; do
+      IFS=$'\t' read -r path cnt <<<"$row"
+      # $path is attacker-controlled (the raw request path from the uvicorn access log, logged regardless of
+      # auth outcome); out() prints via `printf '%b'`, which interprets backslash escapes (a path containing
+      # literal "\033[31m" would become a real ANSI escape, and "\c" truncates the line). Escape backslashes
+      # and strip raw control bytes before handing it to out() so a crafted path can't inject control codes.
+      path=${path//\\/\\\\}
+      path=$(printf '%s' "$path" | tr -d '\000-\037\177')
+      out "    $(printf '%5d' "$cnt")  $path"
+    done
+  fi
+  return 0
+}
+dash_register g cmd_stats k_g use
+
+# ══════ 46-bench.sh ══════
+# ── Bench: compare models by throughput and suitability ───────────────────────
+T_de+=(
+  [bn_model]="Modell" [bn_ttft]="TTFT ms" [bn_toks]="Tok/s" [bn_tokens]="Tokens" [bn_tools]="Tools"
+  [bench_run]="vergleiche %d Modell(e) (sequenziell, 1s Pause) …" [bench_progress]="%d/%d %s …"
+  [bench_fastest]="Am schnellsten: %s (%s Tok/s)" [bench_none]="keine Daten" [bench_norun]="keine Modelle zum Vergleichen"
+  [h_bench]="Modelle vergleichen: Tokens/s, Zeit bis erstes Token, Tool-Calls (--last zeigt gespeicherte Werte)"
+)
+T_en+=(
+  [bn_model]="Model" [bn_ttft]="TTFT ms" [bn_toks]="tok/s" [bn_tokens]="tokens" [bn_tools]="tools"
+  [bench_run]="comparing %d model(s) (sequential, 1s pause) …" [bench_progress]="%d/%d %s …"
+  [bench_fastest]="Fastest: %s (%s tok/s)" [bench_none]="no data" [bench_norun]="no models to compare"
+  [h_bench]="compare models: tokens/s, time to first token, tool calls (--last shows stored results)"
+)
+
+BENCH_FILE="$NIM_DIR/bench"
+bench_resolve_ids() { # bench_resolve_ids <model-id|slot…> → resolved, deduped ids, one per line (default: configured slots)
+  local seen=" " a id s m
+  if (( $# )); then
+    for a in "$@"; do
+      case "$a" in
+        code|fast|chat|review) id=$(slot_model "$a"); [[ -n "$id" ]] || { warn "$(tf slot_unconfigured "$a")" >&2; continue; };;
+        *) valid_model "$a" || { bad "$(t invalid): $a" >&2; continue; }; id="$a";;
+      esac
+      [[ "$seen" == *" $id "* ]] && continue; seen+="$id "; printf '%s\n' "$id"
+    done
+  else
+    for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); [[ -n "$m" ]] || continue
+      [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; printf '%s\n' "$m"
+    done
+  fi
+}
+
+BENCH_TTFT=""; BENCH_TOKS=""; BENCH_TOKENS=""; BENCH_ERR=""
+bench_stream() { # bench_stream <id> → 0 + BENCH_TTFT/BENCH_TOKS/BENCH_TOKENS, or 1 + BENCH_ERR
+  local id="$1" json line first=1 err_body="" ttft_ms="" delta_count=0 completion_tokens=0 last_ms=0 t0 payload delta u
+  BENCH_TTFT=""; BENCH_TOKS=""; BENCH_TOKENS=""; BENCH_ERR=""
+  json=$(jq -n --arg m "$id" '{model:$m, stream:true, stream_options:{include_usage:true}, max_tokens:160,
+    messages:[{role:"user", content:"Explain in about 100 words what a reverse proxy does."}]}')
+  t0=$(now_ms)
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    if (( first )); then
+      first=0
+      [[ "$line" != data:* ]] && { err_body="$line"; continue; }
+    fi
+    [[ "$line" == data:* ]] || continue
+    payload="${line#data: }"; [[ "$payload" == "[DONE]" ]] && { last_ms=$(( $(now_ms) - t0 )); break; }
+    delta=$(printf '%s' "$payload" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)
+    if [[ -n "$delta" ]]; then ((delta_count++)); [[ -z "$ttft_ms" ]] && ttft_ms=$(( $(now_ms) - t0 )); fi
+    u=$(printf '%s' "$payload" | jq -r '.usage.completion_tokens // empty' 2>/dev/null)
+    [[ -n "$u" ]] && completion_tokens="$u"
+    last_ms=$(( $(now_ms) - t0 ))
+  done < <(curl -sN -m 120 -K "$HDR_FILE" "$API_BASE/chat/completions" --data-binary @- <<<"$json" 2>/dev/null)
+  if [[ -z "$ttft_ms" ]]; then BENCH_ERR=$(probe_err_text "$err_body" 120); return 1; fi
+  (( completion_tokens > 0 )) || completion_tokens=$delta_count
+  local denom=$(( last_ms - ttft_ms )) tps="0.0"
+  (( denom > 0 && completion_tokens > 0 )) && tps=$(awk -v tk="$completion_tokens" -v d="$denom" 'BEGIN{printf "%.1f", tk/(d/1000)}')
+  BENCH_TTFT="$ttft_ms"; BENCH_TOKS="$tps"; BENCH_TOKENS="$completion_tokens"
+}
+bench_append() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" "$(date +%s)" >>"$BENCH_FILE"; }
+bench_row_width() { local w=$(( COLS - 34 )); (( w > 50 )) && w=50; (( w < 20 )) && w=20; printf '%s' "$w"; }
+bench_header() { out "$(printf "  ${B}%-${1}s %8s %8s %8s  %s${R}" "$(t bn_model)" "$(t bn_ttft)" "$(t bn_toks)" "$(t bn_tokens)" "$(t bn_tools)")"; }
+bench_tools_glyph() { case "$1" in ok) printf '%s' "$OK";; no) printf '%s' "$NO";; *) printf '%s' "$GR";; esac; }
+
+bench_last() { # bench_last <id…> – most recent stored row per id, straight from $BENCH_FILE, no request
+  local w id rec ttft toks tokens tools epoch; w=$(bench_row_width); bench_header "$w"
+  for id in "$@"; do
+    rec=""; [[ -s "$BENCH_FILE" ]] && rec=$(awk -F'\t' -v id="$id" '$1==id{line=$0} END{print line}' "$BENCH_FILE" 2>/dev/null)
+    if [[ -z "$rec" ]]; then out "  $GR $(printf "%-${w}s" "$(trunc "$id" "$w")") ${D}$(t bench_none)${R}"; continue; fi
+    IFS=$'\t' read -r _ ttft toks tokens tools epoch <<<"$rec"
+    out "$(printf "  %-${w}s %8s %8s %8s  %s  ${D}%s${R}" "$(trunc "$id" "$w")" "$ttft" "$toks" "$tokens" "$(bench_tools_glyph "$tools")" "$(age_of "$epoch")")"
+  done
+}
+cmd_bench() { # cmd_bench [--last] [model-id|slot…] – default: models of all configured slots, deduplicated
+  local last=0 args=() a; for a in "$@"; do case "$a" in --last) last=1;; *) args+=("$a");; esac; done
+  set -- ${args[@]+"${args[@]}"}
+  sect "$(t k_b)"
+  local ids=() id; while IFS= read -r id; do [[ -n "$id" ]] && ids+=("$id"); done < <(bench_resolve_ids "$@")
+  ((${#ids[@]})) || { bad "$(t bench_norun)"; return 1; }
+  if (( last )); then bench_last "${ids[@]}"; return 0; fi
+  info "$(tf bench_run "${#ids[@]}")"
+  declare -A ROW_OK=() ROW_TTFT=() ROW_TOKS=() ROW_TOKENS=() ROW_TOOLS=() ROW_ERR=()
+  local i=0 n=${#ids[@]} tres
+  for id in "${ids[@]}"; do
+    ((i++)); info "$(tf bench_progress "$i" "$n" "$(trunc "$id" 60)")"
+    if bench_stream "$id"; then
+      ROW_OK[$id]=1; ROW_TTFT[$id]="$BENCH_TTFT"; ROW_TOKS[$id]="$BENCH_TOKS"; ROW_TOKENS[$id]="$BENCH_TOKENS"
+      tres=$(probe_one "$id" "$PROBE_TIMEOUT" tools)
+      case "$tres" in
+        ok*) ROW_TOOLS[$id]=ok; probe_set "$id" ok "${tres#ok }" ok;;
+        notools*) ROW_TOOLS[$id]=no; probe_set "$id" ok "${tres#notools }" no;;
+      esac
+      with_lock bench_append "$id" "$BENCH_TTFT" "$BENCH_TOKS" "$BENCH_TOKENS" "${ROW_TOOLS[$id]:-}"
+    else
+      ROW_ERR[$id]="$BENCH_ERR"; bad "$id: $BENCH_ERR"
+    fi
+    (( i < n )) && sleep 1
+  done
+  printf '\n'; local w; w=$(bench_row_width); bench_header "$w"
+  local best="" best_toks="0"
+  for id in "${ids[@]}"; do
+    if [[ -n "${ROW_OK[$id]:-}" ]]; then
+      out "$(printf "  %-${w}s %8s %8s %8s  %s" "$(trunc "$id" "$w")" "${ROW_TTFT[$id]}" "${ROW_TOKS[$id]}" "${ROW_TOKENS[$id]}" "$(bench_tools_glyph "${ROW_TOOLS[$id]:-}")")"
+      awk -v a="${ROW_TOKS[$id]}" -v b="$best_toks" 'BEGIN{exit !(a>b)}' && { best="$id"; best_toks="${ROW_TOKS[$id]}"; }
+    else
+      out "  $NO $(printf "%-${w}s" "$(trunc "$id" "$w")") ${RED}${ROW_ERR[$id]}${R}"
+    fi
+  done
+  [[ -n "$best" ]] && ok "$(tf bench_fastest "$best" "$best_toks")"
+}
+dash_register b cmd_bench k_b models
+
+# ══════ 47-accounts.sh ══════
+# ── Chat accounts (Open WebUI) ────────────────────────────────────────────────
+T_de+=(
+  [acc_nodb]="Chat wurde noch nie gestartet – keine Datenbank" [acc_nopython]="kein Python-Interpreter gefunden – python3 installieren"
+  [acc_dberr]="Datenbankfehler" [acc_none]="keine Konten" [acc_col_name]="Name" [acc_col_email]="E-Mail" [acc_col_role]="Rolle" [acc_col_created]="Erstellt"
+  [acc_menu]="1) Konten  2) Passwort  3) Zurücksetzen  (Enter = zurück)"
+  [acc_email_prompt]="E-Mail-Adresse" [acc_email_missing]="E-Mail-Adresse erforderlich" [acc_email_unknown]="%s: unbekannte E-Mail-Adresse – bekannt: %s"
+  [acc_pw_new]="Neues Passwort" [acc_pw_confirm]="Passwort wiederholen" [acc_pw_mismatch]="Passwörter stimmen nicht überein"
+  [acc_pw_short]="Passwort muss mindestens 8 Zeichen haben" [acc_pw_long]="Passwort darf höchstens 72 Byte lang sein (bcrypt-Grenze)"
+  [acc_pw_noninteractive]="kein Terminal und NIMCTL_CHAT_PASSWORD nicht gesetzt – NIMCTL_CHAT_PASSWORD=… setzen"
+  [acc_hash_missing]="kein bcrypt verfügbar – installieren: python3-bcrypt oder apache2-utils (htpasswd)"
+  [acc_hash_failed]="Passwort-Hashing fehlgeschlagen"
+  [acc_stop_q]="Chat stoppen, damit die Änderung wirkt?" [acc_write_fail]="Schreiben fehlgeschlagen" [acc_passwd_ok]="%s: Passwort aktualisiert"
+  [acc_reset_warn]="Bestehende Chats bleiben in der Datenbank, gehören aber niemandem mehr – das nächste registrierte Konto wird automatisch Admin."
+  [acc_reset_q]="Wirklich alle Konten löschen?" [acc_reset_type]="Zur Bestätigung RESET eingeben" [acc_reset_mismatch]="RESET nicht eingegeben – abgebrochen"
+  [acc_reset_done]="Konten gelöscht" [h_accounts]="Chat-Konten verwalten: nimctl chat users | passwd [E-Mail] [--admin] | reset"
+)
+T_en+=(
+  [acc_nodb]="chat has never been started – no database" [acc_nopython]="no Python interpreter found – install python3"
+  [acc_dberr]="database error" [acc_none]="no accounts" [acc_col_name]="Name" [acc_col_email]="Email" [acc_col_role]="Role" [acc_col_created]="Created"
+  [acc_menu]="1) users  2) passwd  3) reset  (Enter = back)"
+  [acc_email_prompt]="Email address" [acc_email_missing]="email address required" [acc_email_unknown]="%s: unknown email address – known: %s"
+  [acc_pw_new]="New password" [acc_pw_confirm]="Repeat password" [acc_pw_mismatch]="passwords do not match"
+  [acc_pw_short]="password must be at least 8 characters" [acc_pw_long]="password must be at most 72 bytes (bcrypt limit)"
+  [acc_pw_noninteractive]="no terminal and NIMCTL_CHAT_PASSWORD not set – set NIMCTL_CHAT_PASSWORD=…"
+  [acc_hash_missing]="no bcrypt available – install: python3-bcrypt or apache2-utils (htpasswd)"
+  [acc_hash_failed]="password hashing failed"
+  [acc_stop_q]="Stop chat so the change takes effect?" [acc_write_fail]="write failed" [acc_passwd_ok]="%s: password updated"
+  [acc_reset_warn]="Existing chats stay in the database but will belong to nobody – the next account that signs up automatically becomes admin."
+  [acc_reset_q]="Really delete all accounts?" [acc_reset_type]="Type RESET to confirm" [acc_reset_mismatch]="RESET not entered – aborted"
+  [acc_reset_done]="accounts deleted" [h_accounts]="manage chat accounts: nimctl chat users | passwd [email] [--admin] | reset"
+)
+
+acc_db() { printf '%s/webui-data/webui.db' "$NIM_DIR"; }
+acc_python() { # first working interpreter: $NIMCTL_WEBUI_PYTHON, the open-webui uv tool's own python (has bcrypt), else python3
+  [[ -n "${NIMCTL_WEBUI_PYTHON:-}" ]] && { printf '%s' "$NIMCTL_WEBUI_PYTHON"; return 0; }
+  local u; u="$(uv tool dir 2>/dev/null)/open-webui/bin/python"
+  [[ -x "$u" ]] && { printf '%s' "$u"; return 0; }
+  has python3 && { printf 'python3'; return 0; }
+  return 1
+}
+acc_py() { # acc_py <<'PY' … PY – runs the chosen interpreter, script on stdin, $NIMCTL_ACCOUNTS_DB exported
+  local py; py=$(acc_python) || return 1
+  NIMCTL_ACCOUNTS_DB="$(acc_db)" "$py" -
+}
+acc_hash() { # acc_hash <password> → bcrypt hash on stdout; 1 = neither bcrypt nor htpasswd available; 2 = bcrypt present but hashing failed (see stderr)
+  local pw="$1" py hash rc
+  if py=$(acc_python); then
+    hash=$(NIMCTL_ACCOUNTS_PW="$pw" "$py" - <<'PY'
+import os, sys
+try:
+    import bcrypt
+except ImportError:
+    sys.exit(1)
+pw = os.environ.get("NIMCTL_ACCOUNTS_PW", "").encode()
+try:
+    print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())
+except Exception as e:
+    print(f"nimctl: bcrypt: {e}", file=sys.stderr)
+    sys.exit(2)
+PY
+    ); rc=$?
+    [[ $rc -eq 0 && -n "$hash" ]] && { printf '%s' "$hash"; return 0; }
+    (( rc == 2 )) && return 2
+  fi
+  if has htpasswd; then
+    hash=$(htpasswd -bnBC 12 '' "$pw" 2>/dev/null | tr -d ':\n')
+    [[ -n "$hash" ]] && { printf '%s' "$hash"; return 0; }
+  fi
+  return 1
+}
+acc_list() { # \x1f-separated: name email role created_at
+  acc_py <<'PY'
+import os, sqlite3, sys
+con = sqlite3.connect(os.environ["NIMCTL_ACCOUNTS_DB"], timeout=5)
+try:
+    for name, email, role, created in con.execute("SELECT name, email, role, created_at FROM user ORDER BY created_at"):
+        print(f"{name}\x1f{email}\x1f{role}\x1f{created or 0}")
+except sqlite3.Error as e:
+    print(f"nimctl: {e}", file=sys.stderr); sys.exit(1)
+PY
+}
+acc_admin_emails() {
+  acc_py <<'PY'
+import os, sqlite3, sys
+con = sqlite3.connect(os.environ["NIMCTL_ACCOUNTS_DB"], timeout=5)
+try:
+    for (email,) in con.execute("SELECT email FROM user WHERE role='admin' ORDER BY email"):
+        print(email)
+except sqlite3.Error as e:
+    print(f"nimctl: {e}", file=sys.stderr); sys.exit(1)
+PY
+}
+acc_known_emails() {
+  acc_py <<'PY'
+import os, sqlite3, sys
+con = sqlite3.connect(os.environ["NIMCTL_ACCOUNTS_DB"], timeout=5)
+try:
+    for (email,) in con.execute("SELECT email FROM user ORDER BY email"):
+        print(email)
+except sqlite3.Error as e:
+    print(f"nimctl: {e}", file=sys.stderr); sys.exit(1)
+PY
+}
+acc_email_exists() { # $1=email; 0=exists 1=not found 2=db error (no message shown – caller decides)
+  local known; known=$(acc_known_emails) || return 2
+  grep -qxF "$1" <<<"$known"
+}
+acc_resolve_email() { # acc_resolve_email <given> → REPLY=target email; 1 = failed (message already shown)
+  local given="$1" admins n=0
+  if [[ -n "$given" ]]; then REPLY="$given"; return 0; fi
+  admins=$(acc_admin_emails) || { bad "$(t acc_dberr)"; return 1; }
+  [[ -n "$admins" ]] && n=$(wc -l <<<"$admins")
+  if [[ "$n" -eq 1 ]]; then REPLY="$admins"; return 0; fi
+  prompt "$(t acc_email_prompt)" || return 1
+  [[ -n "$REPLY" ]] || { bad "$(t acc_email_missing)"; return 1; }
+}
+acc_read_password() { # → REPLY=new password; 1 = failed (message already shown)
+  local p1
+  if [[ -n "${NIMCTL_CHAT_PASSWORD:-}" ]]; then
+    p1="$NIMCTL_CHAT_PASSWORD"
+  else
+    (( INTERACTIVE )) || { bad "$(t acc_pw_noninteractive)"; return 1; }
+    local p2
+    prompt "$(t acc_pw_new)" hidden || return 1; p1="$REPLY"
+    prompt "$(t acc_pw_confirm)" hidden || return 1; p2="$REPLY"
+    [[ "$p1" == "$p2" ]] || { bad "$(t acc_pw_mismatch)"; return 1; }
+    [[ ${#p1} -ge 8 ]] || { bad "$(t acc_pw_short)"; return 1; }
+  fi
+  local pwbytes; pwbytes=$(printf '%s' "$p1" | wc -c)
+  (( pwbytes <= 72 )) || { bad "$(t acc_pw_long)"; return 1; }
+  REPLY="$p1"
+}
+acc_pause_chat() { # ensures chat isn't running before a DB write; ACC_RESUME=1 → caller should start_chat again
+  ACC_RESUME=0
+  svc_state chat || return 0
+  [[ "$SVC_BY" == nimctl || "$SVC_BY" == systemd ]] || return 0
+  ask "$(t acc_stop_q)" n || { info "$(t aborted)"; return 1; }
+  stop_svc chat; ACC_RESUME=1
+}
+acc_resume_chat() { (( ACC_RESUME )) && start_chat; return 0; }
+
+acc_users() {
+  [[ -f "$(acc_db)" ]] || { bad "$(t acc_nodb)"; return 1; }
+  acc_python >/dev/null || { bad "$(t acc_nopython)"; return 1; }
+  local rows; rows=$(acc_list) || { bad "$(t acc_dberr)"; return 1; }
+  [[ -n "$rows" ]] || { info "$(t acc_none)"; return 0; }
+  printf "  %-22s %-28s %-7s %s\n" "$(t acc_col_name)" "$(t acc_col_email)" "$(t acc_col_role)" "$(t acc_col_created)"
+  local name email role created
+  while IFS=$'\x1f' read -r name email role created; do
+    printf "  %-22s %-28s %-7s %s\n" "$(trunc "$name" 22)" "$(trunc "$email" 28)" "$role" "$(fmt_time "$created" '+%Y-%m-%d %H:%M')"
+  done <<<"$rows"
+}
+acc_passwd() { # acc_passwd [email] [--admin]
+  [[ -f "$(acc_db)" ]] || { bad "$(t acc_nodb)"; return 1; }
+  acc_python >/dev/null || { bad "$(t acc_nopython)"; return 1; }
+  local email="" admin=0 a
+  for a in "$@"; do case "$a" in --admin) admin=1;; *) [[ -z "$email" ]] && email="$a";; esac; done
+  acc_resolve_email "$email" || return 1
+  email="$REPLY"
+  acc_email_exists "$email"; local exists_rc=$?
+  if (( exists_rc == 2 )); then bad "$(t acc_dberr)"; return 1; fi
+  if (( exists_rc == 1 )); then
+    local known; known=$(acc_known_emails) || { bad "$(t acc_dberr)"; return 1; }
+    known=$(tr '\n' ' ' <<<"$known"); known="${known% }"
+    bad "$(tf acc_email_unknown "$email" "$known")"; return 1
+  fi
+  acc_read_password || return 1
+  local pw="$REPLY" hash hash_rc
+  hash=$(acc_hash "$pw"); hash_rc=$?
+  if (( hash_rc == 2 )); then bad "$(t acc_hash_failed)"; return 1; fi
+  (( hash_rc == 0 )) || { bad "$(t acc_hash_missing)"; return 1; }
+  acc_pause_chat || return 1
+  local rc
+  NIMCTL_ACCOUNTS_EMAIL="$email" NIMCTL_ACCOUNTS_HASH="$hash" NIMCTL_ACCOUNTS_ADMIN="$admin" acc_py >/dev/null <<'PY'
+import os, sqlite3, sys
+con = sqlite3.connect(os.environ["NIMCTL_ACCOUNTS_DB"], timeout=5)
+email = os.environ["NIMCTL_ACCOUNTS_EMAIL"]; h = os.environ["NIMCTL_ACCOUNTS_HASH"]
+try:
+    cur = con.execute("UPDATE auth SET password=?, active=1 WHERE email=?", (h, email))
+    if cur.rowcount < 1:
+        sys.exit(1)
+    if os.environ.get("NIMCTL_ACCOUNTS_ADMIN") == "1":
+        con.execute("UPDATE user SET role='admin' WHERE email=?", (email,))
+    con.commit()
+except sqlite3.Error as e:
+    print(f"nimctl: {e}", file=sys.stderr); sys.exit(1)
+PY
+  rc=$?
+  if (( rc == 0 )); then ok "$(tf acc_passwd_ok "$email")"; else bad "$(t acc_write_fail)"; fi
+  acc_resume_chat; return $rc
+}
+acc_reset() {
+  [[ -f "$(acc_db)" ]] || { bad "$(t acc_nodb)"; return 1; }
+  acc_python >/dev/null || { bad "$(t acc_nopython)"; return 1; }
+  warn "$(t acc_reset_warn)"
+  ask "$(t acc_reset_q)" n || { info "$(t aborted)"; return 1; }
+  if (( INTERACTIVE )); then
+    prompt "$(t acc_reset_type)" || return 1
+    [[ "$REPLY" == RESET ]] || { bad "$(t acc_reset_mismatch)"; return 1; }
+  fi
+  acc_pause_chat || return 1
+  local rc
+  acc_py >/dev/null <<'PY'
+import os, sqlite3, sys
+con = sqlite3.connect(os.environ["NIMCTL_ACCOUNTS_DB"], timeout=5)
+try:
+    con.execute("DELETE FROM auth"); con.execute("DELETE FROM user")
+    con.commit()
+except sqlite3.Error as e:
+    print(f"nimctl: {e}", file=sys.stderr); sys.exit(1)
+PY
+  rc=$?
+  if (( rc == 0 )); then ok "$(t acc_reset_done)"; else bad "$(t acc_write_fail)"; fi
+  acc_resume_chat; return $rc
+}
+chat_admin() { # chat_admin <users|passwd|reset> [args…] – dispatched from `nimctl chat <sub>` (src/90-main.sh)
+  local sub="${1:-}"; (( $# )) && shift
+  case "$sub" in
+    users)  acc_users;;
+    passwd) acc_passwd "$@";;
+    reset)  acc_reset "$@";;
+    *)      bad "$(t unknown): $sub"; return 2;;
+  esac
+}
+cmd_accounts() {
+  sect "$(t k_n)"
+  prompt "$(t acc_menu)" || return 1
+  case "$REPLY" in
+    1) acc_users;; 2) acc_passwd;; 3) acc_reset;;
+    "") return 0;;
+    *) bad "$(t invalid)";;
+  esac
+}
+dash_register n cmd_accounts k_n use
+
+# ══════ 48-watch.sh ══════
+# ── Watch: keep the configured slots healthy from a timer/cron ───────────────
+T_de+=(
+  [watch_title]="nimctl watch" [watch_keybad]="kein gültiger API-Key (%s)" [watch_none]="keine Slots konfiguriert"
+  [watch_timer_on]="Watchdog-Timer aktiv (systemd --user: nimctl-watch.timer)"
+  [h_watch]="Slots prüfen und tote Modelle automatisch ersetzen (für Timer/Cron; --quiet)"
+)
+T_en+=(
+  [watch_title]="nimctl watch" [watch_keybad]="no valid API key (%s)" [watch_none]="no slots configured"
+  [watch_timer_on]="watchdog timer active (systemd --user: nimctl-watch.timer)"
+  [h_watch]="probe the slots and replace dead models automatically (for timers/cron; --quiet)"
+)
+watch_log() { mkdir -p "$LOG_DIR"; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$1" >>"$LOG_DIR/watch.log"; }
+watch_notify() { has notify-send && notify-send "$(t watch_title)" "$1" >/dev/null 2>&1; return 0; }
+watch_bad() { # watch_bad <slot> → 0 (unhealthy) when it does not answer, or (for TOOL_SLOTS) can't call tools
+  local m; m=$(slot_model "$1"); [[ -n "$m" ]] || return 0
+  probe_get "$m"; [[ "$PROBE_RES" == ok ]] || return 0
+  [[ "$TOOL_SLOTS" == *" $1 "* && "$PROBE_TOOLS" != ok ]] && return 0
+  return 1
+}
+cmd_watch() { # cmd_watch [--quiet] – probe every configured slot, auto-replace dead ones, log + notify
+  local quiet=0; [[ "${1:-}" == --quiet ]] && quiet=1
+  check_key
+  if [[ "$KEY_STATE" != ok ]]; then
+    local km; km=$(tf watch_keybad "$KEY_STATE"); bad "$km"; watch_log "$km"; watch_notify "$km"; return 1
+  fi
+  local slots=() s m seen=" " ids=() tool_ids=" "
+  for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); [[ -n "$m" ]] || continue; slots+=("$s")
+    [[ "$seen" == *" $m "* ]] || { seen+="$m "; ids+=("$m"); }
+    [[ "$TOOL_SLOTS" == *" $s "* ]] && tool_ids+="$m "; done
+  ((${#slots[@]})) || { watch_log "$(t watch_none)"; return 0; }
+  local cap="$TMP_ROOT/watch.cap" unhealthy=() changed=0 dead=() rep=()
+  {
+    probe_many "${ids[@]}"
+    local tids=()
+    for m in "${ids[@]}"; do [[ "$tool_ids" == *" $m "* ]] || continue
+      probe_get "$m"; [[ "$PROBE_RES" == ok ]] && tids+=("$m"); done
+    ((${#tids[@]})) && probe_tools_many "${tids[@]}"
+    for s in "${slots[@]}"; do watch_bad "$s" && unhealthy+=("$s"); done
+    local old new
+    for s in "${unhealthy[@]}"; do
+      old=$(slot_model "$s"); auto_select "$s"; new=$(slot_model "$s")
+      [[ "$new" != "$old" ]] && { changed=1; rep+=("$s $old $new"); }
+      watch_bad "$s" && dead+=("$s")
+    done
+    (( changed )) && svc_running proxy && restart_svc proxy
+  } >"$cap" 2>&1
+  if (( quiet )); then grep -F -e "$NO" -e "$WA" "$cap"; else cat "$cap"; fi
+  local msg="" parts=() part r o n
+  for r in "${rep[@]}"; do read -r part o n <<<"$r"; parts+=("replaced $part: $o → $n"); done
+  ((${#dead[@]})) && parts+=("dead ${dead[*]}")
+  if ((${#parts[@]} == 0)); then msg="ok ${slots[*]}"; (( quiet )) || ok "$msg"
+  else
+    for part in "${parts[@]}"; do msg+="${msg:+; }$part"; case "$part" in dead*) bad "$part";; *) warn "$part";; esac; done
+  fi
+  watch_log "$msg"; [[ "$msg" == ok\ * ]] || watch_notify "$msg"
+  ((${#dead[@]})) && return 4
+  return 0
+}
+inst_watch_timer() {
+  has systemctl || { bad "$(t no_systemd)"; return 1; }
+  local d self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
+  printf '[Unit]\nDescription=nimctl watch\n\n[Service]\nType=oneshot\nExecStart=%s watch --quiet\nEnvironment=NIMCTL_HOME=%s\n' "$self" "$NIM_DIR" >"$d/nimctl-watch.service"
+  printf '[Unit]\nDescription=nimctl watch timer\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' >"$d/nimctl-watch.timer"
+  systemctl --user daemon-reload && systemctl --user enable --now nimctl-watch.timer && ok "$(t watch_timer_on)" || { bad "$(tf inst_fail systemd)"; return 1; }
+}
+
+# ══════ 49-completion.sh ══════
+# ── Shell completion ──────────────────────────────────────────────────────────
+T_de+=( [completion_usage]="Nutzung: nimctl completion bash|zsh" [completion_installed]="Shell-Completion installiert (~/.bashrc, ~/.zshrc)" [h_completion]="Shell-Completion ausgeben: nimctl completion bash|zsh" )
+T_en+=( [completion_usage]="usage: nimctl completion bash|zsh" [completion_installed]="shell completion installed (~/.bashrc, ~/.zshrc)" [h_completion]="print shell completion: nimctl completion bash|zsh" )
+_completion_script() { # prints the bash completion function + registration; commands are baked in at generation time
+  local cmds fns=(); mapfile -t fns < <(declare -F | awk '{print $3}' | grep '^cmd_' | sed 's/^cmd_//')
+  cmds=$(printf '%s\n' "${COMMANDS[@]}" "${fns[@]}" | sort -u | tr '\n' ' ')
+  cat <<BASH
+_nimctl() {
+  local cur prev cmds="$cmds" slots="code fast chat review"
+  COMPREPLY=()
+  cur="\${COMP_WORDS[COMP_CWORD]}"; prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  local home="\${NIMCTL_HOME:-\$HOME/.nimctl}" models=""
+  [[ -s "\$home/models.cache" ]] && models=\$(cat "\$home/models.cache")
+  if (( COMP_CWORD == 1 )); then COMPREPLY=(\$(compgen -W "\$cmds" -- "\$cur")); return; fi
+  case "\${COMP_WORDS[1]}" in
+    pick|auto) COMPREPLY=(\$(compgen -W "\$slots" -- "\$cur"));;
+    test|bench) COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
+    code) [[ "\$prev" == --model || "\$prev" == -m ]] && COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
+    logs) COMPREPLY=(\$(compgen -W "proxy chat watch" -- "\$cur"));;
+    chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
+    install) COMPREPLY=(\$(compgen -W "all alias systemd completion" -- "\$cur"));;
+    update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;
+    doctor) COMPREPLY=(\$(compgen -W "--fix" -- "\$cur"));;
+    status) COMPREPLY=(\$(compgen -W "--json" -- "\$cur"));;
+    completion) COMPREPLY=(\$(compgen -W "bash zsh" -- "\$cur"));;
+  esac
+}
+complete -F _nimctl nimctl
+BASH
+}
+cmd_completion() { # cmd_completion <bash|zsh>
+  case "${1:-}" in
+    bash) _completion_script;;
+    zsh)  printf 'autoload -U +X bashcompinit && bashcompinit\n'; _completion_script;;
+    *) bad "$(t completion_usage)"; return 2;;
+  esac
+}
+inst_completion() {
+  local bline='eval "$(nimctl completion bash)"' zline='eval "$(nimctl completion zsh)"'
+  grep -qF "$bline" "$HOME/.bashrc" 2>/dev/null || echo "$bline" >>"$HOME/.bashrc"
+  [[ -f "$HOME/.zshrc" ]] && { grep -qF "$zline" "$HOME/.zshrc" 2>/dev/null || echo "$zline" >>"$HOME/.zshrc"; }
+  ok "$(t completion_installed)"
+}
+
 # ══════ 50-dashboard.sh ══════
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 T_de+=(
@@ -807,9 +1384,7 @@ T_en+=(
   [help_title]="Keys" [help_foot]="Everything is also a command: nimctl help" [reprobing]="model status is older than %s h – probing …"
   [chat_via_proxy]="via proxy"
 )
-# Modules register extra keys: dash_register <key> <function> <label-i18n-key> [group] – shown in the footer and handled in the loop.
-declare -A DASH_FN=() DASH_LABEL=() DASH_GROUP=()
-dash_register() { DASH_FN[$1]="$2"; DASH_LABEL[$1]="$3"; DASH_GROUP[$1]="${4:-use}"; }
+# Module keys registered with dash_register (src/05-core.sh) are shown in the footer and handled in the loop.
 PANEL_LINES=8
 PAUSE_KEYS=" a f t 1 2 3 4 d l e g n b ? "
 
@@ -1064,9 +1639,6 @@ T_de+=(
   [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch] [-f]"
   [h_install]="Werkzeuge, PATH, Autostart, Completion" [h_update]="Selbst-Update von GitHub (--check zeigt nur an)" [h_models]="Katalog ausgeben (eine ID je Zeile)"
   [h_version]="Version" [h_help]="diese Hilfe" [h_quit]="Dashboard verlassen (Dienste laufen weiter)"
-  [h_stats]="Auswertung des Proxy-Logs: Anfragen, 429, Fallbacks, Latenz" [h_bench]="Modelle vergleichen: Tokens/s, Zeit bis erstes Token, Tool-Calls"
-  [h_watch]="Slots prüfen und tote Modelle automatisch ersetzen (für Timer/Cron)" [h_completion]="Shell-Completion ausgeben: nimctl completion bash|zsh"
-  [h_accounts]="Chat-Konten verwalten (Admin-Passwort zurücksetzen)"
 )
 T_en+=(
   [usage]="Usage: nimctl [command] [options]   (no command: dashboard; the wizard on first start)"
@@ -1085,9 +1657,6 @@ T_en+=(
   [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch] [-f]"
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
-  [h_stats]="proxy log summary: requests, 429s, fallbacks, latency" [h_bench]="compare models: tokens/s, time to first token, tool calls"
-  [h_watch]="probe the slots and replace dead models automatically (for timers/cron)" [h_completion]="print shell completion: nimctl completion bash|zsh"
-  [h_accounts]="manage chat accounts (reset the admin password)"
 )
 COMMANDS=(setup start stop restart status check auto pick find test proxy code chat env key doctor logs install update models version help)
 usage() {
@@ -1119,8 +1688,9 @@ status_json() {
       slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
+JSON=0   # set by the global --json flag; commands and modules read it instead of parsing their own argv
 main() {
-  local args=() a JSON=0 rc=0
+  local args=() a rc=0
   for a in "$@"; do case "$a" in --yes|-y) YES=1;; --json) JSON=1;; --lang=*) L="${a#*=}"; [[ "$L" == de ]] || L=en;; --no-color) :;; *) args+=("$a");; esac; done
   set -- ${args[@]+"${args[@]}"}
   local cmd="${1:-}"; (( $# )) && shift
@@ -1139,7 +1709,7 @@ main() {
     models)   models_cached;;
     test)     act_test "${1:-}" "${2:-}";;
     code)     act_code "$@";;
-    chat)     case "${1:-}" in ""|open) act_chat_open;; *) declare -F chat_admin >/dev/null && chat_admin "$@" || { bad "$(t unknown): $1"; exit 2; };; esac;;
+    chat)     case "${1:-}" in ""|open) act_chat_open;; *) if declare -F chat_admin >/dev/null; then chat_admin "$@"; else bad "$(t unknown): $1"; exit 2; fi;; esac;;
     env)      act_env;;
     key)      if [[ -n "${1:-}" ]]; then set_key "$1"; else act_key; fi; rc=$?; (( rc == 0 )) && restart_if_running; (( rc == 3 )) && rc=0; exit $rc;;
     doctor)   doctor "${1:-}";;

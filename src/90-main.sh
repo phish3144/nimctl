@@ -17,9 +17,6 @@ T_de+=(
   [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch] [-f]"
   [h_install]="Werkzeuge, PATH, Autostart, Completion" [h_update]="Selbst-Update von GitHub (--check zeigt nur an)" [h_models]="Katalog ausgeben (eine ID je Zeile)"
   [h_version]="Version" [h_help]="diese Hilfe" [h_quit]="Dashboard verlassen (Dienste laufen weiter)"
-  [h_stats]="Auswertung des Proxy-Logs: Anfragen, 429, Fallbacks, Latenz" [h_bench]="Modelle vergleichen: Tokens/s, Zeit bis erstes Token, Tool-Calls"
-  [h_watch]="Slots prüfen und tote Modelle automatisch ersetzen (für Timer/Cron)" [h_completion]="Shell-Completion ausgeben: nimctl completion bash|zsh"
-  [h_accounts]="Chat-Konten verwalten (Admin-Passwort zurücksetzen)"
 )
 T_en+=(
   [usage]="Usage: nimctl [command] [options]   (no command: dashboard; the wizard on first start)"
@@ -38,9 +35,6 @@ T_en+=(
   [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch] [-f]"
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
-  [h_stats]="proxy log summary: requests, 429s, fallbacks, latency" [h_bench]="compare models: tokens/s, time to first token, tool calls"
-  [h_watch]="probe the slots and replace dead models automatically (for timers/cron)" [h_completion]="print shell completion: nimctl completion bash|zsh"
-  [h_accounts]="manage chat accounts (reset the admin password)"
 )
 COMMANDS=(setup start stop restart status check auto pick find test proxy code chat env key doctor logs install update models version help)
 usage() {
@@ -72,8 +66,9 @@ status_json() {
       slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
+JSON=0   # set by the global --json flag; commands and modules read it instead of parsing their own argv
 main() {
-  local args=() a JSON=0 rc=0
+  local args=() a rc=0
   for a in "$@"; do case "$a" in --yes|-y) YES=1;; --json) JSON=1;; --lang=*) L="${a#*=}"; [[ "$L" == de ]] || L=en;; --no-color) :;; *) args+=("$a");; esac; done
   set -- ${args[@]+"${args[@]}"}
   local cmd="${1:-}"; (( $# )) && shift
@@ -92,7 +87,7 @@ main() {
     models)   models_cached;;
     test)     act_test "${1:-}" "${2:-}";;
     code)     act_code "$@";;
-    chat)     case "${1:-}" in ""|open) act_chat_open;; *) declare -F chat_admin >/dev/null && chat_admin "$@" || { bad "$(t unknown): $1"; exit 2; };; esac;;
+    chat)     case "${1:-}" in ""|open) act_chat_open;; *) if declare -F chat_admin >/dev/null; then chat_admin "$@"; else bad "$(t unknown): $1"; exit 2; fi;; esac;;
     env)      act_env;;
     key)      if [[ -n "${1:-}" ]]; then set_key "$1"; else act_key; fi; rc=$?; (( rc == 0 )) && restart_if_running; (( rc == 3 )) && rc=0; exit $rc;;
     doctor)   doctor "${1:-}";;

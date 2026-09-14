@@ -29,6 +29,10 @@ cmd_stats() { … }                    # becomes `nimctl stats …` and shows up
 dash_register g cmd_stats k_g use    # dashboard key g in group use (svc | models | use | sys); label key k_g
 ```
 
+`dash_register` and the registry live in `src/05-core.sh`, so a plain top-level call works in any module. Help
+strings `h_<command>` belong to the module (nothing in `src/90-main.sh` overrides them). `main()` strips the global
+flags `--yes`, `--json` and `--lang=` from argv for every command: read `$YES` and `$JSON` instead of parsing them.
+
 Every user-visible string goes through `t key` / `tf key args…` and exists in **both** tables. Output goes
 through `out`, `ok`, `bad`, `warn`, `info` (they also feed the dashboard's "last action" panel). Ask with
 `ask "question" y|n` (default `n` needs an explicit yes; non-interactive runs take the default, `--yes` says yes)

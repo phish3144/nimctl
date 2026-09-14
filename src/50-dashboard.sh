@@ -19,9 +19,7 @@ T_en+=(
   [help_title]="Keys" [help_foot]="Everything is also a command: nimctl help" [reprobing]="model status is older than %s h – probing …"
   [chat_via_proxy]="via proxy"
 )
-# Modules register extra keys: dash_register <key> <function> <label-i18n-key> [group] – shown in the footer and handled in the loop.
-declare -A DASH_FN=() DASH_LABEL=() DASH_GROUP=()
-dash_register() { DASH_FN[$1]="$2"; DASH_LABEL[$1]="$3"; DASH_GROUP[$1]="${4:-use}"; }
+# Module keys registered with dash_register (src/05-core.sh) are shown in the footer and handled in the loop.
 PANEL_LINES=8
 PAUSE_KEYS=" a f t 1 2 3 4 d l e g n b ? "
 

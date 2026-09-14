@@ -117,6 +117,10 @@ rule() { local n="${1:-$COLS}" s; s=$(printf '%*s' "$n" ''); printf '%s%s%s\n' "
 sect() { printf "\n${B}${CYN}%s${R}\n" "$*"; rule; }
 strip_ansi() { sed 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
 trunc() { local s="$1" n="$2"; (( ${#s} > n )) && s="${s:0:n-1}$G_ELL"; printf '%s' "$s"; }   # trunc <text> <width>
+# Module registry for the dashboard: dash_register <key> <function> <label-i18n-key> [svc|models|use|sys].
+# Lives here (not in 50-dashboard.sh) so modules numbered below 50 can register at top level.
+declare -A DASH_FN=() DASH_LABEL=() DASH_GROUP=()
+dash_register() { DASH_FN[$1]="$2"; DASH_LABEL[$1]="$3"; DASH_GROUP[$1]="${4:-use}"; }
 banner() { # banner <title> [right text]
   [[ -t 1 && "${NO_CLEAR:-0}" == 0 ]] && clear
   local right="${2:-$(date '+%Y-%m-%d %H:%M')}"
