@@ -10,7 +10,10 @@ MODELS = ["deepseek-ai/deepseek-v4-pro-0813", "deepseek-ai/deepseek-v4-flash-073
           "moonshotai/kimi-k2.6", "nvidia/nemotron-3-super-120b", "nvidia/nemotron-3.5-lightning-30b-a3b",
           "poolside/laguna-xs-2.1", "nvidia/nemotron-3-ultra-550b-a55b", "zai-org/glm-5.3", "meta/llama-4-maverick-17b-128e-instruct"]
 DEAD = {"moonshotai/kimi-k2.6"}
-SLOW = {"moonshotai/kimi-k3": 40, "nvidia/nemotron-3-ultra-550b-a55b": 1.5, "deepseek-ai/deepseek-v4-pro-0813": 0.6}
+SLOW = {"moonshotai/kimi-k3": 40, "nvidia/nemotron-3-ultra-550b-a55b": 1.5}
+COLD = {"deepseek-ai/deepseek-v4-pro-0813": 5}   # first call sleeps this long, later calls are fast
+OVERLOADED = {"poolside/laguna-xs-2.1"}
+seen = set()
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -28,6 +31,8 @@ class H(BaseHTTPRequestHandler):
         m = body["model"]
         if m in DEAD: return self._send(404, {"detail": "Function 'abc': Not found for account 'xyz'"})
         if m not in MODELS: return self._send(404, {"error": {"message": f"model {m} not found"}})
+        if m in OVERLOADED: return self._send(429, {"error": {"message": "ResourceExhausted: Worker local total request limit reached (32/32)"}})
+        if m in COLD and m not in seen: seen.add(m); time.sleep(COLD[m])
         time.sleep(SLOW.get(m, 0.05))
         self._send(200, {"choices": [{"message": {"content": f"Moin from {m}."}}], "usage": {"total_tokens": 42}})
 

@@ -2,7 +2,7 @@
 
 **Free frontier-class models for Claude Code and a local chat – set up in one command.**
 
-[![CI](https://github.com/phish3144/nimctl/actions/workflows/ci.yml/badge.svg)](https://github.com/phish3144/nimctl/actions/workflows/ci.yml)
+[![CI](https://github.com/YOUR-GITHUB-USER/nimctl/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR-GITHUB-USER/nimctl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![bash](https://img.shields.io/badge/bash-4.3%2B-blue)
 ![shellcheck](https://img.shields.io/badge/shellcheck-clean-brightgreen)
@@ -51,7 +51,7 @@ Models
 Ubuntu/Debian (also WSL2 on Windows). Requires `curl`, `jq`, `bash ≥ 4.3`; the installer adds `jq` if missing.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YOUR-GITHUB-USER/nimctl/main/install.sh | bash
 ```
 
 The wizard then walks through five steps:
@@ -82,6 +82,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl check` | Probe the three configured models with a real request |
 | `nimctl find <text>` | Probe every catalog entry matching `<text>` – shows what really answers |
 | `nimctl test [model-id]` | Send a prompt, see reply, tokens and time |
+| `nimctl proxy` | Anthropic-format round-trip through the proxy for all slots (what Claude Code sees) |
 | `nimctl code [args]` | Launch Claude Code against the proxy (`claude` args pass through) |
 | `nimctl chat` | Start chat if needed and open it in the browser |
 | `nimctl doctor` | Diagnose tools, key, network, ports, models – offers to fix |
@@ -128,6 +129,7 @@ All optional, via environment variables:
 | `NIMCTL_PROBE_TIMEOUT` | `45` | Seconds a model may take to answer a probe |
 | `NIMCTL_HOME` | `~/.nimctl` | Data directory |
 | `NIMCTL_API_BASE` | NVIDIA endpoint | Point at a self-hosted NIM container instead |
+| `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
 
 Autostart at login: dashboard → `i` → `3` (creates `systemd --user` units `nimctl-proxy` and `nimctl-chat`).
 
@@ -160,7 +162,7 @@ Less reliable: long tool chains, multi-file rewrites, extended thinking. Keep `c
 ## Development
 
 ```bash
-git clone https://github.com/phish3144/nimctl && cd nimctl
+git clone https://github.com/YOUR-GITHUB-USER/nimctl && cd nimctl
 shellcheck -S warning nimctl install.sh tests/run.sh
 bash tests/run.sh          # offline: mock API + fake services, ~1 min
 ```
@@ -174,7 +176,7 @@ The test suite simulates a valid/invalid key, a listed-but-dead model, a 40-seco
 `nimctl` richtet in einem Durchlauf alles ein, um NVIDIAs kostenlose NIM-Modelle mit **Claude Code** und einem **lokalen Browser-Chat** zu nutzen: Key prüfen, Werkzeuge installieren, funktionierende Modelle automatisch finden und nach Antwortzeit auswählen, Dienste starten.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/YOUR-GITHUB-USER/nimctl/main/install.sh | bash
 ```
 
 Danach: `nimctl` (Dashboard), `nimctl code` (Claude Code im Projektordner), `nimctl chat` (Browser). Bei Problemen: `nimctl doctor`. Die Oberfläche ist auf Deutsch, wenn `$LANG` deutsch ist, sonst `NIMCTL_LANG=de nimctl`.

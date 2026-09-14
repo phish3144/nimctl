@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# nimctl installer – https://github.com/phish3144/nimctl
-#   curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash
+# nimctl installer – https://github.com/YOUR-GITHUB-USER/nimctl
+#   curl -fsSL https://raw.githubusercontent.com/YOUR-GITHUB-USER/nimctl/main/install.sh | bash
 set -euo pipefail
-REPO="${NIMCTL_REPO:-phish3144/nimctl}"
+REPO="${NIMCTL_REPO:-YOUR-GITHUB-USER/nimctl}"
 BIN="$HOME/.local/bin"; mkdir -p "$BIN"
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/nimctl" ]]; then
   cp "$(dirname "${BASH_SOURCE[0]}")/nimctl" "$BIN/nimctl"            # local clone
