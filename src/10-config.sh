@@ -15,22 +15,23 @@ gen_secret() { if has openssl; then openssl rand -hex 24; else od -An -N24 -tx1 
 load_conf() {
   mkdir -p "$NIM_DIR" "$LOG_DIR" "$PID_DIR"; chmod 700 "$NIM_DIR" 2>/dev/null; touch "$PROBES"
   NVIDIA_API_KEY="${NVIDIA_API_KEY:-${NIMCTL_API_KEY:-}}"
-  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""
+  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0
   KEY_STATE="unknown"; KEY_TIME=0; KEY_SET_AT=0
   local envkey="$NVIDIA_API_KEY"
-  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS
+  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE
   [[ -n "$envkey" ]] && NVIDIA_API_KEY="$envkey"           # an explicit environment key wins over the file
   read_kv "$STATE" KEY_STATE KEY_TIME KEY_SET_AT
   [[ "$NVIDIA_API_KEY" =~ $RE_KEY ]] || NVIDIA_API_KEY=""
   local s v; for s in "${SLOTS[@]}"; do v="MODEL_${s^^}"; valid_model "${!v}" || printf -v "$v" '%s' ""; done
   [[ "$KEY_TIME" =~ ^[0-9]+$ ]] || KEY_TIME=0; [[ "$KEY_SET_AT" =~ ^[0-9]+$ ]] || KEY_SET_AT=0
+  [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
   [[ "$MASTER_KEY" =~ ^[A-Za-z0-9_-]{16,}$ ]] || { MASTER_KEY="sk-nimctl-$(gen_secret)"; [[ -f "$CONF" ]] && save_conf; }
   export NVIDIA_API_KEY; write_hdr
 }
 save_conf() {
   local e="" m; for m in $EXTRA_MODELS; do valid_model "$m" && e+="$m "; done; EXTRA_MODELS="${e% }"
-  printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\n' \
-    "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" >"$CONF.tmp"
+  printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\n' \
+    "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" >"$CONF.tmp"
   chmod 600 "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
 }
 save_state() { printf 'KEY_STATE=%s\nKEY_TIME=%s\nKEY_SET_AT=%s\n' "$KEY_STATE" "$KEY_TIME" "$KEY_SET_AT" >"$STATE"; }

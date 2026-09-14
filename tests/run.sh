@@ -4,7 +4,7 @@
 set -u
 exec </dev/null                          # no test may block on the runner's stdin; tests pipe their own input
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$HERE")
-TMP=$(mktemp -d); trap 'kill $MOCK $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP)" 2>/dev/null; rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'kill $MOCK $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP|$IPT)" 2>/dev/null; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/update"
 cat >"$TMP/fake_server.py" <<'X'
 import json, sys
@@ -18,6 +18,14 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"content": [{"type": "text", "text": "hi from " + body.get("model", "?")}]}).encode())
 ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 X
+# Fake code-server: --install-extension just logs; serving reads bind-addr from --config and runs the fake server on that port.
+cat >"$TMP/bin/code-server" <<X
+#!/usr/bin/env bash
+CFG=""; while [[ \$# -gt 0 ]]; do case \$1 in --install-extension) echo "fake code-server install \$2"; exit 0;; --config) CFG=\$2; shift;; esac; shift; done
+[[ -n "\${FAKE_CS_FAIL:-}" ]] && { echo "fake code-server: refusing to start"; exit 1; }
+A=\$(grep '^bind-addr:' "\$CFG" | awk '{print \$2}'); P=\${A##*:}; echo "fake code-server on \$A"
+python3 "$TMP/fake_server.py" "\$P" & C=\$!; trap 'kill \$C 2>/dev/null; exit 0' TERM INT; wait \$C
+X
 # Fake litellm / open-webui: keep the wrapper alive (its command line is what nimctl identifies) and forward TERM.
 for b in litellm open-webui; do cat >"$TMP/bin/$b" <<X
 #!/usr/bin/env bash
@@ -30,8 +38,8 @@ printf '#!/usr/bin/env bash\necho "fake claude BASE=$ANTHROPIC_BASE_URL MODEL=$A
 printf '#!/usr/bin/env bash\necho "fake uv $*"\n' >"$TMP/bin/uv"
 chmod +x "$TMP/bin/"*
 # Ports are derived from the runner's pid so several suites can run at the same time (parallel CI jobs, worktrees).
-PP=$(( 20000 + ($$ % 2000) * 4 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 ))   # proxy, chat, mock API, update server
-export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE="http://127.0.0.1:$MP/v1" NIMCTL_PROXY_PORT=$PP NIMCTL_CHAT_PORT=$CP
+PP=$(( 20000 + ($$ % 2000) * 5 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 )); IPT=$(( PP + 4 ))   # proxy, chat, mock API, update server, IDE
+export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE="http://127.0.0.1:$MP/v1" NIMCTL_PROXY_PORT=$PP NIMCTL_CHAT_PORT=$CP NIMCTL_IDE_PORT=$IPT
 export TERM=dumb NIMCTL_PROBE_TIMEOUT=3 NIMCTL_LANG=de HOME="$TMP" NIMCTL_INTERACTIVE=1 LC_ALL=C.UTF-8 NIMCTL_UPDATE_URL="http://127.0.0.1:$UP"
 unset NVIDIA_API_KEY NIMCTL_API_KEY NIMCTL_YES NO_COLOR DISPLAY WAYLAND_DISPLAY
 python3 "$HERE/mock_api.py" "$MP" & MOCK=$!

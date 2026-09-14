@@ -35,7 +35,8 @@ render_dashboard() {
   key_line >"$TMP_ROOT/keyline"; printf "  %-8s %s %s\n" "$(t key)" "$KEY_FLAG" "$(cat "$TMP_ROOT/keyline")"
   printf "  %-8s %s\n" "$(t proxy)" "$(svc_row proxy)"
   printf "  %-8s %s%s\n" "$(t chat)" "$(svc_row chat)" "$([[ "${NIMCTL_CHAT_VIA_PROXY:-0}" == 1 ]] && printf ' %s(%s)%s' "$D" "$(t chat_via_proxy)" "$R")"
-  local tl="" x; for x in litellm open-webui claude uv; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
+  { [[ "$IDE_ENABLED" == 1 ]] || has code-server; } && printf "  %-8s %s\n" "$(t ide)" "$(svc_row ide)"
+  local tl="" x; for x in litellm open-webui claude uv code-server; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
   printf "  %-8s %s\n" "$(t tools)" "$tl"
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
   sect "$(t models)"
