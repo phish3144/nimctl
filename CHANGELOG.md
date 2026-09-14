@@ -3,7 +3,78 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.1.0] – 2026-09-14
+
+### Added
+- **New dashboard**: single-key navigation (no Enter), grouped key bar, a "last action" panel that keeps the result
+  of the previous action on screen, notices (configuration changed → restart, key expiry, failed systemd units),
+  `?` for in-dashboard help, four model slots, probe age per slot, automatic re-probe when the last probe is older than
+  `NIMCTL_REPROBE_HOURS` (6). Width-aware layout, distinct glyphs (`✓ ✗ ! ·`) that stay readable without colour,
+  ASCII fallback without UTF-8, `NO_COLOR` honoured.
+- **Tool-calling probe**: models for the `code` and `review` slots must answer a function-calling request; models
+  that only answer in prose are skipped (Claude Code cannot work with them). `find`, `check` and the dashboard show it.
+- **`review` slot** (big, slow model) for `nimctl code --model review`; candidates and selection like the other slots.
+- `nimctl code --model <slot|id>`, `--think` (re-enables extended thinking), `.nimctl` project profiles
+  (`MODEL=`, `THINK=`, `MAX_OUTPUT_TOKENS=`), a warning when started in `$HOME`. Every model that answered a probe is
+  reachable through the proxy by its own id, so switching models needs no restart.
+- `nimctl env`: export lines for other tools (`eval "$(nimctl env)"` → Aider, Continue, Zed, OpenAI SDK).
+- `nimctl stats`: requests, status classes, rate limits and fallbacks from the proxy log; one summary line in the dashboard.
+- `nimctl bench`: time to first token, tokens/s and tool-calling per model from a streamed request.
+- `nimctl chat users | passwd [email] | reset`: manage Open WebUI accounts from the CLI, including resetting the
+  admin password or wiping all accounts so the next signup becomes admin. Dashboard key `n`.
+- `nimctl watch`: probes the slots, replaces dead models, restarts the proxy, logs and notifies; `nimctl install` can
+  install an hourly `systemd --user` timer for it.
+- `nimctl completion bash|zsh`, installable from the install menu.
+- `nimctl status --json` and documented exit codes (0 ok, 1 key, 2 proxy down, 3 prerequisite, 4 dead model);
+  `nimctl doctor --fix`; `nimctl setup --yes` with `NIMCTL_API_KEY` for unattended setups; `nimctl key <key>`;
+  `nimctl pick <slot> [search]`; `nimctl auto [slot…]`; `nimctl logs [proxy|chat|watch] [-f]`; `nimctl models`;
+  `nimctl help <command>`; `--lang de|en`.
+- Key expiry warning (NVIDIA keys last ~6 months; the date of entry is recorded).
+- `nimctl update` compares versions, shows the changelog excerpt, verifies `SHA256SUMS`, keeps a `.bak`; `--check`.
+- Candidate lists can be overridden with `NIMCTL_CAND_<SLOT>` or `~/.nimctl/candidates`.
+- `NIMCTL_CHAT_VIA_PROXY=1` routes Open WebUI through the LiteLLM proxy (retries, fallbacks, curated model list).
+- Optional `NIMCTL_RPM` per-deployment rate limit in the generated LiteLLM config.
+- Package-manager detection (apt, dnf, pacman, apk, brew) and browser detection (xdg-open, WSL, macOS).
+- Test suite restructured into `tests/cases/`, mock API with tool calls and streaming, tests for config injection,
+  stale pid files, foreign listeners, headless setup, self-update, installer and every fixed bug below.
+
+### Changed
+- Sources now live in `src/*.sh`; `build.sh` produces the single-file `nimctl` and `SHA256SUMS` (both committed).
+  CI fails on a stale build, a missing changelog entry for `VERSION`, or a placeholder URL.
+- Minimum bash version is 4.4.
+- The date in the banner is ISO (`YYYY-MM-DD`), the masked key shows its last four characters.
+- The dashboard restart question requires an explicit yes; unattended runs never restart or install anything
+  unless `--yes` / `NIMCTL_YES=1` is given.
+- The default UI language is English; German only when `LANG`/`NIMCTL_LANG` starts with `de`.
+
+### Fixed
+- Repository URL placeholders (`YOUR-GITHUB-USER`) that broke `nimctl update`, the install one-liner and the CI badge.
+- The wizard spun at 100 % CPU when stdin was closed (containers, CI, `curl | bash` without a terminal).
+- `Ctrl+C` in the log view ended nimctl instead of returning to the dashboard.
+- Read-only commands (`status`, `check`, …) could start `sudo apt-get` when `jq` was missing.
+- `nimctl auto` from the command line left a running proxy on the previous models without any hint.
+- `nimctl test` measured latency in whole seconds and, on failure, fired a second request whose success could be
+  stored as the error text "ok 123".
+- Browser opening on WSL2 and macOS.
+- Re-entering the same API key no longer wipes the probe cache; invalid menu input is reported instead of ignored;
+  unconfigured slots are reported instead of probing a model named "x"; doctor summarises the issues before asking.
+- The catalog cache is used when a refresh fails instead of aborting model selection.
+- systemd units start with the same checks as `nimctl start` and have a restart limit; restarts of systemd-managed
+  services stay under systemd.
+
+### Security
+- The LiteLLM master key is generated per installation (was the same public string everywhere); proxy and chat
+  bind to `127.0.0.1` (`NIMCTL_BIND` to change).
+- The API key is passed to curl through a private config file, never on the command line.
+- `~/.nimctl/config` is parsed, not sourced; model ids from the catalog are validated before they reach the config,
+  the LiteLLM YAML or the probe file. The data directory is `chmod 700`, the generated YAML `600`.
+- Processes are identified before they are signalled; stale pid files are discarded; foreign listeners on the ports
+  are reported, never killed.
+- Self-update verifies the download against `SHA256SUMS`.
+
 ## [1.0.6] – 2026-09-14
+
+(1.0.7 and 1.0.8 were internal builds without a changelog entry.)
 
 ### Fixed
 - `400 Unsupported parameter(s): prompt_cache_key` from NVIDIA: LiteLLM adds OpenAI-only parameters while
