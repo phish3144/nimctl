@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.2.0] – 2026-09-14
+
+### Added
+- **Browser IDE**: `nimctl ide` installs code-server (VS Code in the browser, standalone into `~/.local`) with the
+  Continue extension from Open VSX, writes `~/.continue/config.yaml` with the `code`, `fast` and `review` slots on the
+  proxy, generates a password, binds to `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) and opens the browser. `nimctl ide
+  password [--reset]`, `nimctl ide config [--force]` (a foreign Continue config is never overwritten without
+  `--force`), `nimctl ide autocomplete on|off` (off by default: autocomplete would burn the free tier's requests per
+  minute), `nimctl ide install`, `nimctl ide start|stop`. Dashboard key `v`, IDE row, `status --json` block, third
+  systemd unit `nimctl-ide`, `nimctl start|stop|restart` include the IDE once it is enabled. The wizard offers it.
+- `NIMCTL_IDE_EXTENSIONS` installs additional Open VSX extensions (e.g. `RooVeterinaryInc.roo-cline`),
+  `NIMCTL_IDE_CONTEXT` sets the context length Continue assumes for the models.
+
 ## [1.1.0] – 2026-09-14
 
 ### Added

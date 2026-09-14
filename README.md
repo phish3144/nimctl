@@ -1,6 +1,6 @@
 # nimctl
 
-**Claude Code and a private chat UI on free, frontier-class open models. One command to set up; a watchdog keeps it running as the model catalog changes.**
+**Claude Code, a browser IDE and a private chat UI on free, frontier-class open models. One command to set up; a watchdog keeps it running as the model catalog changes.**
 
 [![CI](https://github.com/phish3144/nimctl/actions/workflows/ci.yml/badge.svg)](https://github.com/phish3144/nimctl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -11,25 +11,27 @@
 
 NVIDIA hosts 100+ open models on its [NIM API](https://build.nvidia.com) – DeepSeek V4, Nemotron 3, Kimi K3, GLM 5,
 Llama 4 – with a free tier: no credit card, no token quota, rate-limited per model. `nimctl` turns that free tier into
-a working **Claude Code backend** and a **local chat with document upload** in a few minutes, then keeps both
-running while the catalog changes underneath.
+a working **Claude Code backend**, **VS Code in the browser with an AI assistant** and a **local chat with document
+upload** in a few minutes, then keeps them running while the catalog changes underneath.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash
 ```
 
-Then `nimctl code` inside a project, `nimctl chat` for the browser, `nimctl` for the dashboard. That is the whole workflow.
+Then `nimctl code` inside a project, `nimctl ide` for VS Code in the browser, `nimctl chat` for the chat, `nimctl` for the
+dashboard. That is the whole workflow.
 
 ### The dashboard
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.1.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.2.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
   Chat     ✓ up     :3000  systemd
-  Tools    ✓ litellm  ✓ open-webui  ✓ claude  ✓ uv
+  IDE      ✓ up     :8080  nimctl · pid 41377
+  Tools    ✓ litellm  ✓ open-webui  ✓ claude  ✓ uv  ✓ code-server
   Today    since 09:14 · 212 requests · 3× 429 · 9 fallbacks
 
 Models
@@ -47,7 +49,7 @@ Models
 ────────────────────────────────────────────────────────────────────────────────────
   Services s Start  x Stop  r Restart
   Models   a Auto  p Probe  1-4 pick slot  f Find  t Test  b Bench
-  Use      c Claude Code  w Chat  e Env  g Stats  n Accounts
+  Use      c Claude Code  w Chat  e Env  g Stats  n Accounts  v IDE
   System   k Key  d Doctor  i Install  l Logs  u Update  ? Help  q Quit
   ›
 ```
@@ -61,6 +63,9 @@ everything is also a command for scripts. Colours are optional: the glyphs `✓ 
 - **Claude Code on free models.** `nimctl code` launches Claude Code against a local proxy. Before you type a prompt,
   the model has answered a real request and a real tool call, so "there's an issue with the selected model" becomes a
   readable error instead of a mystery.
+- **VS Code in the browser.** `nimctl ide` installs code-server with the Continue extension, preconfigured with the
+  `code`, `fast` and `review` models on the proxy: chat, inline edits and agent mode in a full IDE on `localhost:8080`,
+  password-protected, no desktop VS Code needed.
 - **A private chat UI.** Open WebUI on `localhost:3000` with document upload, pointed at the same models. Lost the admin
   password? `nimctl chat passwd`.
 - **Models that keep working.** The catalog lists models that do not answer for every account, get renamed, or vanish
@@ -94,7 +99,7 @@ models that still answer. The detail behind the bullets above:
 | Problem with doing it by hand | What nimctl does |
 |---|---|
 | Model IDs change (`deepseek-v4-pro` → `deepseek-v4-pro-0813`) | Selection uses **patterns matched against the live catalog**, not hard-coded IDs |
-| Claude Code speaks the Anthropic API, NIM speaks OpenAI | A local **LiteLLM proxy** is configured, started and supervised for you; other tools use it via `nimctl env` |
+| Claude Code speaks the Anthropic API, NIM speaks OpenAI | A local **LiteLLM proxy** is configured, started and supervised for you; the browser IDE and other tools (`nimctl env`) use the same proxy |
 | New flagship models (kimi-k3, nemotron-3-ultra) can take 60 s+ per reply on the free tier | `bench` measures time to first token and tokens/s; the `review` slot keeps the slow giant for when it is worth it |
 | Five tools, three config files, env vars in the right places | **One wizard**, one dashboard, one config directory (`~/.nimctl`) |
 | "Is it the key, the model, the proxy or the port?" | `nimctl doctor` **diagnoses and repairs**, `nimctl stats` shows what the proxy is doing |
@@ -112,9 +117,10 @@ The wizard then walks through five steps:
 
 1. **API key** – paste it (input hidden); it is validated against NVIDIA immediately. No key yet? The wizard opens
    <https://build.nvidia.com/settings/api-keys>. Free account, no credit card, SMS verification.
-2. **Tools** – installs what is missing: `uv`, `litellm`, `open-webui`, `claude` (Claude Code). 2–5 minutes.
+2. **Tools** – installs what is missing: `uv`, `litellm`, `open-webui`, `claude` (Claude Code), and offers the browser IDE
+   (`code-server` + Continue, ~150 MB). 2–5 minutes.
 3. **Models** – probes all candidates in parallel, checks tool calling for the code models, picks per slot.
-4. **Services** – starts the proxy and the chat, and offers the hourly watchdog timer (`systemd --user`).
+4. **Services** – starts the proxy, the chat and the IDE, and offers the hourly watchdog timer (`systemd --user`).
 5. **Done** – prints what to type next.
 
 Unattended: `NIMCTL_API_KEY=nvapi-… nimctl setup --yes`.
@@ -124,6 +130,7 @@ From then on:
 ```bash
 nimctl            # dashboard
 nimctl code       # Claude Code on NIM, run inside a project folder
+nimctl ide        # VS Code in the browser, http://localhost:8080
 nimctl chat       # opens http://localhost:3000
 ```
 
@@ -133,7 +140,7 @@ nimctl chat       # opens http://localhost:3000
 |---|---|
 | `nimctl` | Dashboard (runs the wizard on first start) |
 | `nimctl setup [--yes]` | Re-run the wizard; `--yes` answers every question with its safe default |
-| `nimctl start` | Start the proxy (LiteLLM, :4000) and the chat (Open WebUI, :3000) |
+| `nimctl start` | Start the proxy (LiteLLM, :4000), the chat (Open WebUI, :3000) and, once enabled, the IDE (code-server, :8080) |
 | `nimctl stop` / `nimctl restart` | Stop or restart both services (systemd-managed services stay under systemd) |
 | `nimctl status [--json]` | Dashboard once, non-interactive; JSON for scripts; exit code reflects the state |
 | `nimctl check` | Probe the configured models with a real request (tool calls for `code`/`review`) |
@@ -147,6 +154,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl chat` | Start chat if needed and open it in the browser |
 | `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin |
 | `nimctl accounts` | The same three account actions as an interactive menu (dashboard key `n`) |
+| `nimctl ide` | Start the browser IDE if needed and open it; `install`, `start`, `stop`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -212,6 +220,27 @@ to `fast`; `nimctl stats` and the dashboard show how often that happens.
 Other tools: `eval "$(nimctl env)"` exports `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_BASE_URL`,
 `OPENAI_API_KEY` and the model names, so Aider, Continue, Zed or your own scripts use the same proxy.
 
+## Browser IDE
+
+```bash
+nimctl ide                     # installs on first use (asks), starts code-server, opens http://localhost:8080
+nimctl ide password            # the login password (generated per installation, stored in ~/.nimctl/config)
+nimctl ide autocomplete on     # inline completions from the fast model – off by default, see below
+```
+
+What you get is VS Code in the browser (code-server, installed standalone into `~/.local`) with the
+[Continue](https://continue.dev) extension from Open VSX. nimctl writes Continue's `~/.continue/config.yaml` with the
+`code` model for chat, edit and agent mode, the `fast` model for quick questions and the `review` model when one is
+configured, all through the local proxy, so a model change in the dashboard reaches the IDE without any clicking.
+A Continue config that nimctl did not write is left alone (`nimctl ide config --force` overwrites it).
+
+Autocomplete is off by default on purpose: inline completions fire on almost every keystroke, and the free tier allows
+roughly 40 requests per minute per model. Switch it on when you want it and keep an eye on `nimctl stats`.
+
+The IDE listens on `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) with password login; `nimctl start`, `stop`, `restart` and the
+systemd units include it once it is enabled. More extensions: `NIMCTL_IDE_EXTENSIONS="RooVeterinaryInc.roo-cline"
+nimctl ide install`.
+
 ## Chat accounts
 
 Open WebUI keeps its own accounts. The first account registered at <http://localhost:3000> becomes admin. If you lose
@@ -231,6 +260,7 @@ nimctl chat reset                  # wipe all accounts; the next signup becomes 
 
 ```
  nimctl code ──► Claude Code ──(Anthropic API)──► LiteLLM proxy 127.0.0.1:4000 ──(OpenAI API)──► integrate.api.nvidia.com
+ nimctl ide  ──► code-server 127.0.0.1:8080 + Continue ──(OpenAI API)──► LiteLLM proxy ─────────────────────► integrate.api.nvidia.com
  nimctl chat ──► Open WebUI 127.0.0.1:3000 ───────────────────────────────────────(OpenAI API)──► integrate.api.nvidia.com
                                           (NIMCTL_CHAT_VIA_PROXY=1: through the proxy instead)
 ```
@@ -238,14 +268,16 @@ nimctl chat reset                  # wipe all accounts; the next signup becomes 
 Everything lives in `~/.nimctl` (mode 700):
 
 ```
-config          API key, chosen models, extra models added via --model, proxy master key (chmod 600)
+config          API key, chosen models, extra models added via --model, proxy master key, IDE password (chmod 600)
 state           key state (ok/invalid/offline/none), time of the last check, date the key was entered
 litellm.yaml    generated proxy config – do not edit, use the dashboard
 probes          last probe result per model (ok/error, latency, time, tool calling)
 bench           bench results
 models.cache    catalog snapshot (refreshed hourly, used as fallback when NVIDIA is unreachable)
 candidates      optional: your own candidate patterns per slot
-logs/           litellm.log, open-webui.log, watch.log
+code-server.yaml  generated code-server config (bind address, password)
+ide-data/       code-server user data and extensions (Continue's own config lives in ~/.continue/config.yaml)
+logs/           litellm.log, open-webui.log, code-server.log, watch.log
 run/            pid files and start times
 webui-data/     chat history, uploaded documents, users
 .lock           internal write lock for the probe and bench files
@@ -266,6 +298,9 @@ All optional, via environment variables:
 | `NIMCTL_LANG` | from `$LANG` (`de` → German, everything else English) | UI language (`--lang` per call) |
 | `NIMCTL_PROXY_PORT` | `4000` | LiteLLM port |
 | `NIMCTL_CHAT_PORT` | `3000` | Open WebUI port |
+| `NIMCTL_IDE_PORT` | `8080` | code-server port |
+| `NIMCTL_IDE_EXTENSIONS` | | Extra Open VSX extensions `nimctl ide install` adds next to Continue |
+| `NIMCTL_IDE_CONTEXT` | `32768` | Context length Continue assumes for the models |
 | `NIMCTL_BIND` | `127.0.0.1` | Address the services listen on |
 | `NIMCTL_PROBE_TIMEOUT` | `45` | Seconds a model may take to answer a probe |
 | `NIMCTL_REPROBE_HOURS` | `6` | Dashboard re-probes slots whose last probe is older |
@@ -296,7 +331,7 @@ and `nimctl-chat`; the dashboard and `nimctl restart` keep them under systemd. T
 |---|---|
 | Shell | bash ≥ 4.4 (the script refuses older versions with a clear message) |
 | Tools | `curl`, `jq`, `awk`; optional: `ss`/`lsof` (port owner), `flock`, `notify-send`, `systemctl` |
-| Installed by the wizard | `uv`, `litellm[proxy]`, `open-webui` (Python 3.11 via uv), `@anthropic-ai/claude-code` (needs `npm`) |
+| Installed by the wizard | `uv`, `litellm[proxy]`, `open-webui` (Python 3.11 via uv), `@anthropic-ai/claude-code` (needs `npm`), optionally `code-server` + Continue |
 | Tested | Ubuntu 24.04 (CI runs the full suite on every push and pull request) |
 | Expected to work | Debian, Fedora, Arch, Alpine, WSL2 (package managers `apt`, `dnf`, `pacman`, `apk`; browser via `wslview`/`explorer.exe`) |
 | Untested | macOS with `brew install bash jq` (all GNU-only calls have BSD fallbacks; autostart needs systemd and is Linux-only) |
@@ -309,6 +344,7 @@ Nothing else runs at install time: the script is one file you can read before pi
 nimctl stop                                   # stop proxy and chat
 nimctl install                                # → 4 removes the systemd units and the watchdog timer, if you enabled them
 rm -rf ~/.nimctl ~/.local/bin/nimctl          # config, logs, chat data (chats and uploads live in ~/.nimctl/webui-data)
+rm -rf ~/.local/lib/code-server-* ~/.local/bin/code-server ~/.continue   # the browser IDE, if you enabled it
 uv tool uninstall litellm open-webui          # the tools the wizard installed, if you no longer need them
 npm uninstall -g @anthropic-ai/claude-code    # only if nimctl installed it for you
 ```
@@ -377,7 +413,7 @@ curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | 
 ```
 
 Danach: `nimctl` (Dashboard, eine Taste pro Aktion, `?` erklärt alles), `nimctl code` (Claude Code im Projektordner),
-`nimctl chat` (Browser), `nimctl chat passwd` (Chat-Admin-Passwort zurücksetzen), `nimctl bench` (Modelle
+`nimctl ide` (VS Code im Browser mit Continue auf denselben Modellen), `nimctl chat` (Browser-Chat), `nimctl chat passwd` (Chat-Admin-Passwort zurücksetzen), `nimctl bench` (Modelle
 vergleichen), `nimctl stats` (was der Proxy tut). Bei Problemen: `nimctl doctor`. Die Oberfläche ist auf Deutsch,
 wenn `$LANG` deutsch ist, sonst `NIMCTL_LANG=de nimctl` oder `nimctl --lang=de`.
 

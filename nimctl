@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.1.0"
+VERSION="1.2.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -18,7 +18,7 @@ CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"
 LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"
 MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; LOCK_FILE="$NIM_DIR/.lock"
 API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
-PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"
+PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"; IDE_PORT="${NIMCTL_IDE_PORT:-8080}"
 BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here only (LiteLLM would default to 0.0.0.0)
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this
@@ -180,22 +180,23 @@ gen_secret() { if has openssl; then openssl rand -hex 24; else od -An -N24 -tx1 
 load_conf() {
   mkdir -p "$NIM_DIR" "$LOG_DIR" "$PID_DIR"; chmod 700 "$NIM_DIR" 2>/dev/null; touch "$PROBES"
   NVIDIA_API_KEY="${NVIDIA_API_KEY:-${NIMCTL_API_KEY:-}}"
-  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""
+  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0
   KEY_STATE="unknown"; KEY_TIME=0; KEY_SET_AT=0
   local envkey="$NVIDIA_API_KEY"
-  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS
+  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE
   [[ -n "$envkey" ]] && NVIDIA_API_KEY="$envkey"           # an explicit environment key wins over the file
   read_kv "$STATE" KEY_STATE KEY_TIME KEY_SET_AT
   [[ "$NVIDIA_API_KEY" =~ $RE_KEY ]] || NVIDIA_API_KEY=""
   local s v; for s in "${SLOTS[@]}"; do v="MODEL_${s^^}"; valid_model "${!v}" || printf -v "$v" '%s' ""; done
   [[ "$KEY_TIME" =~ ^[0-9]+$ ]] || KEY_TIME=0; [[ "$KEY_SET_AT" =~ ^[0-9]+$ ]] || KEY_SET_AT=0
+  [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
   [[ "$MASTER_KEY" =~ ^[A-Za-z0-9_-]{16,}$ ]] || { MASTER_KEY="sk-nimctl-$(gen_secret)"; [[ -f "$CONF" ]] && save_conf; }
   export NVIDIA_API_KEY; write_hdr
 }
 save_conf() {
   local e="" m; for m in $EXTRA_MODELS; do valid_model "$m" && e+="$m "; done; EXTRA_MODELS="${e% }"
-  printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\n' \
-    "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" >"$CONF.tmp"
+  printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\n' \
+    "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" >"$CONF.tmp"
   chmod 600 "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
 }
 save_state() { printf 'KEY_STATE=%s\nKEY_TIME=%s\nKEY_SET_AT=%s\n' "$KEY_STATE" "$KEY_TIME" "$KEY_SET_AT" >"$STATE"; }
@@ -433,7 +434,7 @@ yaml_has_model() { grep -qE "^  - model_name: $(printf '%s' "$1" | sed 's/[][\.*
 # ══════ 30-services.sh ══════
 # ── Services: LiteLLM proxy and Open WebUI ───────────────────────────────────
 T_de+=(
-  [proxy]="Proxy" [chat]="Chat" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
   [svc_already]="%s läuft bereits" [svc_missing]="%s fehlt → nimctl install" [svc_nokey]="kein API-Key → nimctl key" [svc_nomodel]="kein Modell gewählt → nimctl auto"
   [svc_up]="%s läuft  http://localhost:%s" [svc_fail]="%s startet nicht → nimctl logs %s" [svc_died]="%s ist direkt nach dem Start beendet worden → nimctl logs %s"
   [svc_stopped]="%s gestoppt" [svc_foreign]="Port %s ist belegt von %s – nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
@@ -444,7 +445,7 @@ T_de+=(
   [unit_failed]="systemd-Unit %s ist im Zustand failed → journalctl --user -u %s"
 )
 T_en+=(
-  [proxy]="Proxy" [chat]="Chat" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
   [svc_already]="%s already running" [svc_missing]="%s missing → nimctl install" [svc_nokey]="no API key → nimctl key" [svc_nomodel]="no model selected → nimctl auto"
   [svc_up]="%s up  http://localhost:%s" [svc_fail]="%s failed to start → nimctl logs %s" [svc_died]="%s exited right after starting → nimctl logs %s"
   [svc_stopped]="%s stopped" [svc_foreign]="port %s is taken by %s – not started by nimctl" [svc_wasdown]="%s was not running"
@@ -454,8 +455,9 @@ T_en+=(
   [inst_sysd]="autostart enabled (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="autostart removed" [inst_fail]="%s failed" [no_systemd]="systemd not available – autostart only on Linux with systemd"
   [unit_failed]="systemd unit %s is in state failed → journalctl --user -u %s"
 )
-svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; esac; }
-svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; esac; }
+svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; ide) echo code-server;; esac; }
+svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; ide) echo "$IDE_PORT";; esac; }
+svc_envvar() { case "$1" in proxy) echo NIMCTL_PROXY_PORT;; chat) echo NIMCTL_CHAT_PORT;; ide) echo NIMCTL_IDE_PORT;; esac; }
 svc_label(){ t "$1"; }
 proc_is() { # proc_is <pid> <name> → the process exists and its command line mentions <name>
   [[ "${1:-}" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null || return 1
@@ -485,7 +487,7 @@ wait_port() { # wait_port <port> <seconds> [pid] → 0 up, 1 timeout, 2 process 
     (( INTERACTIVE )) && printf "\r  %s %s " "${sp:i%4:1}" "$(tf waiting "$1" "$((i/2))")"; sleep 0.5; ((i++))
   done; printf "\r%60s\r" ""; return 1
 }
-refuse_foreign() { bad "$(tf svc_foreign "$(svc_port "$1")" "${SVC_PID:-?}")"; info "$(tf port_hint "NIMCTL_$( [[ $1 == proxy ]] && echo PROXY || echo CHAT)_PORT" "$(( $(svc_port "$1") + 100 ))")"; }
+refuse_foreign() { bad "$(tf svc_foreign "$(svc_port "$1")" "${SVC_PID:-?}")"; info "$(tf port_hint "$(svc_envvar "$1")" "$(( $(svc_port "$1") + 100 ))")"; }
 _start_result() { # _start_result <svc> <pid>
   local rc; wait_port "$(svc_port "$1")" "$3" "$2"; rc=$?
   case $rc in 0) ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return 0;;
@@ -514,6 +516,16 @@ start_chat() {
   date +%s >"$PID_DIR/chat.started"
   _start_result chat "$(cat "$PID_DIR/chat.pid")" 150
 }
+start_ide() { # code-server with the Continue extension, configured by the ide module (src/52-ide.sh)
+  if svc_state ide; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign ide; return 1; }; info "$(tf svc_already "$(t ide)")"; return 0; fi
+  has code-server || { bad "$(tf svc_missing code-server)"; return 1; }
+  declare -F ide_write_config >/dev/null || return 1
+  [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }
+  ide_write_config || return 1
+  nohup code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry >"$LOG_DIR/code-server.log" 2>&1 &
+  echo $! >"$PID_DIR/ide.pid"; date +%s >"$PID_DIR/ide.started"
+  _start_result ide $! 60
+}
 stop_svc() {
   local s="$1"
   if ! svc_state "$s"; then info "$(tf svc_wasdown "$(svc_label "$s")")"; rm -f "$PID_DIR/$s.pid"; return 0; fi
@@ -524,13 +536,13 @@ stop_svc() {
     *)       warn "$(tf svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")";;
   esac
 }
-start_all() { local rc=0; start_proxy || rc=1; start_chat || rc=1; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; }
+start_all() { local rc=0; start_proxy || rc=1; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; return $rc; }
+stop_all()  { stop_svc proxy; stop_svc chat; { [[ "$IDE_ENABLED" == 1 ]] || svc_state ide; } && stop_svc ide; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
 }
-restart_all() { restart_svc proxy; restart_svc chat; }
+restart_all() { restart_svc proxy; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; return 0; }
 restart_if_running() { # after a config change; explicit yes only, because a Claude Code session may be attached
   svc_running proxy || svc_running chat || return 0
   (( INTERACTIVE )) || { info "$(t restart_hint)"; return 0; }
@@ -545,6 +557,9 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
            write_litellm_yaml; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
+    ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }
+           ide_write_config || exit 1; date +%s >"$PID_DIR/ide.started"
+           exec code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry;;
     *) exit 64;;
   esac
 }
@@ -552,13 +567,14 @@ unit_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; }
 inst_systemd() {
   has systemctl || { bad "$(t no_systemd)"; return 1; }
   local d n self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
-  for n in proxy chat; do printf '[Unit]\nDescription=nimctl %s\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\nRestartSec=10\nEnvironment=NIMCTL_HOME=%s\n\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" "$NIM_DIR" >"$d/nimctl-$n.service"; done
-  stop_svc proxy >/dev/null; stop_svc chat >/dev/null   # hand the ports over to the units
-  systemctl --user daemon-reload && systemctl --user enable --now nimctl-proxy nimctl-chat && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
+  local units=(proxy chat); [[ "$IDE_ENABLED" == 1 ]] && units+=(ide)
+  for n in "${units[@]}"; do printf '[Unit]\nDescription=nimctl %s\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\nRestartSec=10\nEnvironment=NIMCTL_HOME=%s\n\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" "$NIM_DIR" >"$d/nimctl-$n.service"; done
+  for n in "${units[@]}"; do stop_svc "$n" >/dev/null; done   # hand the ports over to the units
+  systemctl --user daemon-reload && systemctl --user enable --now "${units[@]/#/nimctl-}" && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
 }
 uninst_systemd() {
-  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-watch.timer 2>/dev/null
-  rm -f "$(unit_dir)"/nimctl-{proxy,chat}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
+  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-watch.timer 2>/dev/null
+  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
 }
 
 # ══════ 40-actions.sh ══════
@@ -1401,7 +1417,8 @@ render_dashboard() {
   key_line >"$TMP_ROOT/keyline"; printf "  %-8s %s %s\n" "$(t key)" "$KEY_FLAG" "$(cat "$TMP_ROOT/keyline")"
   printf "  %-8s %s\n" "$(t proxy)" "$(svc_row proxy)"
   printf "  %-8s %s%s\n" "$(t chat)" "$(svc_row chat)" "$([[ "${NIMCTL_CHAT_VIA_PROXY:-0}" == 1 ]] && printf ' %s(%s)%s' "$D" "$(t chat_via_proxy)" "$R")"
-  local tl="" x; for x in litellm open-webui claude uv; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
+  { [[ "$IDE_ENABLED" == 1 ]] || has code-server; } && printf "  %-8s %s\n" "$(t ide)" "$(svc_row ide)"
+  local tl="" x; for x in litellm open-webui claude uv code-server; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
   printf "  %-8s %s\n" "$(t tools)" "$tl"
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
   sect "$(t models)"
@@ -1471,6 +1488,84 @@ main_loop() {
   done
 }
 
+# ══════ 52-ide.sh ══════
+# ── Browser IDE: code-server (VS Code in the browser) with the Continue extension on the proxy ─────────────
+# Files: $NIM_DIR/code-server.yaml (bind address, password), $NIM_DIR/ide-data (user data, extensions),
+# ~/.continue/config.yaml (Continue's global config; written only when absent or generated by nimctl).
+T_de+=(
+  [k_v]="IDE" [h_ide]="VS Code im Browser (code-server + Continue) auf dem Proxy: nimctl ide [open|start|stop|password|config|autocomplete on|off|install]"
+  [ide_installing]="installiere code-server (~150 MB) … " [ide_ext]="installiere Extension %s … " [ide_enabled]="IDE aktiviert – nimctl start startet sie mit"
+  [ide_url]="IDE: http://localhost:%s  · Passwort: nimctl ide password" [ide_pw_reset]="neues IDE-Passwort gesetzt – Neustart: nimctl ide stop && nimctl ide"
+  [ide_cfg]="Continue-Konfiguration: %s" [ide_cfg_kept]="%s stammt nicht von nimctl – bleibt unverändert (nimctl ide config --force überschreibt)"
+  [ide_ac_on]="Autocomplete an (Modell fast) – Achtung: viele Anfragen pro Minute auf dem Free Tier" [ide_ac_off]="Autocomplete aus"
+  [ide_models]="Modelle in der IDE: code, fast%s – Continue liest die Konfiguration automatisch neu" [ide_no_proxy]="Proxy läuft nicht – die IDE braucht ihn"
+)
+T_en+=(
+  [k_v]="IDE" [h_ide]="VS Code in the browser (code-server + Continue) on the proxy: nimctl ide [open|start|stop|password|config|autocomplete on|off|install]"
+  [ide_installing]="installing code-server (~150 MB) … " [ide_ext]="installing extension %s … " [ide_enabled]="IDE enabled – nimctl start starts it too"
+  [ide_url]="IDE: http://localhost:%s  · password: nimctl ide password" [ide_pw_reset]="new IDE password set – restart: nimctl ide stop && nimctl ide"
+  [ide_cfg]="Continue configuration: %s" [ide_cfg_kept]="%s was not written by nimctl – left untouched (nimctl ide config --force overwrites)"
+  [ide_ac_on]="autocomplete on (fast model) – careful: many requests per minute on the free tier" [ide_ac_off]="autocomplete off"
+  [ide_models]="models in the IDE: code, fast%s – Continue reloads the configuration automatically" [ide_no_proxy]="proxy is not running – the IDE needs it"
+)
+IDE_MARK="# generated by nimctl"
+ide_continue_dir() { printf '%s' "${CONTINUE_GLOBAL_DIR:-$HOME/.continue}"; }
+ide_write_config() { # ide_write_config [--force] – code-server.yaml (always) and Continue's config.yaml (ours or absent)
+  mkdir -p "$NIM_DIR/ide-data/extensions"
+  printf 'bind-addr: %s:%s\nauth: password\npassword: %s\ncert: false\n' "$BIND" "$IDE_PORT" "$IDE_PASSWORD" >"$NIM_DIR/code-server.yaml.tmp"
+  chmod 600 "$NIM_DIR/code-server.yaml.tmp"; mv "$NIM_DIR/code-server.yaml.tmp" "$NIM_DIR/code-server.yaml"
+  local dir f base="http://127.0.0.1:$PROXY_PORT/v1"; dir=$(ide_continue_dir); f="$dir/config.yaml"; mkdir -p "$dir"
+  if [[ -f "$f" && "${1:-}" != --force ]] && ! grep -qF "$IDE_MARK" "$f"; then info "$(tf ide_cfg_kept "$f")"; return 0; fi
+  local ctx="${NIMCTL_IDE_CONTEXT:-32768}" more=""
+  {
+    printf '%s – rewritten on every `nimctl ide` start; remove this line to keep your own edits\nname: nimctl\nversion: 1.0.0\nschema: v1\nmodels:\n' "$IDE_MARK"
+    printf '  - name: "code · %s"\n    provider: openai\n    model: nim-code\n    apiBase: %s\n    apiKey: %s\n    roles: [chat, edit, apply]\n    capabilities: [tool_use]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 8192 }\n' "$MODEL_CODE" "$base" "$MASTER_KEY" "$ctx"
+    printf '  - name: "fast · %s"\n    provider: openai\n    model: nim-fast\n    apiBase: %s\n    apiKey: %s\n    roles: [chat]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 4096 }\n' "$MODEL_FAST" "$base" "$MASTER_KEY" "$ctx"
+    if [[ -n "$MODEL_REVIEW" ]]; then more=", review"
+      printf '  - name: "review · %s"\n    provider: openai\n    model: nim-review\n    apiBase: %s\n    apiKey: %s\n    roles: [chat]\n    capabilities: [tool_use]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 8192 }\n' "$MODEL_REVIEW" "$base" "$MASTER_KEY" "$ctx"; fi
+    if [[ "$IDE_AUTOCOMPLETE" == 1 ]]; then more+=", autocomplete"
+      printf '  - name: "autocomplete · %s"\n    provider: openai\n    model: nim-fast\n    apiBase: %s\n    apiKey: %s\n    roles: [autocomplete]\n    useLegacyCompletionsEndpoint: false\n    autocompleteOptions: { debounceDelay: 500, maxPromptTokens: 1024, onlyMyCode: true }\n' "$MODEL_FAST" "$base" "$MASTER_KEY"; fi
+    printf 'context:\n  - provider: code\n  - provider: currentFile\n  - provider: open\n  - provider: diff\n  - provider: terminal\n  - provider: problems\n  - provider: folder\n'
+  } >"$f.tmp"; chmod 600 "$f.tmp"; mv "$f.tmp" "$f"
+  info "$(tf ide_cfg "$f")"; info "$(tf ide_models "$more")"
+}
+inst_codeserver() { # standalone install into ~/.local plus the Continue extension (and NIMCTL_IDE_EXTENSIONS)
+  mkdir -p "$NIM_DIR/ide-data/extensions"
+  if ! has code-server; then
+    printf "  %s" "$(t ide_installing)"
+    if curl -fsSL https://code-server.dev/install.sh | sh -s -- --method=standalone --prefix="$HOME/.local" >"$LOG_DIR/code-server-install.log" 2>&1; then printf "%s\n" "$OK"; else printf "%s\n" "$NO"; bad "$(tf inst_fail code-server) → $LOG_DIR/code-server-install.log"; return 1; fi
+    if ! has code-server; then local b; b=$(ls -d "$HOME/.local/lib"/code-server-*/bin/code-server 2>/dev/null | tail -n1); [[ -n "$b" ]] && { mkdir -p "$HOME/.local/bin"; ln -sf "$b" "$HOME/.local/bin/code-server"; }; fi
+    has code-server || { bad "$(tf inst_fail code-server)"; return 1; }
+  fi
+  local ext; for ext in Continue.continue ${NIMCTL_IDE_EXTENSIONS:-}; do
+    printf "  %s" "$(tf ide_ext "$ext")"
+    if code-server --extensions-dir "$NIM_DIR/ide-data/extensions" --user-data-dir "$NIM_DIR/ide-data" --install-extension "$ext" >>"$LOG_DIR/code-server-install.log" 2>&1; then printf "%s\n" "$OK"; else printf "%s\n" "$NO"; warn "$(tf inst_fail "$ext") → $LOG_DIR/code-server-install.log"; fi
+  done
+  [[ -n "$IDE_PASSWORD" ]] || IDE_PASSWORD=$(gen_secret | head -c 24)
+  IDE_ENABLED=1; save_conf; ok "$(t ide_enabled)"
+}
+ide_ensure() { # installed, enabled, proxy up, code-server up
+  has code-server || { bad "$(tf svc_missing code-server)"; info "→ nimctl ide install"; return 1; }
+  [[ "$IDE_ENABLED" == 1 ]] || { IDE_ENABLED=1; save_conf; }
+  svc_running proxy || { info "$(t proxy_starting)"; start_proxy || { bad "$(t ide_no_proxy)"; return 1; }; }
+  svc_running ide || start_ide
+}
+cmd_ide() { # cmd_ide [open|start|stop|password [--reset]|config [--force]|autocomplete on|off|install]
+  local sub="${1:-open}"; (( $# )) && shift
+  case "$sub" in
+    install) inst_codeserver;;
+    open)    ide_ensure || return 1; ok "$(tf ide_url "$IDE_PORT")"; open_url "http://localhost:$IDE_PORT" || info "→ http://localhost:$IDE_PORT";;
+    start)   ide_ensure;;
+    stop)    stop_svc ide;;
+    password) if [[ "${1:-}" == --reset ]]; then IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; ide_write_config >/dev/null; ok "$(t ide_pw_reset)"; fi
+              [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }; printf '%s\n' "$IDE_PASSWORD";;
+    config)  [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }; ide_write_config "${1:-}";;
+    autocomplete) case "${1:-}" in on) IDE_AUTOCOMPLETE=1; save_conf; ide_write_config --force >/dev/null; warn "$(t ide_ac_on)";; off) IDE_AUTOCOMPLETE=0; save_conf; ide_write_config --force >/dev/null; ok "$(t ide_ac_off)";; *) bad "$(t invalid): ${1:-}"; return 64;; esac;;
+    *) bad "$(t unknown): $sub"; return 64;;
+  esac
+}
+dash_register v cmd_ide k_v use
+
 # ══════ 60-doctor.sh ══════
 # ── Doctor ────────────────────────────────────────────────────────────────────
 T_de+=(
@@ -1495,7 +1590,8 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   for x in litellm open-webui claude; do has "$x" && ok "$x $(command -v "$x")" || { bad "$x $(t inst_missing)"; doc_issue "tool:$x"; }; done
   local perm; perm=$(stat -c %a "$NIM_DIR" 2>/dev/null || stat -f %Lp "$NIM_DIR" 2>/dev/null || echo 700)
   [[ "$perm" == 700 ]] && ok "$(tf doc_perm_ok "$NIM_DIR")" || { warn "$(tf doc_perm "$NIM_DIR" "$perm")"; doc_issue perm; }
-  local s; for s in proxy chat; do
+  local s svcs=(proxy chat); [[ "$IDE_ENABLED" == 1 ]] && { svcs+=(ide); has code-server || { bad "code-server $(t inst_missing)"; doc_issue "tool:code-server"; }; }
+  for s in "${svcs[@]}"; do
     if svc_state "$s"; then case "$SVC_BY" in foreign) warn "$(tf doc_svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")"; doc_issue "port:$s";; *) ok "$s :$(svc_port "$s") ($(t "by_$SVC_BY"))";; esac
     else info "$s :$(svc_port "$s") $(t down)"; fi
     unit_failed "$s" && { warn "$(tf unit_failed "nimctl-$s" "nimctl-$s")"; doc_issue "unit:$s"; }
@@ -1515,6 +1611,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   info "$(t doc_fixing)"; local remaining=() i
   for i in "${DOC_ISSUES[@]}"; do case "$i" in
     tool:curl|tool:jq) inst_base || remaining+=("$i");;
+    tool:code-server) inst_codeserver || remaining+=("$i");;
     tool:*) "inst_${i#tool:}" 2>/dev/null; has "${i#tool:}" || remaining+=("$i");;
     perm) chmod 700 "$NIM_DIR" && ok "chmod 700 $NIM_DIR" || remaining+=("$i");;
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
@@ -1539,6 +1636,7 @@ T_de+=(
   [wz_models]="Modelle" [wz_models_hint]="Ich teste alle Kandidaten parallel mit echten Anfragen (max. %ss je Modell) und prüfe, ob das Code-Modell Tool-Calls kann."
   [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten?" [wz_done]="Fertig!"
   [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle und ersetzt tote automatisch)?"
+  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?"
   [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen\n           nimctl help   alle Befehle"
   [wz_chat_hint]="Chat: Das erste Konto, das sich unter http://localhost:%s registriert, wird Admin. Passwort vergessen? nimctl chat passwd"
 )
@@ -1551,6 +1649,7 @@ T_en+=(
   [wz_models]="Models" [wz_models_hint]="I probe all candidates in parallel with real requests (max %ss per model) and check that the code model can make tool calls."
   [wz_start]="Services" [wz_start_q]="Start proxy and chat now?" [wz_done]="Done!"
   [wz_watch_q]="Set up the watchdog timer (probes the models hourly and replaces dead ones automatically)?"
+  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?"
   [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser\n              nimctl help   all commands"
   [wz_chat_hint]="Chat: the first account registered at http://localhost:%s becomes admin. Forgot the password? nimctl chat passwd"
 )
@@ -1575,6 +1674,7 @@ wizard() { # wizard [--yes]
   sect "$(tf wz_step 2 5 "$(t wz_tools)")"
   local missing=0 x; for x in uv litellm open-webui claude; do has "$x" && ok "$x" || { bad "$x $(t inst_missing)"; missing=1; }; done
   if ((missing)); then ask "$(t wz_tools_q)" y && inst_all; else ok "$(t wz_tools_ok)"; fi
+  if declare -F inst_codeserver >/dev/null && [[ "$IDE_ENABLED" != 1 ]]; then ask "$(t wz_ide_q)" y && inst_codeserver; fi
   inst_alias
   sect "$(tf wz_step 3 5 "$(t wz_models)")"; info "$(tf wz_models_hint "$PROBE_TIMEOUT")"
   auto_select code fast chat review
@@ -1582,7 +1682,7 @@ wizard() { # wizard [--yes]
   if ask "$(t wz_start_q)" y; then start_all; fi
   if has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]] && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
   sect "$(tf wz_step 5 5 "$(t wz_done)")"; local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; slot_line "$s" "$n"; done
-  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; printf '\n'
+  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && info "$(tf ide_url "$IDE_PORT")"; printf '\n'
 }
 
 # ══════ 70-update.sh ══════
@@ -1663,7 +1763,7 @@ T_en+=(
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )
-COMMANDS=(setup start stop restart status check auto pick find test proxy code chat env key doctor logs install update models version help)
+COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide env key doctor logs install update models version help)
 usage() {
   local c w=10 extra=()
   printf '%s\n\n' "$(t usage)"
@@ -1680,6 +1780,7 @@ status_json() {
   local sj="{}" s m by_p by_c up_p=false up_c=false pid_p="" pid_c=""
   svc_state proxy && { [[ "$SVC_BY" != foreign ]] && up_p=true; }; by_p="${SVC_BY:-}"; pid_p="${SVC_PID:-}"
   svc_state chat && { [[ "$SVC_BY" != foreign ]] && up_c=true; }; by_c="${SVC_BY:-}"; pid_c="${SVC_PID:-}"
+  local up_i=false by_i pid_i; svc_state ide && { [[ "$SVC_BY" != foreign ]] && up_i=true; }; by_i="${SVC_BY:-}"; pid_i="${SVC_PID:-}"
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); probe_get "$m"
     sj=$(jq -n --argjson acc "$sj" --arg s "$s" --arg m "$m" --arg res "$PROBE_RES" --arg ms "$PROBE_MS" --arg t "$PROBE_T" --arg tools "$PROBE_TOOLS" \
       '$acc + {($s): {model: (if $m=="" then null else $m end), state: (if $res=="" then "unprobed" elif $res=="ok" then "ok" else "error" end), error: (if $res=="ok" or $res=="" then null else $res end), ms: ($ms|tonumber? // null), probed: ($t|tonumber? // null), tools: (if $tools=="" then null else $tools end)}}')
@@ -1687,9 +1788,11 @@ status_json() {
   local tj="{}" x; for x in litellm open-webui claude uv jq curl; do has "$x" && tj=$(jq -n --argjson a "$tj" --arg x "$x" '$a + {($x): true}') || tj=$(jq -n --argjson a "$tj" --arg x "$x" '$a + {($x): false}'); done
   jq -n --arg v "$VERSION" --arg ks "$KEY_STATE" --arg kt "$KEY_TIME" --arg kd "$(key_days_left)" --argjson up_p "$up_p" --arg by_p "$by_p" --arg pid_p "$pid_p" --arg pp "$PROXY_PORT" \
     --argjson up_c "$up_c" --arg by_c "$by_c" --arg pid_c "$pid_c" --arg cp "$CHAT_PORT" --argjson slots "$sj" --argjson tools "$tj" --arg mk "$MASTER_KEY" \
+    --argjson up_i "$up_i" --arg by_i "$by_i" --arg pid_i "$pid_i" --arg ip "$IDE_PORT" --arg ie "$IDE_ENABLED" \
     '{version:$v, key:{state:$ks, checked:($kt|tonumber? // null), expires_in_days:($kd|tonumber? // null)},
       proxy:{up:$up_p, by:(if $by_p=="" then null else $by_p end), pid:($pid_p|tonumber? // null), port:($pp|tonumber), url:("http://127.0.0.1:"+$pp)},
       chat:{up:$up_c, by:(if $by_c=="" then null else $by_c end), pid:($pid_c|tonumber? // null), port:($cp|tonumber), url:("http://localhost:"+$cp)},
+      ide:{enabled:($ie=="1"), up:$up_i, by:(if $by_i=="" then null else $by_i end), pid:($pid_i|tonumber? // null), port:($ip|tonumber), url:("http://localhost:"+$ip)},
       slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }

@@ -37,7 +37,7 @@ T_en+=(
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )
-COMMANDS=(setup start stop restart status check auto pick find test proxy code chat env key doctor logs install update models version help)
+COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide env key doctor logs install update models version help)
 usage() {
   local c w=10 extra=()
   printf '%s\n\n' "$(t usage)"
@@ -54,6 +54,7 @@ status_json() {
   local sj="{}" s m by_p by_c up_p=false up_c=false pid_p="" pid_c=""
   svc_state proxy && { [[ "$SVC_BY" != foreign ]] && up_p=true; }; by_p="${SVC_BY:-}"; pid_p="${SVC_PID:-}"
   svc_state chat && { [[ "$SVC_BY" != foreign ]] && up_c=true; }; by_c="${SVC_BY:-}"; pid_c="${SVC_PID:-}"
+  local up_i=false by_i pid_i; svc_state ide && { [[ "$SVC_BY" != foreign ]] && up_i=true; }; by_i="${SVC_BY:-}"; pid_i="${SVC_PID:-}"
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); probe_get "$m"
     sj=$(jq -n --argjson acc "$sj" --arg s "$s" --arg m "$m" --arg res "$PROBE_RES" --arg ms "$PROBE_MS" --arg t "$PROBE_T" --arg tools "$PROBE_TOOLS" \
       '$acc + {($s): {model: (if $m=="" then null else $m end), state: (if $res=="" then "unprobed" elif $res=="ok" then "ok" else "error" end), error: (if $res=="ok" or $res=="" then null else $res end), ms: ($ms|tonumber? // null), probed: ($t|tonumber? // null), tools: (if $tools=="" then null else $tools end)}}')
@@ -61,9 +62,11 @@ status_json() {
   local tj="{}" x; for x in litellm open-webui claude uv jq curl; do has "$x" && tj=$(jq -n --argjson a "$tj" --arg x "$x" '$a + {($x): true}') || tj=$(jq -n --argjson a "$tj" --arg x "$x" '$a + {($x): false}'); done
   jq -n --arg v "$VERSION" --arg ks "$KEY_STATE" --arg kt "$KEY_TIME" --arg kd "$(key_days_left)" --argjson up_p "$up_p" --arg by_p "$by_p" --arg pid_p "$pid_p" --arg pp "$PROXY_PORT" \
     --argjson up_c "$up_c" --arg by_c "$by_c" --arg pid_c "$pid_c" --arg cp "$CHAT_PORT" --argjson slots "$sj" --argjson tools "$tj" --arg mk "$MASTER_KEY" \
+    --argjson up_i "$up_i" --arg by_i "$by_i" --arg pid_i "$pid_i" --arg ip "$IDE_PORT" --arg ie "$IDE_ENABLED" \
     '{version:$v, key:{state:$ks, checked:($kt|tonumber? // null), expires_in_days:($kd|tonumber? // null)},
       proxy:{up:$up_p, by:(if $by_p=="" then null else $by_p end), pid:($pid_p|tonumber? // null), port:($pp|tonumber), url:("http://127.0.0.1:"+$pp)},
       chat:{up:$up_c, by:(if $by_c=="" then null else $by_c end), pid:($pid_c|tonumber? // null), port:($cp|tonumber), url:("http://localhost:"+$cp)},
+      ide:{enabled:($ie=="1"), up:$up_i, by:(if $by_i=="" then null else $by_i end), pid:($pid_i|tonumber? // null), port:($ip|tonumber), url:("http://localhost:"+$ip)},
       slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }

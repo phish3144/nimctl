@@ -1,6 +1,6 @@
 # ── Services: LiteLLM proxy and Open WebUI ───────────────────────────────────
 T_de+=(
-  [proxy]="Proxy" [chat]="Chat" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
   [svc_already]="%s läuft bereits" [svc_missing]="%s fehlt → nimctl install" [svc_nokey]="kein API-Key → nimctl key" [svc_nomodel]="kein Modell gewählt → nimctl auto"
   [svc_up]="%s läuft  http://localhost:%s" [svc_fail]="%s startet nicht → nimctl logs %s" [svc_died]="%s ist direkt nach dem Start beendet worden → nimctl logs %s"
   [svc_stopped]="%s gestoppt" [svc_foreign]="Port %s ist belegt von %s – nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
@@ -11,7 +11,7 @@ T_de+=(
   [unit_failed]="systemd-Unit %s ist im Zustand failed → journalctl --user -u %s"
 )
 T_en+=(
-  [proxy]="Proxy" [chat]="Chat" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
   [svc_already]="%s already running" [svc_missing]="%s missing → nimctl install" [svc_nokey]="no API key → nimctl key" [svc_nomodel]="no model selected → nimctl auto"
   [svc_up]="%s up  http://localhost:%s" [svc_fail]="%s failed to start → nimctl logs %s" [svc_died]="%s exited right after starting → nimctl logs %s"
   [svc_stopped]="%s stopped" [svc_foreign]="port %s is taken by %s – not started by nimctl" [svc_wasdown]="%s was not running"
@@ -21,8 +21,9 @@ T_en+=(
   [inst_sysd]="autostart enabled (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="autostart removed" [inst_fail]="%s failed" [no_systemd]="systemd not available – autostart only on Linux with systemd"
   [unit_failed]="systemd unit %s is in state failed → journalctl --user -u %s"
 )
-svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; esac; }
-svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; esac; }
+svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; ide) echo code-server;; esac; }
+svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; ide) echo "$IDE_PORT";; esac; }
+svc_envvar() { case "$1" in proxy) echo NIMCTL_PROXY_PORT;; chat) echo NIMCTL_CHAT_PORT;; ide) echo NIMCTL_IDE_PORT;; esac; }
 svc_label(){ t "$1"; }
 proc_is() { # proc_is <pid> <name> → the process exists and its command line mentions <name>
   [[ "${1:-}" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null || return 1
@@ -52,7 +53,7 @@ wait_port() { # wait_port <port> <seconds> [pid] → 0 up, 1 timeout, 2 process 
     (( INTERACTIVE )) && printf "\r  %s %s " "${sp:i%4:1}" "$(tf waiting "$1" "$((i/2))")"; sleep 0.5; ((i++))
   done; printf "\r%60s\r" ""; return 1
 }
-refuse_foreign() { bad "$(tf svc_foreign "$(svc_port "$1")" "${SVC_PID:-?}")"; info "$(tf port_hint "NIMCTL_$( [[ $1 == proxy ]] && echo PROXY || echo CHAT)_PORT" "$(( $(svc_port "$1") + 100 ))")"; }
+refuse_foreign() { bad "$(tf svc_foreign "$(svc_port "$1")" "${SVC_PID:-?}")"; info "$(tf port_hint "$(svc_envvar "$1")" "$(( $(svc_port "$1") + 100 ))")"; }
 _start_result() { # _start_result <svc> <pid>
   local rc; wait_port "$(svc_port "$1")" "$3" "$2"; rc=$?
   case $rc in 0) ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return 0;;
@@ -81,6 +82,16 @@ start_chat() {
   date +%s >"$PID_DIR/chat.started"
   _start_result chat "$(cat "$PID_DIR/chat.pid")" 150
 }
+start_ide() { # code-server with the Continue extension, configured by the ide module (src/52-ide.sh)
+  if svc_state ide; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign ide; return 1; }; info "$(tf svc_already "$(t ide)")"; return 0; fi
+  has code-server || { bad "$(tf svc_missing code-server)"; return 1; }
+  declare -F ide_write_config >/dev/null || return 1
+  [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }
+  ide_write_config || return 1
+  nohup code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry >"$LOG_DIR/code-server.log" 2>&1 &
+  echo $! >"$PID_DIR/ide.pid"; date +%s >"$PID_DIR/ide.started"
+  _start_result ide $! 60
+}
 stop_svc() {
   local s="$1"
   if ! svc_state "$s"; then info "$(tf svc_wasdown "$(svc_label "$s")")"; rm -f "$PID_DIR/$s.pid"; return 0; fi
@@ -91,13 +102,13 @@ stop_svc() {
     *)       warn "$(tf svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")";;
   esac
 }
-start_all() { local rc=0; start_proxy || rc=1; start_chat || rc=1; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; }
+start_all() { local rc=0; start_proxy || rc=1; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; return $rc; }
+stop_all()  { stop_svc proxy; stop_svc chat; { [[ "$IDE_ENABLED" == 1 ]] || svc_state ide; } && stop_svc ide; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
 }
-restart_all() { restart_svc proxy; restart_svc chat; }
+restart_all() { restart_svc proxy; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; return 0; }
 restart_if_running() { # after a config change; explicit yes only, because a Claude Code session may be attached
   svc_running proxy || svc_running chat || return 0
   (( INTERACTIVE )) || { info "$(t restart_hint)"; return 0; }
@@ -112,6 +123,9 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
            write_litellm_yaml; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
+    ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }
+           ide_write_config || exit 1; date +%s >"$PID_DIR/ide.started"
+           exec code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry;;
     *) exit 64;;
   esac
 }
@@ -119,11 +133,12 @@ unit_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; }
 inst_systemd() {
   has systemctl || { bad "$(t no_systemd)"; return 1; }
   local d n self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
-  for n in proxy chat; do printf '[Unit]\nDescription=nimctl %s\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\nRestartSec=10\nEnvironment=NIMCTL_HOME=%s\n\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" "$NIM_DIR" >"$d/nimctl-$n.service"; done
-  stop_svc proxy >/dev/null; stop_svc chat >/dev/null   # hand the ports over to the units
-  systemctl --user daemon-reload && systemctl --user enable --now nimctl-proxy nimctl-chat && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
+  local units=(proxy chat); [[ "$IDE_ENABLED" == 1 ]] && units+=(ide)
+  for n in "${units[@]}"; do printf '[Unit]\nDescription=nimctl %s\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\nRestartSec=10\nEnvironment=NIMCTL_HOME=%s\n\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" "$NIM_DIR" >"$d/nimctl-$n.service"; done
+  for n in "${units[@]}"; do stop_svc "$n" >/dev/null; done   # hand the ports over to the units
+  systemctl --user daemon-reload && systemctl --user enable --now "${units[@]/#/nimctl-}" && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
 }
 uninst_systemd() {
-  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-watch.timer 2>/dev/null
-  rm -f "$(unit_dir)"/nimctl-{proxy,chat}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
+  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-watch.timer 2>/dev/null
+  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
 }
