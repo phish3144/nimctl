@@ -127,7 +127,7 @@ ok()   { out "  $OK $*"; }
 bad()  { out "  $NO $*"; }
 warn() { out "  $WA $*"; }
 info() { out "  ${D}$*${R}"; }
-rule() { local n="${1:-$COLS}" s; s=$(printf '%*s' "$n" ''); printf '%s%s%s\n' "$D" "${s// /$G_BOX}" "$R"; }
+rule() { local s; s=$(printf '%*s' "$COLS" ''); printf '%s%s%s\n' "$D" "${s// /$G_BOX}" "$R"; }
 sect() { printf "\n${B}${CYN}%s${R}\n" "$*"; rule; }
 strip_ansi() { sed 's/\x1b\[[0-9;]*[A-Za-z]//g'; }
 trunc() { local s="$1" n="$2"; (( ${#s} > n )) && s="${s:0:n-1}$G_ELL"; printf '%s' "$s"; }   # trunc <text> <width>
