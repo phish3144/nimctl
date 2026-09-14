@@ -61,4 +61,14 @@ overloaded models, tool calling (`*-notools` models refuse) and streaming. Fake 
 and `uv` live in `$TMP/bin`; the fake services answer any `/v1/messages` POST. Piped input answers prompts one line
 per prompt (`NIMCTL_INTERACTIVE=1` is set by the runner; set it to `''` to test the non-interactive path).
 
+## Releasing
+
+1. Set `VERSION` in `src/00-header.sh`, add the `## [x.y.z] – date` entry to `CHANGELOG.md`, run `./build.sh`, commit and
+   merge to `main` (CI checks all of that).
+2. Run the **Release** workflow (Actions → Release → *Run workflow*, version `x.y.z`) or push a tag:
+   `git tag -a vx.y.z -m "nimctl x.y.z" && git push origin vx.y.z`. The workflow checks that `VERSION`, the changelog and
+   the built script agree, creates the tag if it does not exist yet and publishes the GitHub release with `nimctl` and
+   `SHA256SUMS` attached and the changelog section as notes. Nothing else to do: `install.sh` and `nimctl update` read
+   `main`, the release is the versioned copy.
+
 Bug reports: please include `nimctl doctor` output and `~/.nimctl/logs/*.log`.

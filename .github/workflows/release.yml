@@ -1,0 +1,55 @@
+name: Release
+# Publishes a GitHub release with `nimctl` and `SHA256SUMS` attached and the CHANGELOG section as notes.
+# Run it from the Actions tab (version = the VERSION in nimctl) or push a tag: git tag -a v1.2.0 -m "nimctl 1.2.0" && git push origin v1.2.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release – must equal VERSION in nimctl and have a CHANGELOG.md entry (e.g. 1.2.0)'
+        required: true
+permissions:
+  contents: write
+defaults:
+  run:
+    shell: bash
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Version, changelog and build must agree
+        id: v
+        run: |
+          v=$(grep -m1 '^VERSION=' nimctl | cut -d'"' -f2)
+          want="${{ github.event.inputs.version }}"; [[ -n "$want" ]] || want="${GITHUB_REF_NAME#v}"
+          [[ "$v" == "$want" ]] || { echo "::error::nimctl says VERSION=$v, the release asks for $want"; exit 1; }
+          grep -q "^## \[$v\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no entry for $v"; exit 1; }
+          bash build.sh && git diff --exit-code -- nimctl SHA256SUMS || { echo "::error::nimctl or SHA256SUMS is stale – run ./build.sh and commit"; exit 1; }
+          sha256sum -c SHA256SUMS
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Tag (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          v=${{ steps.v.outputs.version }}
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+            [[ "$(git rev-parse "v$v^{commit}")" == "$(git rev-parse HEAD)" ]] || { echo "::error::tag v$v exists and points to another commit"; exit 1; }
+          else
+            git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "v$v" -m "nimctl $v" && git push origin "v$v"
+          fi
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v=${{ steps.v.outputs.version }}
+          { printf '```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash   # install or update (nimctl update does the same)\n```\n\n' "$GITHUB_REPOSITORY"
+            awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {p=1; next} /^## \[/ {p=0} p' CHANGELOG.md
+            printf '\n**Verify the download:** put `SHA256SUMS` next to `nimctl` and run `sha256sum -c SHA256SUMS`.\n'; } >notes.md
+          cat notes.md
+      - name: Publish
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          v=${{ steps.v.outputs.version }}
+          if gh release view "v$v" >/dev/null 2>&1; then gh release upload "v$v" nimctl SHA256SUMS --clobber && gh release edit "v$v" --notes-file notes.md
+          else gh release create "v$v" nimctl SHA256SUMS --title "nimctl $v" --notes-file notes.md --latest; fi
