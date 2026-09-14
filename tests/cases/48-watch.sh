@@ -27,7 +27,7 @@ check "completion: defines _nimctl" "_nimctl" < <(timeout 10 "$N" completion bas
 bash -c "eval \"\$('$N' completion bash)\"" >/dev/null 2>&1
 assert "completion: bash script evaluates cleanly" [ $? -eq 0 ]
 timeout 10 "$N" completion >/dev/null 2>&1
-assert "completion: no argument exits 2" [ $? -eq 2 ]
+assert "completion: no argument exits 64 (usage error)" [ $? -eq 64 ]
 rm -f "$TMP/.bashrc"; : >"$TMP/.zshrc"
 timeout 10 "$N" install completion >/dev/null 2>&1
 grep -qF 'nimctl completion bash' "$TMP/.bashrc" && pass "completion install: bashrc line added" || fail "completion install: bashrc line added"

@@ -12,7 +12,8 @@ tests/run.sh    test runner: mock NVIDIA API, fake litellm/open-webui/claude/uv,
 tests/cases/    one file per area; state (config, probes, services) carries over from earlier files
 ```
 
-Workflow: edit `src/`, run `./build.sh`, then `shellcheck -S warning nimctl tests/cases/*.sh` and `bash tests/run.sh`.
+Workflow: edit `src/`, run `./build.sh`, then `shellcheck -S warning nimctl build.sh install.sh tests/run.sh tests/cases/*.sh`
+(the CI uses shellcheck 0.9.0) and `bash tests/run.sh`.
 CI fails when `nimctl`/`SHA256SUMS` are stale, when `CHANGELOG.md` has no entry for `VERSION`, or when a placeholder
 URL sneaks in. Requirements: bash ≥ 4.4, `curl`, `jq`, `awk`; nothing else at runtime.
 
@@ -33,9 +34,11 @@ dash_register g cmd_stats k_g use    # dashboard key g in group use (svc | model
 strings `h_<command>` belong to the module (nothing in `src/90-main.sh` overrides them). `main()` strips the global
 flags `--yes`, `--json` and `--lang=` from argv for every command: read `$YES` and `$JSON` instead of parsing them.
 
+Usage errors (unknown command or argument) exit with 64; the other exit codes are listed in `nimctl help`.
+
 Every user-visible string goes through `t key` / `tf key args…` and exists in **both** tables. Output goes
 through `out`, `ok`, `bad`, `warn`, `info` (they also feed the dashboard's "last action" panel). Ask with
-`ask "question" y|n` (default `n` needs an explicit yes; non-interactive runs take the default, `--yes` says yes)
+`ask "question" y|n` (default `n` needs an explicit yes; non-interactive runs take the default, `--yes` says yes everywhere)
 and read input with `prompt "text" [hidden]` → `$REPLY` (returns 1 on EOF or without a terminal).
 
 Useful helpers (see `src/05-core.sh` … `src/40-actions.sh`):

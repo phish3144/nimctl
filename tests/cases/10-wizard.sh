@@ -4,7 +4,7 @@ check "version" "^nimctl [0-9]" < <(timeout 10 "$N" version)
 check "help lists commands" "^  doctor +.*--fix" < <(timeout 10 "$N" help)
 check "help per command" "nimctl code" < <(timeout 10 "$N" help code)
 check "unknown command exits 2" "unbekannt" < <(timeout 10 "$N" frobnicate; echo "rc=$?")
-timeout 10 "$N" frobnicate >/dev/null 2>&1; assert "unknown command rc=2" [ $? -eq 2 ]
+timeout 10 "$N" frobnicate >/dev/null 2>&1; assert "unknown command rc=64 (usage error)" [ $? -eq 64 ]
 # headless wizard without a key must stop, not spin
 NIMCTL_INTERACTIVE='' timeout 10 "$N" setup </dev/null >"$TMP/eof.txt" 2>&1; rc=$?
 assert "setup without stdin exits (no busy loop) rc=$rc" [ "$rc" -eq 1 ]

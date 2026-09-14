@@ -129,13 +129,14 @@ banner() { # banner <title> [right text]
 }
 
 # ── Interaction ───────────────────────────────────────────────────────────────
-# NIMCTL_INTERACTIVE=1 forces prompts even when stdin is a pipe (tests, expect); --yes / NIMCTL_YES=1 answers
-# every question with its safe default (yes for benign, no for destructive) without asking.
+# NIMCTL_INTERACTIVE=1 forces prompts even when stdin is a pipe (tests, expect). --yes / NIMCTL_YES=1 answers every
+# question with yes; without it, runs without a terminal take the safe default (yes for benign, no for destructive).
 INTERACTIVE="${NIMCTL_INTERACTIVE:-}"; [[ -z "$INTERACTIVE" ]] && { [[ -t 0 ]] && INTERACTIVE=1 || INTERACTIVE=0; }
 YES="${NIMCTL_YES:-0}"
 ask() { # ask <question> [y|n] → 0 = yes. Default "n" needs an explicit yes (used for anything destructive).
   local q="$1" def="${2:-n}" a
-  if (( ! INTERACTIVE )); then [[ "$def" == y ]] && return 0; (( YES )) && return 0; return 1; fi
+  (( YES )) && return 0                                    # --yes / NIMCTL_YES: assume yes everywhere, terminal or not
+  if (( ! INTERACTIVE )); then [[ "$def" == y ]] && return 0; return 1; fi
   if [[ "$def" == y ]]; then printf "  %s %s " "$q" "$(t yn_Y)"; else printf "  %s %s " "$q" "$(t yn_N)"; fi
   read -r a || { printf '\n'; return 1; }
   if [[ "$def" == y ]]; then [[ "$a" =~ $no_re ]] && return 1 || return 0; else [[ "$a" =~ $yes_re ]]; fi

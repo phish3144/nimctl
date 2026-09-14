@@ -32,7 +32,7 @@ cmd_completion() { # cmd_completion <bash|zsh>
   case "${1:-}" in
     bash) _completion_script;;
     zsh)  printf 'autoload -U +X bashcompinit && bashcompinit\n'; _completion_script;;
-    *) bad "$(t completion_usage)"; return 2;;
+    *) bad "$(t completion_usage)"; return 64;;
   esac
 }
 inst_completion() {

@@ -194,7 +194,7 @@ acc_reset() {
   acc_python >/dev/null || { bad "$(t acc_nopython)"; return 1; }
   warn "$(t acc_reset_warn)"
   ask "$(t acc_reset_q)" n || { info "$(t aborted)"; return 1; }
-  if (( INTERACTIVE )); then
+  if (( INTERACTIVE && ! YES )); then
     prompt "$(t acc_reset_type)" || return 1
     [[ "$REPLY" == RESET ]] || { bad "$(t acc_reset_mismatch)"; return 1; }
   fi
@@ -219,7 +219,7 @@ chat_admin() { # chat_admin <users|passwd|reset> [args…] – dispatched from `
     users)  acc_users;;
     passwd) acc_passwd "$@";;
     reset)  acc_reset "$@";;
-    *)      bad "$(t unknown): $sub"; return 2;;
+    *)      bad "$(t unknown): $sub"; return 64;;
   esac
 }
 cmd_accounts() {

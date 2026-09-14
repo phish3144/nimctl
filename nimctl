@@ -143,13 +143,14 @@ banner() { # banner <title> [right text]
 }
 
 # ── Interaction ───────────────────────────────────────────────────────────────
-# NIMCTL_INTERACTIVE=1 forces prompts even when stdin is a pipe (tests, expect); --yes / NIMCTL_YES=1 answers
-# every question with its safe default (yes for benign, no for destructive) without asking.
+# NIMCTL_INTERACTIVE=1 forces prompts even when stdin is a pipe (tests, expect). --yes / NIMCTL_YES=1 answers every
+# question with yes; without it, runs without a terminal take the safe default (yes for benign, no for destructive).
 INTERACTIVE="${NIMCTL_INTERACTIVE:-}"; [[ -z "$INTERACTIVE" ]] && { [[ -t 0 ]] && INTERACTIVE=1 || INTERACTIVE=0; }
 YES="${NIMCTL_YES:-0}"
 ask() { # ask <question> [y|n] → 0 = yes. Default "n" needs an explicit yes (used for anything destructive).
   local q="$1" def="${2:-n}" a
-  if (( ! INTERACTIVE )); then [[ "$def" == y ]] && return 0; (( YES )) && return 0; return 1; fi
+  (( YES )) && return 0                                    # --yes / NIMCTL_YES: assume yes everywhere, terminal or not
+  if (( ! INTERACTIVE )); then [[ "$def" == y ]] && return 0; return 1; fi
   if [[ "$def" == y ]]; then printf "  %s %s " "$q" "$(t yn_Y)"; else printf "  %s %s " "$q" "$(t yn_N)"; fi
   read -r a || { printf '\n'; return 1; }
   if [[ "$def" == y ]]; then [[ "$a" =~ $no_re ]] && return 1 || return 0; else [[ "$a" =~ $yes_re ]]; fi
@@ -544,7 +545,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
            write_litellm_yaml; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
-    *) exit 2;;
+    *) exit 64;;
   esac
 }
 unit_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; }
@@ -1211,7 +1212,7 @@ acc_reset() {
   acc_python >/dev/null || { bad "$(t acc_nopython)"; return 1; }
   warn "$(t acc_reset_warn)"
   ask "$(t acc_reset_q)" n || { info "$(t aborted)"; return 1; }
-  if (( INTERACTIVE )); then
+  if (( INTERACTIVE && ! YES )); then
     prompt "$(t acc_reset_type)" || return 1
     [[ "$REPLY" == RESET ]] || { bad "$(t acc_reset_mismatch)"; return 1; }
   fi
@@ -1236,7 +1237,7 @@ chat_admin() { # chat_admin <users|passwd|reset> [args…] – dispatched from `
     users)  acc_users;;
     passwd) acc_passwd "$@";;
     reset)  acc_reset "$@";;
-    *)      bad "$(t unknown): $sub"; return 2;;
+    *)      bad "$(t unknown): $sub"; return 64;;
   esac
 }
 cmd_accounts() {
@@ -1352,7 +1353,7 @@ cmd_completion() { # cmd_completion <bash|zsh>
   case "${1:-}" in
     bash) _completion_script;;
     zsh)  printf 'autoload -U +X bashcompinit && bashcompinit\n'; _completion_script;;
-    *) bad "$(t completion_usage)"; return 2;;
+    *) bad "$(t completion_usage)"; return 64;;
   esac
 }
 inst_completion() {
@@ -1422,7 +1423,7 @@ render_dashboard() {
 }
 dash_footer() {
   local k; declare -A extra=([svc]="" [models]="" [use]="" [sys]="")
-  for k in "${!DASH_FN[@]}"; do extra[${DASH_GROUP[$k]}]+="  ${B}$k${R} $(t "${DASH_LABEL[$k]}")"; done
+  for k in $(printf '%s\n' "${!DASH_FN[@]}" | sort); do extra[${DASH_GROUP[$k]}]+="  ${B}$k${R} $(t "${DASH_LABEL[$k]}")"; done
   printf "  ${D}%-8s${R} ${B}s${R} %s  ${B}x${R} %s  ${B}r${R} %s%b\n" "$(t grp_svc)" "$(t k_s)" "$(t k_x)" "$(t k_r)" "${extra[svc]}"
   printf "  ${D}%-8s${R} ${B}a${R} %s  ${B}p${R} %s  ${B}1-4${R} %s  ${B}f${R} %s  ${B}t${R} %s%b\n" "$(t grp_models)" "$(t k_a)" "$(t k_p)" "$(t k_1234)" "$(t k_f)" "$(t k_t)" "${extra[models]}"
   printf "  ${D}%-8s${R} ${B}c${R} %s  ${B}w${R} %s  ${B}e${R} %s%b\n" "$(t grp_use)" "$(t k_c)" "$(t k_w)" "$(t k_e)" "${extra[use]}"
@@ -1432,7 +1433,7 @@ dash_help() {
   sect "$(t help_title)"
   local rows=(s:k_s:h_start x:k_x:h_stop r:k_r:h_restart a:k_a:h_auto p:k_p:h_check "1-4:k_1234:h_pick" f:k_f:h_find t:k_t:h_test c:k_c:h_code w:k_w:h_chat e:k_e:h_env k:k_k:h_key d:k_d:h_doctor i:k_i:h_install l:k_l:h_logs u:k_u:h_update "?:k_help:h_help" q:k_q:h_quit)
   local r k; for r in "${rows[@]}"; do IFS=: read -r k _ h <<<"$r"; printf "  ${B}%-4s${R} %s\n" "$k" "$(t "$h")"; done
-  for k in "${!DASH_FN[@]}"; do printf "  ${B}%-4s${R} %s\n" "$k" "$(t "h_${DASH_FN[$k]#cmd_}")"; done
+  for k in $(printf '%s\n' "${!DASH_FN[@]}" | sort); do printf "  ${B}%-4s${R} %s\n" "$k" "$(t "h_${DASH_FN[$k]#cmd_}")"; done
   info "$(t help_foot)"
 }
 dash_reprobe_if_stale() {
@@ -1537,6 +1538,7 @@ T_de+=(
   [wz_tools]="Werkzeuge" [wz_tools_ok]="alles vorhanden" [wz_tools_q]="Fehlende jetzt installieren (dauert 2–5 Min.)?"
   [wz_models]="Modelle" [wz_models_hint]="Ich teste alle Kandidaten parallel mit echten Anfragen (max. %ss je Modell) und prüfe, ob das Code-Modell Tool-Calls kann."
   [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten?" [wz_done]="Fertig!"
+  [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle und ersetzt tote automatisch)?"
   [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen\n           nimctl help   alle Befehle"
   [wz_chat_hint]="Chat: Das erste Konto, das sich unter http://localhost:%s registriert, wird Admin. Passwort vergessen? nimctl chat passwd"
 )
@@ -1548,6 +1550,7 @@ T_en+=(
   [wz_tools]="Tools" [wz_tools_ok]="all present" [wz_tools_q]="Install missing tools now (2–5 min)?"
   [wz_models]="Models" [wz_models_hint]="I probe all candidates in parallel with real requests (max %ss per model) and check that the code model can make tool calls."
   [wz_start]="Services" [wz_start_q]="Start proxy and chat now?" [wz_done]="Done!"
+  [wz_watch_q]="Set up the watchdog timer (probes the models hourly and replaces dead ones automatically)?"
   [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser\n              nimctl help   all commands"
   [wz_chat_hint]="Chat: the first account registered at http://localhost:%s becomes admin. Forgot the password? nimctl chat passwd"
 )
@@ -1577,6 +1580,7 @@ wizard() { # wizard [--yes]
   auto_select code fast chat review
   sect "$(tf wz_step 4 5 "$(t wz_start)")"
   if ask "$(t wz_start_q)" y; then start_all; fi
+  if has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]] && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
   sect "$(tf wz_step 5 5 "$(t wz_done)")"; local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; slot_line "$s" "$n"; done
   printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; printf '\n'
 }
@@ -1622,10 +1626,11 @@ self_update() { # self_update [--check]
 # ══════ 90-main.sh ══════
 # ── CLI: help, dispatch, exit codes ───────────────────────────────────────────
 # Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 tools/prerequisites · 4 a configured model does not respond
+# · 64 usage error (unknown command or argument, sysexits EX_USAGE)
 T_de+=(
   [usage]="Nutzung: nimctl [Befehl] [Optionen]   (ohne Befehl: Dashboard, beim ersten Start der Assistent)"
-  [usage_flags]="Globale Optionen: --yes (Fragen mit sicherer Vorgabe beantworten) · --lang de|en · --json (bei status) · NO_COLOR=1"
-  [usage_codes]="Exit-Codes: 0 ok · 1 Key fehlt/ungültig · 2 Proxy läuft nicht · 3 Voraussetzung fehlt · 4 ein gewähltes Modell antwortet nicht"
+  [usage_flags]="Globale Optionen: --yes (jede Frage mit Ja beantworten) · --lang=de|en · --json (bei status, stats) · NO_COLOR=1"
+  [usage_codes]="Exit-Codes: 0 ok · 1 Key fehlt/ungültig · 2 Proxy läuft nicht · 3 Voraussetzung fehlt · 4 ein gewähltes Modell antwortet nicht · 64 falsche Nutzung"
   [usage_more]="Details: nimctl help <Befehl>   ·   Doku: https://github.com/%s"
   [h_setup]="Assistent: Key, Werkzeuge, Modelle, Dienste (--yes für Skripte, Key aus NIMCTL_API_KEY)"
   [h_start]="Proxy (LiteLLM) und Chat (Open WebUI) starten" [h_stop]="beide Dienste stoppen" [h_restart]="beide Dienste neu starten"
@@ -1642,8 +1647,8 @@ T_de+=(
 )
 T_en+=(
   [usage]="Usage: nimctl [command] [options]   (no command: dashboard; the wizard on first start)"
-  [usage_flags]="Global options: --yes (answer questions with their safe default) · --lang de|en · --json (with status) · NO_COLOR=1"
-  [usage_codes]="Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 prerequisite missing · 4 a selected model does not respond"
+  [usage_flags]="Global options: --yes (answer every question with yes) · --lang=de|en · --json (with status, stats) · NO_COLOR=1"
+  [usage_codes]="Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 prerequisite missing · 4 a selected model does not respond · 64 usage error"
   [usage_more]="Details: nimctl help <command>   ·   Docs: https://github.com/%s"
   [h_setup]="wizard: key, tools, models, services (--yes for scripts, key from NIMCTL_API_KEY)"
   [h_start]="start proxy (LiteLLM) and chat (Open WebUI)" [h_stop]="stop both services" [h_restart]="restart both services"
@@ -1666,7 +1671,7 @@ usage() {
   for c in $(declare -F | awk '{print $3}' | grep '^cmd_' | sed 's/^cmd_//' | sort); do [[ " ${COMMANDS[*]} " == *" $c "* ]] || printf "  %-${w}s %s\n" "$c" "$(t "h_$c")"; done
   printf '\n%s\n%s\n%s\n' "$(t usage_flags)" "$(t usage_codes)" "$(tf usage_more "$NIMCTL_REPO")"
 }
-help_cmd() { local c="${1:-}"; [[ -z "$c" ]] && { usage; return 0; }; local h; h=$(t "h_$c"); [[ "$h" == "h_$c" ]] && { bad "$(t unknown): $c"; usage; return 2; }; printf '  nimctl %s\n  %s\n' "$c" "$h"; }
+help_cmd() { local c="${1:-}"; [[ -z "$c" ]] && { usage; return 0; }; local h; h=$(t "h_$c"); [[ "$h" == "h_$c" ]] && { bad "$(t unknown): $c"; usage; return 64; }; printf '  nimctl %s\n  %s\n' "$c" "$h"; }
 status_code() { # bit flags for scripts
   local rc=0 s m; [[ "$KEY_STATE" == ok ]] || rc=$((rc | 1)); svc_running proxy || rc=$((rc | 2))
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); [[ -n "$m" ]] || continue; probe_get "$m"; [[ "$PROBE_RES" == ok || -z "$PROBE_RES" ]] || rc=$((rc | 4)); done; return $rc
@@ -1690,8 +1695,12 @@ status_json() {
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
 JSON=0   # set by the global --json flag; commands and modules read it instead of parsing their own argv
 main() {
-  local args=() a rc=0
-  for a in "$@"; do case "$a" in --yes|-y) YES=1;; --json) JSON=1;; --lang=*) L="${a#*=}"; [[ "$L" == de ]] || L=en;; --no-color) :;; *) args+=("$a");; esac; done
+  local args=() rc=0
+  while (( $# )); do
+    case "$1" in --yes|-y) YES=1;; --json) JSON=1;; --lang=*) L="${1#*=}"; [[ "$L" == de ]] || L=en;; --lang) shift; L="${1:-}"; [[ "$L" == de ]] || L=en;;
+      --no-color) :;; *) args+=("$1");; esac
+    (( $# )) && shift
+  done
   set -- ${args[@]+"${args[@]}"}
   local cmd="${1:-}"; (( $# )) && shift
   case "$cmd" in version|-v|--version) echo "nimctl $VERSION"; exit 0;; help|-h|--help) help_cmd "${1:-}"; exit $?;; esac
@@ -1704,21 +1713,21 @@ main() {
     start)    start_all;; stop) stop_all;; restart) restart_all;;
     check)    act_probe;;
     auto)     if (( $# )); then auto_select "$@"; else auto_all; fi; rc=$?; restart_if_running; exit $rc;;
-    pick)     [[ -n "${1:-}" && " ${SLOTS[*]} " == *" $1 "* ]] || { bad "$(t invalid): ${1:-}"; exit 2; }; act_pick "$1" "${2:-}";;
+    pick)     [[ -n "${1:-}" && " ${SLOTS[*]} " == *" $1 "* ]] || { bad "$(t invalid): ${1:-}"; exit 64; }; act_pick "$1" "${2:-}";;
     find)     act_find "${1:-}";;
     models)   models_cached;;
     test)     act_test "${1:-}" "${2:-}";;
     code)     act_code "$@";;
-    chat)     case "${1:-}" in ""|open) act_chat_open;; *) if declare -F chat_admin >/dev/null; then chat_admin "$@"; else bad "$(t unknown): $1"; exit 2; fi;; esac;;
+    chat)     case "${1:-}" in ""|open) act_chat_open;; *) if declare -F chat_admin >/dev/null; then chat_admin "$@"; else bad "$(t unknown): $1"; exit 64; fi;; esac;;
     env)      act_env;;
     key)      if [[ -n "${1:-}" ]]; then set_key "$1"; else act_key; fi; rc=$?; (( rc == 0 )) && restart_if_running; (( rc == 3 )) && rc=0; exit $rc;;
     doctor)   doctor "${1:-}";;
     proxy)    svc_running proxy || { bad "$(t proxy_down)"; exit 2; }; act_proxy;;
     logs)     act_logs "$@";;
-    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 2; };; esac;;
+    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 64; };; esac;;
     update)   self_update "${1:-}";;
     _fg)      fg_service "${1:-}";;
-    *)        if declare -F "cmd_$cmd" >/dev/null; then "cmd_$cmd" "$@"; else bad "$(t unknown): $cmd"; printf '\n'; usage; exit 2; fi;;
+    *)        if declare -F "cmd_$cmd" >/dev/null; then "cmd_$cmd" "$@"; else bad "$(t unknown): $cmd"; printf '\n'; usage; exit 64; fi;;
   esac
 }
 
