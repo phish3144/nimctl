@@ -8,8 +8,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y shellcheck jq bc
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq
+      - name: Build is up to date
+        run: |
+          bash build.sh
+          git diff --exit-code -- nimctl SHA256SUMS || { echo "::error::nimctl or SHA256SUMS is stale – run ./build.sh and commit"; exit 1; }
+      - name: No placeholders, version matches changelog
+        run: |
+          ! grep -rn "YOUR-GITHUB-USER" nimctl install.sh README.md src
+          v=$(grep -m1 '^VERSION=' nimctl | cut -d'"' -f2)
+          grep -q "^## \[$v\]" CHANGELOG.md || { echo "::error::CHANGELOG.md has no entry for $v"; exit 1; }
       - name: Lint
-        run: shellcheck -S warning nimctl install.sh tests/run.sh
+        run: shellcheck -S warning nimctl build.sh install.sh tests/run.sh tests/cases/*.sh
       - name: Test
         run: bash tests/run.sh
