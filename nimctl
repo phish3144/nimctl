@@ -518,7 +518,7 @@ start_chat() {
 }
 start_ide() { # code-server with the Continue extension, configured by the ide module (src/52-ide.sh)
   if svc_state ide; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign ide; return 1; }; info "$(tf svc_already "$(t ide)")"; return 0; fi
-  has code-server || { bad "$(tf svc_missing code-server)"; return 1; }
+  has code-server || { bad "$(tf svc_missing code-server)"; info "→ nimctl ide install"; return 1; }
   declare -F ide_write_config >/dev/null || return 1
   [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }
   ide_write_config || return 1
@@ -537,7 +537,7 @@ stop_svc() {
   esac
 }
 start_all() { local rc=0; start_proxy || rc=1; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; { [[ "$IDE_ENABLED" == 1 ]] || svc_state ide; } && stop_svc ide; return 0; }
+stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
@@ -596,7 +596,7 @@ T_de+=(
   [key_rej]="nicht akzeptiert (%s) – alter Key bleibt" [checking]="prüfe … " [key_same]="gleicher Key – nichts geändert"
   [key_ok]="gültig" [key_none]="kein Key → k" [key_bad]="ungültig/abgelaufen → k" [key_off]="NVIDIA nicht erreichbar" [key_unk]="nicht geprüft" [checked]="geprüft"
   [key_expires]="läuft in ~%d Tagen ab" [key_expire_soon]="Key läuft in ~%d Tagen ab – neuen Key unter %s erzeugen" [key_expired]="Key ist vermutlich abgelaufen (älter als 180 Tage)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
   [env_hint]="# Für andere Werkzeuge (Aider, Continue, Zed, OpenAI-SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# Hinweis: Proxy läuft nicht – nimctl start"
   [inst_title]="Installation" [inst_missing]="fehlt" [inst_menu]="1) alles Fehlende installieren  2) PATH/Aliase  3) Autostart (systemd) an  4) Autostart aus  5) Shell-Completion%s  (Enter = zurück)"
   [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_npm]="npm fehlt – Node.js installieren: %s" [inst_working]="installiere %s … (2–5 Min.)"
@@ -620,7 +620,7 @@ T_en+=(
   [key_rej]="rejected (%s) – old key kept" [checking]="checking … " [key_same]="same key – nothing changed"
   [key_ok]="valid" [key_none]="no key → k" [key_bad]="invalid/expired → k" [key_off]="NVIDIA unreachable" [key_unk]="not checked" [checked]="checked"
   [key_expires]="expires in ~%d days" [key_expire_soon]="key expires in ~%d days – create a new one at %s" [key_expired]="key has probably expired (older than 180 days)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
   [env_hint]="# For other tools (Aider, Continue, Zed, OpenAI SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# note: proxy is not running – nimctl start"
   [inst_title]="Installation" [inst_missing]="missing" [inst_menu]="1) install everything missing  2) PATH/aliases  3) autostart (systemd) on  4) autostart off  5) shell completion%s  (Enter = back)"
   [inst_alias]="Commands available: nimctl, nimctl code" [inst_npm]="npm missing – install Node.js: %s" [inst_working]="installing %s … (2–5 min)"
@@ -770,8 +770,8 @@ act_env() { # prints export lines for other tools; eval "$(nimctl env)"
 
 # ── Chat & logs ───────────────────────────────────────────────────────────────
 act_chat_open() { svc_running chat || start_chat || return 1; ok "$(tf browser "$CHAT_PORT")"; open_url "http://localhost:$CHAT_PORT" || info "→ http://localhost:$CHAT_PORT"; }
-log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; *) return 1;; esac; }
-act_logs() { # act_logs [proxy|chat|watch] [-f|f]
+log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; *) return 1;; esac; }
+act_logs() { # act_logs [proxy|chat|watch|ide] [-f|f]
   local which="${1:-}" follow="${2:-}" f
   [[ "$which" == -f ]] && { follow=-f; which="${2:-}"; }
   if [[ -z "$which" ]]; then sect "$(t k_l)"; prompt "$(t logs_which)" || return 1; which="$REPLY"; [[ -z "$which" ]] && return 0; fi
@@ -1493,20 +1493,22 @@ main_loop() {
 # Files: $NIM_DIR/code-server.yaml (bind address, password), $NIM_DIR/ide-data (user data, extensions),
 # ~/.continue/config.yaml (Continue's global config; written only when absent or generated by nimctl).
 T_de+=(
-  [k_v]="IDE" [h_ide]="VS Code im Browser (code-server + Continue) auf dem Proxy: nimctl ide [open|start|stop|password|config|autocomplete on|off|install]"
+  [k_v]="IDE" [h_ide]="VS Code im Browser (code-server + Continue) auf dem Proxy: nimctl ide [open|start|stop|disable|password|config|autocomplete on|off|install]"
   [ide_installing]="installiere code-server (~150 MB) … " [ide_ext]="installiere Extension %s … " [ide_enabled]="IDE aktiviert – nimctl start startet sie mit"
   [ide_url]="IDE: http://localhost:%s  · Passwort: nimctl ide password" [ide_pw_reset]="neues IDE-Passwort gesetzt – Neustart: nimctl ide stop && nimctl ide"
   [ide_cfg]="Continue-Konfiguration: %s" [ide_cfg_kept]="%s stammt nicht von nimctl – bleibt unverändert (nimctl ide config --force überschreibt)"
   [ide_ac_on]="Autocomplete an (Modell fast) – Achtung: viele Anfragen pro Minute auf dem Free Tier" [ide_ac_off]="Autocomplete aus"
   [ide_models]="Modelle in der IDE: code, fast%s – Continue liest die Konfiguration automatisch neu" [ide_no_proxy]="Proxy läuft nicht – die IDE braucht ihn"
+  [ide_disabled]="IDE deaktiviert – start/stop/restart lassen sie aus; wieder an: nimctl ide"
 )
 T_en+=(
-  [k_v]="IDE" [h_ide]="VS Code in the browser (code-server + Continue) on the proxy: nimctl ide [open|start|stop|password|config|autocomplete on|off|install]"
+  [k_v]="IDE" [h_ide]="VS Code in the browser (code-server + Continue) on the proxy: nimctl ide [open|start|stop|disable|password|config|autocomplete on|off|install]"
   [ide_installing]="installing code-server (~150 MB) … " [ide_ext]="installing extension %s … " [ide_enabled]="IDE enabled – nimctl start starts it too"
   [ide_url]="IDE: http://localhost:%s  · password: nimctl ide password" [ide_pw_reset]="new IDE password set – restart: nimctl ide stop && nimctl ide"
   [ide_cfg]="Continue configuration: %s" [ide_cfg_kept]="%s was not written by nimctl – left untouched (nimctl ide config --force overwrites)"
   [ide_ac_on]="autocomplete on (fast model) – careful: many requests per minute on the free tier" [ide_ac_off]="autocomplete off"
   [ide_models]="models in the IDE: code, fast%s – Continue reloads the configuration automatically" [ide_no_proxy]="proxy is not running – the IDE needs it"
+  [ide_disabled]="IDE disabled – start/stop/restart leave it out; back on: nimctl ide"
 )
 IDE_MARK="# generated by nimctl"
 ide_continue_dir() { printf '%s' "${CONTINUE_GLOBAL_DIR:-$HOME/.continue}"; }
@@ -1514,7 +1516,7 @@ ide_write_config() { # ide_write_config [--force] – code-server.yaml (always) 
   mkdir -p "$NIM_DIR/ide-data/extensions"
   printf 'bind-addr: %s:%s\nauth: password\npassword: %s\ncert: false\n' "$BIND" "$IDE_PORT" "$IDE_PASSWORD" >"$NIM_DIR/code-server.yaml.tmp"
   chmod 600 "$NIM_DIR/code-server.yaml.tmp"; mv "$NIM_DIR/code-server.yaml.tmp" "$NIM_DIR/code-server.yaml"
-  local dir f base="http://127.0.0.1:$PROXY_PORT/v1"; dir=$(ide_continue_dir); f="$dir/config.yaml"; mkdir -p "$dir"
+  local dir f base="http://127.0.0.1:$PROXY_PORT/v1"; dir=$(ide_continue_dir); f="$dir/config.yaml"; [[ -d "$dir" ]] || { mkdir -p "$dir"; chmod 700 "$dir"; }
   if [[ -f "$f" && "${1:-}" != --force ]] && ! grep -qF "$IDE_MARK" "$f"; then info "$(tf ide_cfg_kept "$f")"; return 0; fi
   local ctx="${NIMCTL_IDE_CONTEXT:-32768}" more=""
   {
@@ -1544,23 +1546,28 @@ inst_codeserver() { # standalone install into ~/.local plus the Continue extensi
   [[ -n "$IDE_PASSWORD" ]] || IDE_PASSWORD=$(gen_secret | head -c 24)
   IDE_ENABLED=1; save_conf; ok "$(t ide_enabled)"
 }
-ide_ensure() { # installed, enabled, proxy up, code-server up
+ide_ensure() { # installed, proxy up, code-server up – and only then enabled for start/stop/restart and systemd
   has code-server || { bad "$(tf svc_missing code-server)"; info "→ nimctl ide install"; return 1; }
-  [[ "$IDE_ENABLED" == 1 ]] || { IDE_ENABLED=1; save_conf; }
   svc_running proxy || { info "$(t proxy_starting)"; start_proxy || { bad "$(t ide_no_proxy)"; return 1; }; }
-  svc_running ide || start_ide
+  svc_running ide || start_ide || return 1
+  [[ "$IDE_ENABLED" == 1 ]] || { IDE_ENABLED=1; save_conf; }
 }
-cmd_ide() { # cmd_ide [open|start|stop|password [--reset]|config [--force]|autocomplete on|off|install]
+ide_disable() { # stop it, take it out of start/stop/restart and systemd; the installation and the configs stay
+  if has systemctl && [[ -f "$(unit_dir)/nimctl-ide.service" ]]; then systemctl --user disable --now nimctl-ide 2>/dev/null; rm -f "$(unit_dir)/nimctl-ide.service"; systemctl --user daemon-reload 2>/dev/null; fi
+  stop_svc ide; IDE_ENABLED=0; save_conf; ok "$(t ide_disabled)"
+}
+cmd_ide() { # cmd_ide [open|start|stop|disable|password [--reset]|config [--force]|autocomplete on|off|install]
   local sub="${1:-open}"; (( $# )) && shift
   case "$sub" in
     install) inst_codeserver;;
     open)    ide_ensure || return 1; ok "$(tf ide_url "$IDE_PORT")"; open_url "http://localhost:$IDE_PORT" || info "→ http://localhost:$IDE_PORT";;
     start)   ide_ensure;;
     stop)    stop_svc ide;;
+    disable) ide_disable;;
     password) if [[ "${1:-}" == --reset ]]; then IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; ide_write_config >/dev/null; ok "$(t ide_pw_reset)"; fi
               [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }; printf '%s\n' "$IDE_PASSWORD";;
     config)  [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }; ide_write_config "${1:-}";;
-    autocomplete) case "${1:-}" in on) IDE_AUTOCOMPLETE=1; save_conf; ide_write_config --force >/dev/null; warn "$(t ide_ac_on)";; off) IDE_AUTOCOMPLETE=0; save_conf; ide_write_config --force >/dev/null; ok "$(t ide_ac_off)";; *) bad "$(t invalid): ${1:-}"; return 64;; esac;;
+    autocomplete) case "${1:-}" in on) IDE_AUTOCOMPLETE=1; save_conf; ide_write_config && warn "$(t ide_ac_on)";; off) IDE_AUTOCOMPLETE=0; save_conf; ide_write_config && ok "$(t ide_ac_off)";; *) bad "$(t invalid): ${1:-}"; return 64;; esac;;
     *) bad "$(t unknown): $sub"; return 64;;
   esac
 }
@@ -1733,7 +1740,7 @@ T_de+=(
   [usage_codes]="Exit-Codes: 0 ok · 1 Key fehlt/ungültig · 2 Proxy läuft nicht · 3 Voraussetzung fehlt · 4 ein gewähltes Modell antwortet nicht · 64 falsche Nutzung"
   [usage_more]="Details: nimctl help <Befehl>   ·   Doku: https://github.com/%s"
   [h_setup]="Assistent: Key, Werkzeuge, Modelle, Dienste (--yes für Skripte, Key aus NIMCTL_API_KEY)"
-  [h_start]="Proxy (LiteLLM) und Chat (Open WebUI) starten" [h_stop]="beide Dienste stoppen" [h_restart]="beide Dienste neu starten"
+  [h_start]="Proxy (LiteLLM) und Chat (Open WebUI) starten, die IDE wenn aktiviert" [h_stop]="alle Dienste stoppen" [h_restart]="alle Dienste neu starten"
   [h_status]="Dashboard einmalig, nicht interaktiv (--json für Skripte)" [h_check]="die gewählten Modelle mit echter Anfrage prüfen (code/review auch Tool-Calls)"
   [h_auto]="Modelle automatisch wählen, optional nur für einzelne Slots: nimctl auto code" [h_pick]="Slot manuell setzen: nimctl pick code [Suchbegriff]"
   [h_find]="alle Katalogeinträge zu <text> prüfen – zeigt, was wirklich antwortet" [h_test]="einen Prompt schicken: nimctl test [Modell|Slot] [Prompt]"
@@ -1741,7 +1748,7 @@ T_de+=(
   [h_code]="Claude Code über den Proxy starten (--model <Slot|ID>, --think, .nimctl-Profil im Projekt)"
   [h_chat]="Chat starten und im Browser öffnen; Konten: nimctl chat users | passwd [E-Mail] | reset"
   [h_env]="Export-Zeilen für andere Werkzeuge ausgeben: eval \"\$(nimctl env)\"" [h_key]="API-Key prüfen oder setzen: nimctl key [nvapi-…]"
-  [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch] [-f]"
+  [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch|ide] [-f]"
   [h_install]="Werkzeuge, PATH, Autostart, Completion" [h_update]="Selbst-Update von GitHub (--check zeigt nur an)" [h_models]="Katalog ausgeben (eine ID je Zeile)"
   [h_version]="Version" [h_help]="diese Hilfe" [h_quit]="Dashboard verlassen (Dienste laufen weiter)"
 )
@@ -1751,7 +1758,7 @@ T_en+=(
   [usage_codes]="Exit codes: 0 ok · 1 key missing/invalid · 2 proxy not running · 3 prerequisite missing · 4 a selected model does not respond · 64 usage error"
   [usage_more]="Details: nimctl help <command>   ·   Docs: https://github.com/%s"
   [h_setup]="wizard: key, tools, models, services (--yes for scripts, key from NIMCTL_API_KEY)"
-  [h_start]="start proxy (LiteLLM) and chat (Open WebUI)" [h_stop]="stop both services" [h_restart]="restart both services"
+  [h_start]="start proxy (LiteLLM) and chat (Open WebUI), the IDE once enabled" [h_stop]="stop all services" [h_restart]="restart all services"
   [h_status]="dashboard once, non-interactive (--json for scripts)" [h_check]="probe the selected models with a real request (code/review also tool calls)"
   [h_auto]="select models automatically, optionally for single slots: nimctl auto code" [h_pick]="set a slot manually: nimctl pick code [search]"
   [h_find]="probe every catalog entry matching <text> – shows what really answers" [h_test]="send a prompt: nimctl test [model|slot] [prompt]"
@@ -1759,7 +1766,7 @@ T_en+=(
   [h_code]="launch Claude Code through the proxy (--model <slot|id>, --think, .nimctl profile in the project)"
   [h_chat]="start the chat and open it in the browser; accounts: nimctl chat users | passwd [email] | reset"
   [h_env]="print export lines for other tools: eval \"\$(nimctl env)\"" [h_key]="check or set the API key: nimctl key [nvapi-…]"
-  [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch] [-f]"
+  [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch|ide] [-f]"
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )

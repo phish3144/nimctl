@@ -11,7 +11,7 @@ All notable changes to this project are documented here. Format follows
   proxy, generates a password, binds to `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) and opens the browser. `nimctl ide
   password [--reset]`, `nimctl ide config [--force]` (a foreign Continue config is never overwritten without
   `--force`), `nimctl ide autocomplete on|off` (off by default: autocomplete would burn the free tier's requests per
-  minute), `nimctl ide install`, `nimctl ide start|stop`. Dashboard key `v`, IDE row, `status --json` block, third
+  minute), `nimctl ide install`, `nimctl ide start|stop|disable`, `nimctl logs ide`. Dashboard key `v`, IDE row, `status --json` block, third
   systemd unit `nimctl-ide`, `nimctl start|stop|restart` include the IDE once it is enabled. The wizard offers it.
 - `NIMCTL_IDE_EXTENSIONS` installs additional Open VSX extensions (e.g. `RooVeterinaryInc.roo-cline`),
   `NIMCTL_IDE_CONTEXT` sets the context length Continue assumes for the models.

@@ -22,6 +22,7 @@ X
 cat >"$TMP/bin/code-server" <<X
 #!/usr/bin/env bash
 CFG=""; while [[ \$# -gt 0 ]]; do case \$1 in --install-extension) echo "fake code-server install \$2"; exit 0;; --config) CFG=\$2; shift;; esac; shift; done
+[[ -n "\${FAKE_CS_FAIL:-}" ]] && { echo "fake code-server: refusing to start"; exit 1; }
 A=\$(grep '^bind-addr:' "\$CFG" | awk '{print \$2}'); P=\${A##*:}; echo "fake code-server on \$A"
 python3 "$TMP/fake_server.py" "\$P" & C=\$!; trap 'kill \$C 2>/dev/null; exit 0' TERM INT; wait \$C
 X

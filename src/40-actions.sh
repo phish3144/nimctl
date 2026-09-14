@@ -16,7 +16,7 @@ T_de+=(
   [key_rej]="nicht akzeptiert (%s) – alter Key bleibt" [checking]="prüfe … " [key_same]="gleicher Key – nichts geändert"
   [key_ok]="gültig" [key_none]="kein Key → k" [key_bad]="ungültig/abgelaufen → k" [key_off]="NVIDIA nicht erreichbar" [key_unk]="nicht geprüft" [checked]="geprüft"
   [key_expires]="läuft in ~%d Tagen ab" [key_expire_soon]="Key läuft in ~%d Tagen ab – neuen Key unter %s erzeugen" [key_expired]="Key ist vermutlich abgelaufen (älter als 180 Tage)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
   [env_hint]="# Für andere Werkzeuge (Aider, Continue, Zed, OpenAI-SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# Hinweis: Proxy läuft nicht – nimctl start"
   [inst_title]="Installation" [inst_missing]="fehlt" [inst_menu]="1) alles Fehlende installieren  2) PATH/Aliase  3) Autostart (systemd) an  4) Autostart aus  5) Shell-Completion%s  (Enter = zurück)"
   [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_npm]="npm fehlt – Node.js installieren: %s" [inst_working]="installiere %s … (2–5 Min.)"
@@ -40,7 +40,7 @@ T_en+=(
   [key_rej]="rejected (%s) – old key kept" [checking]="checking … " [key_same]="same key – nothing changed"
   [key_ok]="valid" [key_none]="no key → k" [key_bad]="invalid/expired → k" [key_off]="NVIDIA unreachable" [key_unk]="not checked" [checked]="checked"
   [key_expires]="expires in ~%d days" [key_expire_soon]="key expires in ~%d days – create a new one at %s" [key_expired]="key has probably expired (older than 180 days)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
   [env_hint]="# For other tools (Aider, Continue, Zed, OpenAI SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# note: proxy is not running – nimctl start"
   [inst_title]="Installation" [inst_missing]="missing" [inst_menu]="1) install everything missing  2) PATH/aliases  3) autostart (systemd) on  4) autostart off  5) shell completion%s  (Enter = back)"
   [inst_alias]="Commands available: nimctl, nimctl code" [inst_npm]="npm missing – install Node.js: %s" [inst_working]="installing %s … (2–5 min)"
@@ -190,8 +190,8 @@ act_env() { # prints export lines for other tools; eval "$(nimctl env)"
 
 # ── Chat & logs ───────────────────────────────────────────────────────────────
 act_chat_open() { svc_running chat || start_chat || return 1; ok "$(tf browser "$CHAT_PORT")"; open_url "http://localhost:$CHAT_PORT" || info "→ http://localhost:$CHAT_PORT"; }
-log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; *) return 1;; esac; }
-act_logs() { # act_logs [proxy|chat|watch] [-f|f]
+log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; *) return 1;; esac; }
+act_logs() { # act_logs [proxy|chat|watch|ide] [-f|f]
   local which="${1:-}" follow="${2:-}" f
   [[ "$which" == -f ]] && { follow=-f; which="${2:-}"; }
   if [[ -z "$which" ]]; then sect "$(t k_l)"; prompt "$(t logs_which)" || return 1; which="$REPLY"; [[ -z "$which" ]] && return 0; fi

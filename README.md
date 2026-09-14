@@ -154,13 +154,13 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl chat` | Start chat if needed and open it in the browser |
 | `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin |
 | `nimctl accounts` | The same three account actions as an interactive menu (dashboard key `n`) |
-| `nimctl ide` | Start the browser IDE if needed and open it; `install`, `start`, `stop`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
+| `nimctl ide` | Start the browser IDE if needed and open it; `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
 | `nimctl key [nvapi-…]` | Check or set the API key |
 | `nimctl doctor [--fix]` | Diagnose tools, key, network, ports, permissions, models, proxy – repair with `--fix` or on request |
-| `nimctl logs [proxy\|chat\|watch] [-f]` | Show or follow a log |
+| `nimctl logs [proxy\|chat\|watch\|ide] [-f]` | Show or follow a log |
 | `nimctl install [all\|alias\|systemd\|completion]` | Tools, PATH, autostart, shell completion, watchdog timer |
 | `nimctl update [--check]` | Self-update from this repository with version compare, changelog excerpt and checksum |
 | `nimctl models` | Print the catalog, one id per line |
@@ -238,8 +238,8 @@ Autocomplete is off by default on purpose: inline completions fire on almost eve
 roughly 40 requests per minute per model. Switch it on when you want it and keep an eye on `nimctl stats`.
 
 The IDE listens on `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) with password login; `nimctl start`, `stop`, `restart` and the
-systemd units include it once it is enabled. More extensions: `NIMCTL_IDE_EXTENSIONS="RooVeterinaryInc.roo-cline"
-nimctl ide install`.
+systemd units include it once it is enabled, `nimctl ide disable` takes it out again (the installation stays, `nimctl ide`
+puts it back). More extensions: `NIMCTL_IDE_EXTENSIONS="RooVeterinaryInc.roo-cline" nimctl ide install`.
 
 ## Chat accounts
 
@@ -341,7 +341,7 @@ Nothing else runs at install time: the script is one file you can read before pi
 ## Uninstall
 
 ```bash
-nimctl stop                                   # stop proxy and chat
+nimctl stop                                   # stop proxy, chat and the IDE
 nimctl install                                # → 4 removes the systemd units and the watchdog timer, if you enabled them
 rm -rf ~/.nimctl ~/.local/bin/nimctl          # config, logs, chat data (chats and uploads live in ~/.nimctl/webui-data)
 rm -rf ~/.local/lib/code-server-* ~/.local/bin/code-server ~/.continue   # the browser IDE, if you enabled it

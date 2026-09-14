@@ -32,3 +32,21 @@ check "status: IDE down" "IDE +✗ aus" < <(timeout 20 "$N" status)
 check "ide password --reset" "neues IDE-Passwort" < <(timeout 10 "$N" ide password --reset)
 pw2=$(timeout 10 "$N" ide password); [[ "$pw2" != "$pw" ]] && pass "ide password --reset: changed" || fail "ide password --reset: changed"
 check "help: ide listed" "^  ide +.*code-server" < <(NIMCTL_LANG=en timeout 10 "$N" help)
+# review fixes: a foreign Continue config survives the autocomplete toggle, a failed start does not enable the IDE,
+# the failure hint names a log that nimctl logs can show, disable takes the IDE out of start/stop
+printf 'name: mine\nversion: 1.0.0\nschema: v1\nmodels: []\n' >"$CONT"
+check "ide autocomplete on: foreign config kept" "nicht von nimctl" < <(timeout 10 "$N" ide autocomplete on)
+grep -q '^name: mine$' "$CONT" && pass "ide autocomplete: foreign content intact" || fail "ide autocomplete: foreign content intact"
+timeout 10 "$N" ide autocomplete off >/dev/null; timeout 10 "$N" ide config --force >/dev/null
+check "ide disable" "IDE deaktiviert" < <(timeout 30 "$N" ide disable)
+grep -q '^IDE_ENABLED=0$' "$TMP/home/config" && pass "ide disable: config" || fail "ide disable: config"
+check "start: leaves a disabled IDE out" "Proxy läuft" < <(timeout 90 "$N" start)
+nocheck "start: leaves a disabled IDE out (no IDE line)" "IDE läuft" < <(timeout 20 "$N" status)
+timeout 30 "$N" stop >/dev/null
+check "ide start: failed code-server start reports the log" "nimctl logs ide" < <(FAKE_CS_FAIL=1 timeout 90 "$N" ide start; echo "rc=$?")
+grep -q '^IDE_ENABLED=0$' "$TMP/home/config" && pass "ide start: failed start does not enable the IDE" || fail "ide start: failed start does not enable the IDE"
+check "logs ide" "refusing to start" < <(timeout 10 "$N" logs ide)
+timeout 30 "$N" stop >/dev/null
+check "ide start: enables the IDE after a successful start" "IDE läuft" < <(timeout 90 "$N" ide start)
+grep -q '^IDE_ENABLED=1$' "$TMP/home/config" && pass "ide start: enabled again" || fail "ide start: enabled again"
+timeout 30 "$N" stop >/dev/null

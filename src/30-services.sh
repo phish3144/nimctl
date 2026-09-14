@@ -84,7 +84,7 @@ start_chat() {
 }
 start_ide() { # code-server with the Continue extension, configured by the ide module (src/52-ide.sh)
   if svc_state ide; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign ide; return 1; }; info "$(tf svc_already "$(t ide)")"; return 0; fi
-  has code-server || { bad "$(tf svc_missing code-server)"; return 1; }
+  has code-server || { bad "$(tf svc_missing code-server)"; info "→ nimctl ide install"; return 1; }
   declare -F ide_write_config >/dev/null || return 1
   [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }
   ide_write_config || return 1
@@ -103,7 +103,7 @@ stop_svc() {
   esac
 }
 start_all() { local rc=0; start_proxy || rc=1; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; { [[ "$IDE_ENABLED" == 1 ]] || svc_state ide; } && stop_svc ide; return 0; }
+stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
