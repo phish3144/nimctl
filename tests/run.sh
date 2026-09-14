@@ -4,7 +4,7 @@
 set -u
 exec </dev/null                          # no test may block on the runner's stdin; tests pipe their own input
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$HERE")
-TMP=$(mktemp -d); trap 'kill $MOCK $UPD 2>/dev/null; pkill -f "[f]ake_server.py" 2>/dev/null; rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'kill $MOCK $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP)" 2>/dev/null; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/update"
 cat >"$TMP/fake_server.py" <<'X'
 import json, sys
@@ -29,11 +29,13 @@ done
 printf '#!/usr/bin/env bash\necho "fake claude BASE=$ANTHROPIC_BASE_URL MODEL=$ANTHROPIC_MODEL FAST=$ANTHROPIC_SMALL_FAST_MODEL THINK=$MAX_THINKING_TOKENS MAXOUT=$CLAUDE_CODE_MAX_OUTPUT_TOKENS TOKEN=$ANTHROPIC_AUTH_TOKEN args=$*"\n' >"$TMP/bin/claude"
 printf '#!/usr/bin/env bash\necho "fake uv $*"\n' >"$TMP/bin/uv"
 chmod +x "$TMP/bin/"*
-export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE=http://127.0.0.1:9999/v1 NIMCTL_PROXY_PORT=14000 NIMCTL_CHAT_PORT=13000
-export TERM=dumb NIMCTL_PROBE_TIMEOUT=3 NIMCTL_LANG=de HOME="$TMP" NIMCTL_INTERACTIVE=1 LC_ALL=C.UTF-8 NIMCTL_UPDATE_URL=http://127.0.0.1:9998
+# Ports are derived from the runner's pid so several suites can run at the same time (parallel CI jobs, worktrees).
+PP=$(( 20000 + ($$ % 2000) * 4 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 ))   # proxy, chat, mock API, update server
+export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE="http://127.0.0.1:$MP/v1" NIMCTL_PROXY_PORT=$PP NIMCTL_CHAT_PORT=$CP
+export TERM=dumb NIMCTL_PROBE_TIMEOUT=3 NIMCTL_LANG=de HOME="$TMP" NIMCTL_INTERACTIVE=1 LC_ALL=C.UTF-8 NIMCTL_UPDATE_URL="http://127.0.0.1:$UP"
 unset NVIDIA_API_KEY NIMCTL_API_KEY NIMCTL_YES NO_COLOR DISPLAY WAYLAND_DISPLAY
-python3 "$HERE/mock_api.py" 9999 & MOCK=$!
-( cd "$TMP/update" && exec python3 -m http.server 9998 --bind 127.0.0.1 >/dev/null 2>&1 ) & UPD=$!
+python3 "$HERE/mock_api.py" "$MP" & MOCK=$!
+( cd "$TMP/update" && exec python3 -m http.server "$UP" --bind 127.0.0.1 >/dev/null 2>&1 ) & UPD=$!
 sleep 1
 N="$ROOT/nimctl"; PASS=0; FAIL=0
 strip() { sed 's/\x1b\[[0-9;]*[A-Za-z]//g'; }

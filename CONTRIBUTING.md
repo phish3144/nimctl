@@ -49,7 +49,7 @@ Useful helpers (see `src/05-core.sh` … `src/40-actions.sh`):
 
 Add `tests/cases/NN-name.sh` (sourced by the runner, `# shellcheck shell=bash` on top). Available: `$N` (built
 nimctl), `$TMP` (scratch, `$TMP/home` is `NIMCTL_HOME`), `check name regex < <(cmd)`, `nocheck`, `pass`, `fail`,
-`assert name cmd…`. The mock API (`tests/mock_api.py`, port 9999) knows valid/invalid keys, dead, slow, cold and
+`assert name cmd…`. The mock API (`tests/mock_api.py`, port `$MP`; proxy/chat ports are `$PP`/`$CP`, chosen per run) knows valid/invalid keys, dead, slow, cold and
 overloaded models, tool calling (`*-notools` models refuse) and streaming. Fake `litellm`, `open-webui`, `claude`
 and `uv` live in `$TMP/bin`; the fake services answer any `/v1/messages` POST. Piped input answers prompts one line
 per prompt (`NIMCTL_INTERACTIVE=1` is set by the runner; set it to `''` to test the non-interactive path).
