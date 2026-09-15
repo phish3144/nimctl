@@ -54,5 +54,5 @@ wizard() { # wizard [--yes]
   if ask "$(t wz_start_q)" y; then start_all; fi
   if has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]] && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
   sect "$(tf wz_step 5 5 "$(t wz_done)")"; local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; slot_line "$s" "$n"; done
-  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && info "$(tf ide_url "$IDE_PORT")"; printf '\n'
+  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; printf '\n'
 }

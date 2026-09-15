@@ -50,3 +50,18 @@ timeout 30 "$N" stop >/dev/null
 check "ide start: enables the IDE after a successful start" "IDE läuft" < <(timeout 90 "$N" ide start)
 grep -q '^IDE_ENABLED=1$' "$TMP/home/config" && pass "ide start: enabled again" || fail "ide start: enabled again"
 timeout 30 "$N" stop >/dev/null
+# shell tool for Continue's agent mode (code-server's terminal tool returns no output) and the project folder the IDE opens
+timeout 10 "$N" ide config --force >/dev/null
+python3 -m py_compile "$TMP/home/mcp/shell.py" 2>/dev/null && pass "ide: shell tool written and compiles" || fail "ide: shell tool written and compiles"
+grep -q '^mcpServers:' "$CONT" && grep -q 'mcp/shell.py' "$CONT" && grep -q 'NIMCTL_WORKSPACE_FILE' "$CONT" && grep -q '^rules:' "$CONT" && grep -q 'RunTerminalCommand' "$CONT" && pass "ide: shell tool and rule registered in Continue" || fail "ide: shell tool and rule registered in Continue"
+jq -e '.["workbench.startupEditor"] == "none"' "$TMP/home/ide-data/User/settings.json" >/dev/null && pass "ide: code-server settings written" || fail "ide: code-server settings written"
+check "ide: mcp package prepared with uv" "fake uv run --with mcp" < "$TMP/home/logs/mcp-warm.log"
+grep -q -- '--disable-workspace-trust' "$N" && pass "ide: code-server starts without the workspace-trust prompt" || fail "ide: code-server starts without the workspace-trust prompt"
+mkdir -p "$TMP/proj2"; P2=$(readlink -f "$TMP/proj2")
+check "ide <dir>: sets the project folder and opens it" "Projektordner in der IDE: $P2" < <(timeout 90 "$N" ide "$TMP/proj2")
+[[ "$(cat "$TMP/home/ide-workspace")" == "$P2" ]] && pass "ide <dir>: folder stored" || fail "ide <dir>: folder stored"
+check "ide open: stored folder wins outside a git project, URL carries it" "IDE: http://localhost:$IPT/\?folder=" < <(cd "$TMP" && timeout 30 "$N" ide open)
+check "ide open: one-time policy hint" "Automatic" < <(cd "$TMP" && timeout 30 "$N" ide open)
+check "ide open <missing dir>: refused" "kein Ordner" < <(timeout 10 "$N" ide open "$TMP/nope"; echo "rc=$?")
+timeout 10 "$N" ide open "$TMP/nope" >/dev/null 2>&1; assert "ide open <missing dir>: rc 64" [ $? -eq 64 ]
+timeout 30 "$N" stop >/dev/null
