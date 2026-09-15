@@ -88,7 +88,7 @@ start_ide() { # code-server with the Continue extension, configured by the ide m
   declare -F ide_write_config >/dev/null || return 1
   [[ -n "$IDE_PASSWORD" ]] || { IDE_PASSWORD=$(gen_secret | head -c 24); save_conf; }
   ide_write_config || return 1
-  nohup code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry >"$LOG_DIR/code-server.log" 2>&1 &
+  nohup code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry --disable-workspace-trust >"$LOG_DIR/code-server.log" 2>&1 &
   echo $! >"$PID_DIR/ide.pid"; date +%s >"$PID_DIR/ide.started"
   _start_result ide $! 60
 }

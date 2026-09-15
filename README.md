@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.2.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.3.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -154,7 +154,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl chat` | Start chat if needed and open it in the browser |
 | `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin |
 | `nimctl accounts` | The same three account actions as an interactive menu (dashboard key `n`) |
-| `nimctl ide` | Start the browser IDE if needed and open it; `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
+| `nimctl ide [folder]` | Start the browser IDE if needed and open it (the folder, else the git project in the current directory, else the last one); `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -223,7 +223,8 @@ Other tools: `eval "$(nimctl env)"` exports `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUT
 ## Browser IDE
 
 ```bash
-nimctl ide                     # installs on first use (asks), starts code-server, opens http://localhost:8080
+nimctl ide ~/src/myproject     # installs on first use (asks), starts code-server, opens the folder at http://localhost:8080
+nimctl ide                     # the git project in the current directory, otherwise the last folder
 nimctl ide password            # the login password (generated per installation, stored in ~/.nimctl/config)
 nimctl ide autocomplete on     # inline completions from the fast model – off by default, see below
 ```
@@ -234,10 +235,18 @@ What you get is VS Code in the browser (code-server, installed standalone into `
 configured, all through the local proxy, so a model change in the dashboard reaches the IDE without any clicking.
 A Continue config that nimctl did not write is left alone (`nimctl ide config --force` overwrites it).
 
+Agent mode needs a shell, and Continue's own terminal tool returns no output inside code-server. nimctl therefore ships
+one: `~/.nimctl/mcp/shell.py`, an MCP server whose `run` tool executes commands in the open project folder and returns
+exit code and output. It is registered in the Continue config together with a rule that tells the model to use it, and the
+Python package it needs is fetched once with `uv`. One click stays with you, because Continue keeps tool policies in the
+browser: gear → Tools → `shell` → `run` → *Automatic* (and `RunTerminalCommand` → *Excluded*). From then on the agent
+reads, edits, runs and tests without asking.
+
 Autocomplete is off by default on purpose: inline completions fire on almost every keystroke, and the free tier allows
 roughly 40 requests per minute per model. Switch it on when you want it and keep an eye on `nimctl stats`.
 
-The IDE listens on `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) with password login; `nimctl start`, `stop`, `restart` and the
+The IDE listens on `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) with password login and without the workspace-trust prompt;
+`nimctl start`, `stop`, `restart` and the
 systemd units include it once it is enabled, `nimctl ide disable` takes it out again (the installation stays, `nimctl ide`
 puts it back). More extensions: `NIMCTL_IDE_EXTENSIONS="RooVeterinaryInc.roo-cline" nimctl ide install`.
 
@@ -276,7 +285,9 @@ bench           bench results
 models.cache    catalog snapshot (refreshed hourly, used as fallback when NVIDIA is unreachable)
 candidates      optional: your own candidate patterns per slot
 code-server.yaml  generated code-server config (bind address, password)
-ide-data/       code-server user data and extensions (Continue's own config lives in ~/.continue/config.yaml)
+ide-data/       code-server user data, settings and extensions (Continue's own config lives in ~/.continue/config.yaml)
+mcp/shell.py    shell tool for Continue's agent mode (MCP server, returns command output)
+ide-workspace   the project folder the IDE opens and the shell tool runs in
 logs/           litellm.log, open-webui.log, code-server.log, watch.log
 run/            pid files and start times
 webui-data/     chat history, uploaded documents, users

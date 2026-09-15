@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.3.0] – 2026-09-15
+
+### Added
+- **IDE agent mode works out of the box**: `nimctl ide` writes a shell tool for Continue (`~/.nimctl/mcp/shell.py`, an
+  MCP server whose `run` tool returns exit code and output – Continue's own terminal tool returns nothing inside
+  code-server), registers it with a rule in `~/.continue/config.yaml`, prepares the Python package `mcp` with `uv`, writes
+  code-server user settings once (no welcome page, bash terminal, telemetry off) and starts code-server with workspace
+  trust disabled. One click remains per browser: Continue's tool policy for `run`, which the browser stores.
+- `nimctl ide <folder>` and `nimctl ide open <folder>` open the folder in the IDE and make it the shell tool's working
+  directory; without an argument the git project in the current directory is used, otherwise the last folder.
+
 ## [1.2.0] – 2026-09-14
 
 ### Added
