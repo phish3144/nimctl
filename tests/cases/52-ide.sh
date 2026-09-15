@@ -60,8 +60,8 @@ grep -q -- '--disable-workspace-trust' "$N" && pass "ide: code-server starts wit
 mkdir -p "$TMP/proj2"; P2=$(readlink -f "$TMP/proj2")
 check "ide <dir>: sets the project folder and opens it" "Projektordner in der IDE: $P2" < <(timeout 90 "$N" ide "$TMP/proj2")
 [[ "$(cat "$TMP/home/ide-workspace")" == "$P2" ]] && pass "ide <dir>: folder stored" || fail "ide <dir>: folder stored"
-check "ide open: URL carries the folder" "localhost:$IPT/\?folder=" < <(timeout 30 "$N" ide open)
-check "ide open: one-time policy hint" "Automatic" < <(timeout 30 "$N" ide open)
+check "ide open: stored folder wins outside a git project, URL carries it" "IDE: http://localhost:$IPT/\?folder=" < <(cd "$TMP" && timeout 30 "$N" ide open)
+check "ide open: one-time policy hint" "Automatic" < <(cd "$TMP" && timeout 30 "$N" ide open)
 check "ide open <missing dir>: refused" "kein Ordner" < <(timeout 10 "$N" ide open "$TMP/nope"; echo "rc=$?")
 timeout 10 "$N" ide open "$TMP/nope" >/dev/null 2>&1; assert "ide open <missing dir>: rc 64" [ $? -eq 64 ]
 timeout 30 "$N" stop >/dev/null

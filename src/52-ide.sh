@@ -6,7 +6,7 @@
 T_de+=(
   [k_v]="IDE" [h_ide]="VS Code im Browser (code-server + Continue) auf dem Proxy: nimctl ide [Ordner|open [Ordner]|start|stop|disable|password|config|autocomplete on|off|install]"
   [ide_installing]="installiere code-server (~150 MB) … " [ide_ext]="installiere Extension %s … " [ide_enabled]="IDE aktiviert – nimctl start startet sie mit"
-  [ide_url]="IDE: http://localhost:%s  · Passwort: nimctl ide password" [ide_pw_reset]="neues IDE-Passwort gesetzt – Neustart: nimctl ide stop && nimctl ide"
+  [ide_url]="IDE: %s  · Passwort: nimctl ide password" [ide_pw_reset]="neues IDE-Passwort gesetzt – Neustart: nimctl ide stop && nimctl ide"
   [ide_cfg]="Continue-Konfiguration: %s" [ide_cfg_kept]="%s stammt nicht von nimctl – bleibt unverändert (nimctl ide config --force überschreibt)"
   [ide_ac_on]="Autocomplete an (Modell fast) – Achtung: viele Anfragen pro Minute auf dem Free Tier" [ide_ac_off]="Autocomplete aus"
   [ide_models]="Modelle in der IDE: code, fast%s – Continue liest die Konfiguration automatisch neu" [ide_no_proxy]="Proxy läuft nicht – die IDE braucht ihn"
@@ -18,7 +18,7 @@ T_de+=(
 T_en+=(
   [k_v]="IDE" [h_ide]="VS Code in the browser (code-server + Continue) on the proxy: nimctl ide [folder|open [folder]|start|stop|disable|password|config|autocomplete on|off|install]"
   [ide_installing]="installing code-server (~150 MB) … " [ide_ext]="installing extension %s … " [ide_enabled]="IDE enabled – nimctl start starts it too"
-  [ide_url]="IDE: http://localhost:%s  · password: nimctl ide password" [ide_pw_reset]="new IDE password set – restart: nimctl ide stop && nimctl ide"
+  [ide_url]="IDE: %s  · password: nimctl ide password" [ide_pw_reset]="new IDE password set – restart: nimctl ide stop && nimctl ide"
   [ide_cfg]="Continue configuration: %s" [ide_cfg_kept]="%s was not written by nimctl – left untouched (nimctl ide config --force overwrites)"
   [ide_ac_on]="autocomplete on (fast model) – careful: many requests per minute on the free tier" [ide_ac_off]="autocomplete off"
   [ide_models]="models in the IDE: code, fast%s – Continue reloads the configuration automatically" [ide_no_proxy]="proxy is not running – the IDE needs it"
@@ -142,8 +142,8 @@ ide_open() { # ide_open [dir] – folder argument wins, then the git project in 
   if [[ -n "${1:-}" ]]; then ide_set_workspace "$1" || return $?
   elif [[ -d "$PWD/.git" ]]; then ide_set_workspace "$PWD" || return $?
   elif [[ -n "$(ide_workspace)" ]]; then info "$(tf ide_ws "$(ide_workspace)")"; fi
-  ide_ensure || return 1; ok "$(tf ide_url "$IDE_PORT")"
-  open_url "$(ide_url)" || info "→ $(ide_url)"; info "$(t ide_tools_hint)"
+  ide_ensure || return 1; ok "$(tf ide_url "$(ide_url)")"
+  open_url "$(ide_url)" || true; info "$(t ide_tools_hint)"
 }
 ide_disable() { # stop it, take it out of start/stop/restart and systemd; the installation and the configs stay
   if has systemctl && [[ -f "$(unit_dir)/nimctl-ide.service" ]]; then systemctl --user disable --now nimctl-ide 2>/dev/null; rm -f "$(unit_dir)/nimctl-ide.service"; systemctl --user daemon-reload 2>/dev/null; fi
