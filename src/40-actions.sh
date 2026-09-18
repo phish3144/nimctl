@@ -129,8 +129,8 @@ act_test() { # act_test [model-or-slot] [prompt]
     [[ -z "$model" ]] && { bad "$(t slot_empty)"; return 1; }; fi
   valid_model "$model" || { bad "$(t invalid): $model"; return 1; }
   if [[ -z "$prm" ]]; then prompt "$(t test_prompt)" || return 1; prm="$REPLY"; fi; [[ -z "$prm" ]] && prm="$(t test_default)"
-  json=$(jq -n --arg m "$model" --arg p "$prm" '{model:$m,messages:[{role:"user",content:$p}],max_tokens:300}')
-  info "$(tf test_run "$model")"; t0=$(now_ms); out=$(api POST /chat/completions 180 "$json")
+  json=$(jq -n --arg m "$(plain_id "$model")" --arg p "$prm" '{model:$m,messages:[{role:"user",content:$p}],max_tokens:300}')
+  info "$(tf test_run "$model")"; t0=$(now_ms); out=$(model_api "$model" POST /chat/completions 180 "$json")
   if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then
     local ms=$(( $(now_ms) - t0 )); probe_set "$model" ok "$ms"
     local content; content=$(echo "$out" | jq -r '.choices[0].message.content // ""'); [[ -z "$content" ]] && content="$(echo "$out" | jq -r '.choices[0].message.reasoning_content // ""' | head -c 500) [reasoning]"

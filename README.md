@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.5.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.6.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -33,6 +33,7 @@ $ nimctl
   IDE      ✓ up     :8080  nimctl · pid 41377
   Search   ✓ up     :8888  nimctl · pid 41402
   Tools    ✓ litellm  ✓ open-webui  ✓ claude  ✓ uv  ✓ code-server
+  Pool     ✓ Groq (4)  ✓ Cerebras (3)
   Today    since 09:14 · 212 requests · 3× 429 · 9 fallbacks
   Budget   36/min · 29 free · 0 waiting · 7 throttled (avg 1.1 s)
 
@@ -51,7 +52,7 @@ Models
 ────────────────────────────────────────────────────────────────────────────────────
   Services s Start  x Stop  r Restart
   Models   a Auto  p Probe  1-4 pick slot  f Find  t Test  b Bench
-  Use      c Claude Code  w Chat  e Env  g Stats  n Accounts  o Search  v IDE
+  Use      c Claude Code  w Chat  e Env  g Stats  m Pool  n Accounts  o Search  v IDE
   System   k Key  d Doctor  i Install  l Logs  u Update  ? Help  q Quit
   ›
 ```
@@ -89,7 +90,7 @@ customer data (requests go to NVIDIA's US infrastructure, see [FAQ](#faq)).
 ## Contents
 
 [Why nimctl](#why-nimctl) · [Quick start](#quick-start) · [Commands](#commands) · [Model slots](#the-four-model-slots) ·
-[Claude Code](#claude-code) · [Chat accounts](#chat-accounts) · [How it works](#how-it-works) · [Configuration](#configuration) ·
+[Claude Code](#claude-code) · [Chat accounts](#chat-accounts) · [How it works](#how-it-works) · [Provider pool](#provider-pool) · [Configuration](#configuration) ·
 [Requirements](#requirements-and-compatibility) · [Uninstall](#uninstall) · [What to expect](#claude-code-on-open-models--what-to-expect) ·
 [Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Development](#development) · [Deutsch](#deutsch--kurzfassung) · [License](#license)
 
@@ -158,6 +159,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl accounts` | The same three account actions as an interactive menu (dashboard key `n`) |
 | `nimctl ide [folder]` | Start the browser IDE if needed and open it (the folder, else the git project in the current directory, else the last one); `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
 | `nimctl search ["query"]` | Local web search (SearXNG) for the chat and the IDE: start it, or search from the terminal; `install`, `start`, `stop`, `disable`, `test` |
+| `nimctl pool [add <provider> [key]\|remove <provider>\|auto [provider]\|test\|models <provider>]` | Fallback providers with free quotas (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral): the proxy hands a request to them when NVIDIA fails it |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -298,17 +300,19 @@ nimctl chat reset                  # wipe all accounts; the next signup becomes 
  nimctl ide  ──► code-server 127.0.0.1:8080 + Continue ──(OpenAI API)──► LiteLLM proxy ─────────────────────► integrate.api.nvidia.com
  nimctl chat ──► Open WebUI 127.0.0.1:3000 ───────────────────────────────────────(OpenAI API)──► integrate.api.nvidia.com
                                           (NIMCTL_CHAT_VIA_PROXY=0: directly to NVIDIA instead)
+ inside the proxy: nim-<slot> = NVIDIA first ──(no byte for 90 s, 429, 5xx)──► pool-<slot> = Groq · Gemini · Cerebras · OpenRouter · Mistral
 ```
 
 Everything lives in `~/.nimctl` (mode 700):
 
 ```
-config          API key, chosen models, extra models added via --model, proxy master key, IDE password (chmod 600)
+config          API key, chosen models, extra models added via --model, proxy master key, IDE password, pool keys and models (chmod 600)
 state           key state (ok/invalid/offline/none), time of the last check, date the key was entered
 litellm.yaml    generated proxy config – do not edit, use the dashboard
-probes          last probe result per model (ok/error, latency, time, tool calling)
+probes          last probe result per model (ok/error, latency, time, tool calling); pool models as <provider>:<id>
 bench           bench results
 models.cache    catalog snapshot (refreshed hourly, used as fallback when NVIDIA is unreachable)
+models.<provider>.cache  catalog snapshot per pool provider
 candidates      optional: your own candidate patterns per slot
 code-server.yaml  generated code-server config (bind address, password)
 ide-data/       code-server user data, settings and extensions (Continue's own config lives in ~/.continue/config.yaml)
@@ -340,6 +344,40 @@ over. If NVIDIA still answers 429, the budget shrinks by a fifth for five minute
 The dashboard shows the budget line (free slots, waiting requests, throttled requests and the average wait),
 `nimctl stats` counts throttled requests, and the proxy log carries one `nimctl throttle:` line per wait. The chat
 goes through the proxy by default so it is counted too; `NIMCTL_CHAT_VIA_PROXY=0` restores the direct connection.
+Requests that end up in the provider pool are counted as well – the budget errs on the safe side.
+
+## Provider pool
+
+NVIDIA's free tier is shared infrastructure: under load a model answers slowly, queues a request for minutes without
+sending a byte, or refuses with 429. Retries and the `fast` fallback cover the occasional case, but when the whole
+endpoint is busy every slot suffers at once. `nimctl pool add <provider> <key>` puts other free tiers behind it:
+
+| Provider | Free tier (as of 2026-09; unpublished, changes) | Key |
+|---|---|---|
+| `groq` | ~30 requests/min, ~1,000/day, no card; llama-3.3-70b, gpt-oss-120b, kimi-k2, qwen3-32b | https://console.groq.com/keys |
+| `gemini` | 10–15 requests/min, 250–1,000/day; Gemini Flash, Flash-Lite, Pro. Google may train on free-tier data | https://aistudio.google.com/apikey |
+| `cerebras` | ~30 requests/min, 1M tokens/day, very fast; gpt-oss-120b, qwen-3-235b, llama-3.3-70b | https://cloud.cerebras.ai |
+| `openrouter` | 20 requests/min, 50/day (1,000 with $10 credit); `:free` models only, which may train on your data | https://openrouter.ai/settings/keys |
+| `mistral` | experiment tier, ~1 request/s, 1B tokens/month; data may be used for training | https://console.mistral.ai/api-keys |
+
+The key is checked at the provider before it is saved (`~/.nimctl/config`, mode 600, never on a command line). Then
+nimctl picks one model per slot from the provider's catalog with the same probe NVIDIA gets – a real request, tool
+calling for `code` and `review`, latency – and writes them into the proxy config as `pool-code`, `pool-fast`,
+`pool-chat` and `pool-review`. NVIDIA stays first: the proxy sends every request to `nim-<slot>` and only when that
+fails (no byte for `NIMCTL_STALL_TIMEOUT` seconds, 429, 5xx) hands it to `pool-<slot>`, where the providers are
+tried in the order of the table and one that fails is cooled down for 30 seconds. Nothing goes to a pool provider
+while NVIDIA answers, so on a good day your answers do not change – on a bad day you get an answer instead of an
+error. The handover only works before the first token: a stream that breaks mid-answer is reported to the client,
+which retries by itself (Claude Code does).
+
+Pool models are also reachable by their own id, e.g. `nimctl code --model groq:openai/gpt-oss-120b` or
+`nimctl test cerebras:gpt-oss-120b`. `nimctl pool` shows the table with the chosen models, `nimctl pool auto` picks
+them again, `nimctl pool test` runs an Anthropic-format round trip through every `pool-<slot>`,
+`nimctl pool remove <provider>` takes a provider out. The dashboard has the `Pool` row (key `m`),
+`nimctl status --json` a `pool` object, `nimctl doctor` checks keys and models. The setup wizard offers the pool
+right after the NVIDIA key; unattended setups take keys from `GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`,
+`OPENROUTER_API_KEY` and `MISTRAL_API_KEY`. Candidate patterns per provider and slot: `NIMCTL_CAND_<PROVIDER>_<SLOT>`
+or a line like `groq.code: gpt-oss-120b llama-3.3-70b` in `~/.nimctl/candidates`.
 
 ## Configuration
 
@@ -361,12 +399,15 @@ All optional, via environment variables:
 | `NIMCTL_HOME` | `~/.nimctl` | Data directory |
 | `NIMCTL_API_BASE` | NVIDIA endpoint | Point at a self-hosted NIM container instead |
 | `NIMCTL_API_KEY` | | Key for unattended `setup --yes` (also `NVIDIA_API_KEY`) |
-| `NIMCTL_CAND_CODE` etc. | built-in lists | Candidate patterns per slot, space separated |
+| `GROQ_API_KEY` etc. | | Pool keys from the environment (`GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`): win over the config file, taken over by `nimctl setup --yes` |
+| `NIMCTL_POOL_BASE_<PROVIDER>` | provider endpoint | Endpoint of a pool provider, e.g. `NIMCTL_POOL_BASE_GROQ` (tests, mirrors) |
+| `NIMCTL_CAND_CODE` etc. | built-in lists | Candidate patterns per slot, space separated; `NIMCTL_CAND_GROQ_CODE` etc. for the pool providers |
 | `NIMCTL_CHAT_VIA_PROXY` | `1` | Open WebUI talks to the proxy (throttle, retries, fallbacks, curated model list); `0` = directly to NVIDIA |
 | `NIMCTL_CHAT_PASSWORD` | | New password for `nimctl chat passwd` in unattended runs |
 | `NIMCTL_MAX_OUTPUT_TOKENS` | `8192` | Output cap for Claude Code |
 | `NIMCTL_RPM` | `36` | Request budget per minute for the whole key; the proxy delays requests beyond it instead of forwarding them (see Rate limiting) |
 | `NIMCTL_RPM_MAX_WAIT` | `30` | Seconds a request may wait for a free slot before the proxy answers 429 with `Retry-After` |
+| `NIMCTL_STALL_TIMEOUT` | `90` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the fallback (fast model or pool) |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
 | `NIMCTL_KEY_WARN_DAYS` | `165` | Key age in days after which the dashboard warns (NVIDIA keys last ~180 days) |
 | `NIMCTL_WEBUI_PYTHON` | auto | Python interpreter with `bcrypt` for `nimctl chat passwd` (default: the Open WebUI environment) |
@@ -420,6 +461,7 @@ Less reliable: long tool chains, multi-file rewrites, extended thinking. Keep `c
 | `✗ timeout after 45s` | Model overloaded on the free tier | Usually temporary; `p` later, or choose a faster one |
 | `✗ rate limit (429)` | ~40 req/min per model exceeded | Wait a minute; fallback to `fast` kicks in automatically |
 | `✗ overloaded (worker limit)` | NVIDIA's workers for that model are full | Try later or another model |
+| Answers break off; `Timeout on reading data from socket` in `nimctl logs proxy` | NVIDIA queued the request and sent nothing for `NIMCTL_STALL_TIMEOUT` seconds (90) | The proxy hands such requests to the fast model; add a provider pool so they land on another endpoint: `nimctl pool add groq <key>` |
 | `! no tool calls` | Model answers but cannot call functions | Not usable for `code`/`review`; fine for `chat` |
 | Key `invalid/expired` | Keys expire after 6 months (the dashboard warns two weeks ahead) | `k`, paste a new one |
 | `port 4000 is taken by …` | Another program listens there; nimctl never touches it | `NIMCTL_PROXY_PORT=4100 nimctl` |
@@ -451,7 +493,7 @@ bash tests/run.sh                              # offline: mock API + fake servic
 
 The test suite simulates a valid/invalid key, a listed-but-dead model, a 40-second model, a cold model, an overloaded
 model, models without tool calling, streaming, config injection, stale pid files, foreign listeners, headless setup,
-self-update and the installer. See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout and how a release is cut
+two pool providers with their own keys and catalogs, self-update and the installer. See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout and how a release is cut
 (the *Release* workflow publishes `nimctl` and `SHA256SUMS` under [Releases](https://github.com/phish3144/nimctl/releases)).
 
 ---
@@ -470,7 +512,8 @@ curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | 
 
 Danach: `nimctl` (Dashboard, eine Taste pro Aktion, `?` erklärt alles), `nimctl code` (Claude Code im Projektordner),
 `nimctl ide` (VS Code im Browser mit Continue auf denselben Modellen), `nimctl chat` (Browser-Chat), `nimctl chat passwd` (Chat-Admin-Passwort zurücksetzen), `nimctl bench` (Modelle
-vergleichen), `nimctl stats` (was der Proxy tut). Bei Problemen: `nimctl doctor`. Die Oberfläche ist auf Deutsch,
+vergleichen), `nimctl stats` (was der Proxy tut), `nimctl pool add groq <key>` (kostenlose Ausweich-Anbieter, die
+übernehmen, wenn NVIDIA hängt oder 429 liefert). Bei Problemen: `nimctl doctor`. Die Oberfläche ist auf Deutsch,
 wenn `$LANG` deutsch ist, sonst `NIMCTL_LANG=de nimctl` oder `nimctl --lang=de`.
 
 ## License

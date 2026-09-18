@@ -16,7 +16,8 @@ _nimctl() {
     pick|auto) COMPREPLY=(\$(compgen -W "\$slots" -- "\$cur"));;
     test|bench) COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     code) [[ "\$prev" == --model || "\$prev" == -m ]] && COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
-    logs) COMPREPLY=(\$(compgen -W "proxy chat watch" -- "\$cur"));;
+    logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide" -- "\$cur"));;
+    pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
     install) COMPREPLY=(\$(compgen -W "all alias systemd completion" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;

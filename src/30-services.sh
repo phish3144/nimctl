@@ -65,7 +65,7 @@ start_proxy() {
   has litellm || { bad "$(tf svc_missing litellm)"; return 1; }
   [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }; [[ -n "$MODEL_CODE" ]] || { bad "$(t svc_nomodel)"; return 1; }
   write_litellm_yaml; write_litellm_hooks
-  ( throttle_env; NVIDIA_API_KEY="$NVIDIA_API_KEY" nohup litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT" >"$LOG_DIR/litellm.log" 2>&1 & echo $! >"$PID_DIR/proxy.pid" )
+  ( throttle_env; pool_env; NVIDIA_API_KEY="$NVIDIA_API_KEY" nohup litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT" >"$LOG_DIR/litellm.log" 2>&1 & echo $! >"$PID_DIR/proxy.pid" )
   date +%s >"$PID_DIR/proxy.started"
   _start_result proxy "$(cat "$PID_DIR/proxy.pid")" 90
 }
@@ -134,7 +134,7 @@ restart_if_running() { # after a config change; explicit yes only, because a Cla
 fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same guards as start_*, then exec
   case "$1" in
     proxy) has litellm || { echo "nimctl: litellm missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" ]] || { echo "nimctl: not configured – run nimctl setup" >&2; exit 1; }
-           write_litellm_yaml; write_litellm_hooks; throttle_env; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
+           write_litellm_yaml; write_litellm_hooks; throttle_env; pool_env; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
     ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }

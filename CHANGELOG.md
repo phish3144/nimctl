@@ -3,6 +3,33 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.6.0] – 2026-09-18
+
+### Added
+- **Provider pool**: `nimctl pool add <provider> <key>` adds Groq, Google AI Studio, Cerebras, OpenRouter (`:free`
+  models) or Mistral as a fallback behind NVIDIA. The key is checked at the provider and stored in `~/.nimctl/config`,
+  one model per slot is picked from the provider's catalog with the same probe NVIDIA gets (ids namespaced
+  `<provider>:<id>` in `probes`, catalogs cached in `models.<provider>.cache`), and the proxy config gets `pool-<slot>`
+  deployments (providers in a fixed order, a failing one cools down for 30 s) as the fallback of `nim-<slot>`. Pool
+  models are also reachable by their namespaced id (`nimctl code --model groq:openai/gpt-oss-120b`, `nimctl test
+  cerebras:gpt-oss-120b`). Dashboard row `Pool` (key `m`), `pool` in `nimctl status --json`, `nimctl doctor` checks
+  keys and chosen models, the wizard offers the pool after the key step and takes keys from the environment
+  (`GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`) in unattended
+  setups. Candidate patterns per provider: `NIMCTL_CAND_<PROVIDER>_<SLOT>` or `groq.code: …` in `~/.nimctl/candidates`.
+- `NIMCTL_STALL_TIMEOUT` (90): a model that sends nothing for this long (the next byte of a stream, a whole non-streamed
+  answer) is given up and the request handed to the fallback. Set as `timeout` on every deployment, the only place
+  LiteLLM honours it on the Anthropic route Claude Code uses (`router_settings.stream_timeout` is ignored there).
+
+### Changed
+- With a pool the proxy no longer retries a stalled or failed request on the same NVIDIA model: a stall, 429 or 5xx
+  goes to `pool-<slot>` at once (LiteLLM `retry_policy`), deployments that fail are cooled down for 30 s.
+  Without a pool the previous settings stay (no cooldowns, four retries), plus the stream timeout.
+
+### Fixed
+- Streams that stalled before the first token (`Timeout on reading data from socket` in the proxy log, seen as
+  aborted answers in Claude Code, the IDE and the chat) waited for LiteLLM's five-minute request timeout before the
+  fast model took over; the handover now happens after `NIMCTL_STALL_TIMEOUT` seconds.
+
 ## [1.5.0] – 2026-09-18
 
 ### Added
