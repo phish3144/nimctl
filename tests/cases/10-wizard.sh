@@ -12,7 +12,7 @@ check "setup without stdin explains --yes" "NIMCTL_API_KEY=nvapi" < "$TMP/eof.tx
 # invalid key from the environment is reported, not silently accepted
 check "setup: bad env key reported" "ungültig" < <(NIMCTL_INTERACTIVE='' NIMCTL_API_KEY=nvapi-wrong timeout 20 "$N" setup --yes </dev/null 2>&1)
 # the interactive wizard
-printf 'nvapi-wrong\nnvapi-testkey\nj\nn\n' | timeout 180 "$N" >"$TMP/wiz.txt" 2>&1
+printf 'nvapi-wrong\nnvapi-testkey\nj\nj\nn\n' | timeout 180 "$N" >"$TMP/wiz.txt" 2>&1
 check "wizard: rejects wrong key" "nicht akzeptiert" < "$TMP/wiz.txt"
 check "wizard: accepts key" "gültig – gespeichert" < "$TMP/wiz.txt"
 check "wizard: cold model times out first" "deepseek-v4-pro-0813 +Timeout nach 3s" < "$TMP/wiz.txt"
@@ -30,6 +30,8 @@ check "wizard: chat admin hint" "nimctl chat passwd" < "$TMP/wiz.txt"
 check "wizard: IDE offered and Continue installed" "IDE aktiviert" < "$TMP/wiz.txt"
 grep -q "fake code-server install Continue.continue" "$TMP/home/logs/code-server-install.log" && pass "wizard: Continue extension installed" || fail "wizard: Continue extension installed"
 check "wizard: IDE url in the summary" "IDE: http://localhost:$IPT" < "$TMP/wiz.txt"
+check "wizard: web search offered and installed" "Websuche aktiviert" < "$TMP/wiz.txt"
+grep -q '^SEARCH_ENABLED=1$' "$TMP/home/config" && pass "wizard: search enabled in the config" || fail "wizard: search enabled in the config"
 grep -q '^MODEL_CODE=deepseek-ai/deepseek-v4-pro-0813$' "$TMP/home/config" && pass "config written (unquoted KEY=VALUE)" || fail "config written"
 grep -q '^MASTER_KEY=sk-nimctl-[0-9a-f]\{48\}$' "$TMP/home/config" && pass "master key generated per install" || fail "master key generated"
 [[ $(stat -c %a "$TMP/home/config") == 600 ]] && pass "config perms 600" || fail "config perms"

@@ -4,7 +4,7 @@
 set -u
 exec </dev/null                          # no test may block on the runner's stdin; tests pipe their own input
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$HERE")
-TMP=$(mktemp -d); trap 'kill $MOCK $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP|$IPT)" 2>/dev/null; rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'kill $MOCK $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP|$IPT)" 2>/dev/null; pkill -f "[f]ake_searxng.py $SP" 2>/dev/null; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/update"
 cat >"$TMP/fake_server.py" <<'X'
 import json, sys
@@ -30,16 +30,40 @@ X
 for b in litellm open-webui; do cat >"$TMP/bin/$b" <<X
 #!/usr/bin/env bash
 [[ "\$1" == serve ]] && shift; H=""; while [[ \$# -gt 0 ]]; do case \$1 in --port) P=\$2; shift;; --host) H=\$2; shift;; esac; shift; done
-echo "fake $b on \$H:\$P key=\${NVIDIA_API_KEY:-\${OPENAI_API_KEY:-}} default=\${DEFAULT_MODELS:-} base=\${OPENAI_API_BASE_URL:-}"
+echo "fake $b on \$H:\$P key=\${NVIDIA_API_KEY:-\${OPENAI_API_KEY:-}} default=\${DEFAULT_MODELS:-} base=\${OPENAI_API_BASE_URL:-} search=\${SEARXNG_QUERY_URL:-}"
 python3 "$TMP/fake_server.py" "\$P" & C=\$!; trap 'kill \$C 2>/dev/null; exit 0' TERM INT; wait \$C
 X
 done
 printf '#!/usr/bin/env bash\necho "fake claude BASE=$ANTHROPIC_BASE_URL MODEL=$ANTHROPIC_MODEL FAST=$ANTHROPIC_SMALL_FAST_MODEL THINK=$MAX_THINKING_TOKENS MAXOUT=$CLAUDE_CODE_MAX_OUTPUT_TOKENS TOKEN=$ANTHROPIC_AUTH_TOKEN args=$*"\n' >"$TMP/bin/claude"
 printf '#!/usr/bin/env bash\necho "fake uv $*"\n' >"$TMP/bin/uv"
+# Fake SearXNG: a local git repo to "clone" from and a venv python that serves the JSON search API on the configured port.
+mkdir -p "$TMP/searxng-repo" "$TMP/home/searxng/venv/bin"
+( cd "$TMP/searxng-repo" && git init -q && printf 'flask==3.1.3\n' >requirements.txt && printf 'from setuptools import setup\nsetup(name="searxng")\n' >setup.py \
+  && git add . && git -c user.name=nimctl -c user.email=nimctl@example.org commit -q -m init )
+cat >"$TMP/fake_searxng.py" <<'X'
+import json, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        u = urlparse(self.path); q = parse_qs(u.query).get("q", [""])[0]
+        if u.path == "/healthz": self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
+        body = {"query": q, "results": [{"title": f"Result {i} for {q}", "url": f"https://example.org/{i}", "content": f"snippet {i}", "engine": "fake"} for i in range(1, 8)], "unresponsive_engines": []}
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(json.dumps(body).encode())
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+X
+cat >"$TMP/home/searxng/venv/bin/python" <<X
+#!/usr/bin/env bash
+[[ "\$1 \$2" == "-m searx.webapp" ]] || { echo "fake searxng python \$*"; exit 0; }
+P=\$(grep -o 'port: [0-9]*' "\$SEARXNG_SETTINGS_PATH" | awk '{print \$2}'); echo "fake searxng on \$P"
+python3 "$TMP/fake_searxng.py" "\$P" & C=\$!; trap 'kill \$C 2>/dev/null; exit 0' TERM INT; wait \$C
+X
+chmod +x "$TMP/home/searxng/venv/bin/python"
 chmod +x "$TMP/bin/"*
 # Ports are derived from the runner's pid so several suites can run at the same time (parallel CI jobs, worktrees).
-PP=$(( 20000 + ($$ % 2000) * 5 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 )); IPT=$(( PP + 4 ))   # proxy, chat, mock API, update server, IDE
-export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE="http://127.0.0.1:$MP/v1" NIMCTL_PROXY_PORT=$PP NIMCTL_CHAT_PORT=$CP NIMCTL_IDE_PORT=$IPT
+PP=$(( 20000 + ($$ % 2000) * 6 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 )); IPT=$(( PP + 4 )); SP=$(( PP + 5 ))   # proxy, chat, mock API, update server, IDE, search
+export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE="http://127.0.0.1:$MP/v1" NIMCTL_PROXY_PORT=$PP NIMCTL_CHAT_PORT=$CP NIMCTL_IDE_PORT=$IPT NIMCTL_SEARCH_PORT=$SP NIMCTL_SEARXNG_REPO="file://$TMP/searxng-repo"
 export TERM=dumb NIMCTL_PROBE_TIMEOUT=3 NIMCTL_LANG=de HOME="$TMP" NIMCTL_INTERACTIVE=1 LC_ALL=C.UTF-8 NIMCTL_UPDATE_URL="http://127.0.0.1:$UP"
 unset NVIDIA_API_KEY NIMCTL_API_KEY NIMCTL_YES NO_COLOR DISPLAY WAYLAND_DISPLAY
 python3 "$HERE/mock_api.py" "$MP" & MOCK=$!

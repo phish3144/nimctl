@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.4.0] – 2026-09-18
+
+### Added
+- **Web search**: `nimctl search` installs [SearXNG](https://docs.searxng.org) as a local service (git clone into
+  `~/.nimctl/searxng`, venv built with `uv`, loopback only, JSON format on, bot limiter and Valkey off) and wires it
+  into Open WebUI through its start environment (`ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE=searxng`, `SEARXNG_QUERY_URL`,
+  pages bypass the embedding step). `nimctl search "query"` searches from the terminal, `install|start|stop|disable|test`
+  manage it, `nimctl start|stop|restart`, the systemd units, `status`, `status --json`, `doctor` and the dashboard
+  (key `o`) know the service. The wizard offers it. `NIMCTL_SEARCH_PORT` (8888), `NIMCTL_SEARCH_RESULTS` (5).
+- The IDE's MCP server gains a `web_search` tool on the same SearXNG, and the Continue rule mentions it.
+
 ## [1.3.0] – 2026-09-15
 
 ### Added
