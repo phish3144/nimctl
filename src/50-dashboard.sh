@@ -34,12 +34,13 @@ render_dashboard() {
   term_cols; banner "$(t title) $VERSION"
   key_line >"$TMP_ROOT/keyline"; printf "  %-8s %s %s\n" "$(t key)" "$KEY_FLAG" "$(cat "$TMP_ROOT/keyline")"
   printf "  %-8s %s\n" "$(t proxy)" "$(svc_row proxy)"
-  printf "  %-8s %s%s\n" "$(t chat)" "$(svc_row chat)" "$([[ "${NIMCTL_CHAT_VIA_PROXY:-0}" == 1 ]] && printf ' %s(%s)%s' "$D" "$(t chat_via_proxy)" "$R")"
+  printf "  %-8s %s%s\n" "$(t chat)" "$(svc_row chat)" "$([[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && printf ' %s(%s)%s' "$D" "$(t chat_via_proxy)" "$R")"
   { [[ "$IDE_ENABLED" == 1 ]] || has code-server; } && printf "  %-8s %s\n" "$(t ide)" "$(svc_row ide)"
   { [[ "$SEARCH_ENABLED" == 1 ]] || [[ -x "$SEARX_DIR/venv/bin/python" ]]; } && printf "  %-8s %s\n" "$(t svc_search)" "$(svc_row search)"
   local tl="" x; for x in litellm open-webui claude uv code-server; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
   printf "  %-8s %s\n" "$(t tools)" "$tl"
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
+  declare -F throttle_line >/dev/null && { local tl2; tl2=$(throttle_line 2>/dev/null) && printf "  %s\n" "$tl2"; }
   sect "$(t models)"
   local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && { (( COLS >= 100 )) || continue; }; slot_line "$s" "$n"; done
   (( COLS >= 100 )) && info "$(t slots_hint)"

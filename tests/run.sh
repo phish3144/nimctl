@@ -30,7 +30,7 @@ X
 for b in litellm open-webui; do cat >"$TMP/bin/$b" <<X
 #!/usr/bin/env bash
 [[ "\$1" == serve ]] && shift; H=""; while [[ \$# -gt 0 ]]; do case \$1 in --port) P=\$2; shift;; --host) H=\$2; shift;; esac; shift; done
-echo "fake $b on \$H:\$P key=\${NVIDIA_API_KEY:-\${OPENAI_API_KEY:-}} default=\${DEFAULT_MODELS:-} base=\${OPENAI_API_BASE_URL:-} search=\${SEARXNG_QUERY_URL:-}"
+echo "fake $b on \$H:\$P key=\${NVIDIA_API_KEY:-\${OPENAI_API_KEY:-}} default=\${DEFAULT_MODELS:-} base=\${OPENAI_API_BASE_URL:-} search=\${SEARXNG_QUERY_URL:-} rpm=\${NIMCTL_RPM:-} pythonpath=\${PYTHONPATH:-}"
 python3 "$TMP/fake_server.py" "\$P" & C=\$!; trap 'kill \$C 2>/dev/null; exit 0' TERM INT; wait \$C
 X
 done

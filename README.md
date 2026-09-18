@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.4.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.5.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -34,6 +34,7 @@ $ nimctl
   Search   ✓ up     :8888  nimctl · pid 41402
   Tools    ✓ litellm  ✓ open-webui  ✓ claude  ✓ uv  ✓ code-server
   Today    since 09:14 · 212 requests · 3× 429 · 9 fallbacks
+  Budget   36/min · 29 free · 0 waiting · 7 throttled (avg 1.1 s)
 
 Models
 ────────────────────────────────────────────────────────────────────────────────────
@@ -296,7 +297,7 @@ nimctl chat reset                  # wipe all accounts; the next signup becomes 
  nimctl code ──► Claude Code ──(Anthropic API)──► LiteLLM proxy 127.0.0.1:4000 ──(OpenAI API)──► integrate.api.nvidia.com
  nimctl ide  ──► code-server 127.0.0.1:8080 + Continue ──(OpenAI API)──► LiteLLM proxy ─────────────────────► integrate.api.nvidia.com
  nimctl chat ──► Open WebUI 127.0.0.1:3000 ───────────────────────────────────────(OpenAI API)──► integrate.api.nvidia.com
-                                          (NIMCTL_CHAT_VIA_PROXY=1: through the proxy instead)
+                                          (NIMCTL_CHAT_VIA_PROXY=0: directly to NVIDIA instead)
 ```
 
 Everything lives in `~/.nimctl` (mode 700):
@@ -326,6 +327,20 @@ catalog are validated before they touch any file; the config is parsed, never so
 verify the downloaded script against `SHA256SUMS` from this repository before installing it. The installer is one short
 file; read it before piping it into `bash`.
 
+## Rate limiting
+
+NVIDIA's free tier allows roughly 40 requests per minute per key, across all models, and does not publish the exact
+number. Everything that goes through the proxy (Claude Code, the IDE, the chat, the search's query generation) shares
+one budget: a LiteLLM pre-call hook nimctl writes to `~/.nimctl/nimctl_hooks.py` keeps a token bucket of `NIMCTL_RPM`
+requests per minute (36 by default, leaving room for probes and the watchdog, which talk to NVIDIA directly). A
+request that would exceed the budget waits for the next free slot, usually a second or two, instead of failing; only
+after `NIMCTL_RPM_MAX_WAIT` seconds does the proxy answer 429 with `Retry-After`, so the clients' own backoff takes
+over. If NVIDIA still answers 429, the budget shrinks by a fifth for five minutes and grows back afterwards.
+
+The dashboard shows the budget line (free slots, waiting requests, throttled requests and the average wait),
+`nimctl stats` counts throttled requests, and the proxy log carries one `nimctl throttle:` line per wait. The chat
+goes through the proxy by default so it is counted too; `NIMCTL_CHAT_VIA_PROXY=0` restores the direct connection.
+
 ## Configuration
 
 All optional, via environment variables:
@@ -347,10 +362,11 @@ All optional, via environment variables:
 | `NIMCTL_API_BASE` | NVIDIA endpoint | Point at a self-hosted NIM container instead |
 | `NIMCTL_API_KEY` | | Key for unattended `setup --yes` (also `NVIDIA_API_KEY`) |
 | `NIMCTL_CAND_CODE` etc. | built-in lists | Candidate patterns per slot, space separated |
-| `NIMCTL_CHAT_VIA_PROXY` | `0` | `1` = Open WebUI talks to the proxy (retries, fallbacks, curated model list) |
+| `NIMCTL_CHAT_VIA_PROXY` | `1` | Open WebUI talks to the proxy (throttle, retries, fallbacks, curated model list); `0` = directly to NVIDIA |
 | `NIMCTL_CHAT_PASSWORD` | | New password for `nimctl chat passwd` in unattended runs |
 | `NIMCTL_MAX_OUTPUT_TOKENS` | `8192` | Output cap for Claude Code |
-| `NIMCTL_RPM` | unset | Per-model requests/minute in the LiteLLM config (LiteLLM then refuses excess requests locally instead of forwarding them) |
+| `NIMCTL_RPM` | `36` | Request budget per minute for the whole key; the proxy delays requests beyond it instead of forwarding them (see Rate limiting) |
+| `NIMCTL_RPM_MAX_WAIT` | `30` | Seconds a request may wait for a free slot before the proxy answers 429 with `Retry-After` |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
 | `NIMCTL_KEY_WARN_DAYS` | `165` | Key age in days after which the dashboard warns (NVIDIA keys last ~180 days) |
 | `NIMCTL_WEBUI_PYTHON` | auto | Python interpreter with `bcrypt` for `nimctl chat passwd` (default: the Open WebUI environment) |
