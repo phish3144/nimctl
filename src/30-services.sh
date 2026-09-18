@@ -64,13 +64,14 @@ start_proxy() {
   if svc_state proxy; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign proxy; return 1; }; info "$(tf svc_already "$(t proxy)")"; return 0; fi
   has litellm || { bad "$(tf svc_missing litellm)"; return 1; }
   [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }; [[ -n "$MODEL_CODE" ]] || { bad "$(t svc_nomodel)"; return 1; }
-  write_litellm_yaml
-  NVIDIA_API_KEY="$NVIDIA_API_KEY" nohup litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT" >"$LOG_DIR/litellm.log" 2>&1 &
-  echo $! >"$PID_DIR/proxy.pid"; date +%s >"$PID_DIR/proxy.started"
-  _start_result proxy $! 90
+  write_litellm_yaml; write_litellm_hooks
+  ( throttle_env; NVIDIA_API_KEY="$NVIDIA_API_KEY" nohup litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT" >"$LOG_DIR/litellm.log" 2>&1 & echo $! >"$PID_DIR/proxy.pid" )
+  date +%s >"$PID_DIR/proxy.started"
+  _start_result proxy "$(cat "$PID_DIR/proxy.pid")" 90
 }
-chat_env() { # exports the Open WebUI environment; NIMCTL_CHAT_VIA_PROXY=1 routes the chat through LiteLLM (retries, fallbacks, curated model list)
-  if [[ "${NIMCTL_CHAT_VIA_PROXY:-0}" == 1 ]]; then export OPENAI_API_BASE_URL="http://127.0.0.1:$PROXY_PORT/v1" OPENAI_API_KEY="$MASTER_KEY" DEFAULT_MODELS="nim-chat"
+
+chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM (throttle, retries, fallbacks); NIMCTL_CHAT_VIA_PROXY=0 talks to NVIDIA directly
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then export OPENAI_API_BASE_URL="http://127.0.0.1:$PROXY_PORT/v1" OPENAI_API_KEY="$MASTER_KEY" DEFAULT_MODELS="nim-chat"
   else export OPENAI_API_BASE_URL="$API_BASE" OPENAI_API_KEY="$NVIDIA_API_KEY" DEFAULT_MODELS="$MODEL_CHAT"; fi
   export ENABLE_OLLAMA_API=false DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true
   if [[ "$SEARCH_ENABLED" == 1 ]]; then   # SearXNG (src/53-search.sh); pages go straight into the context, no local embedding model
@@ -81,7 +82,7 @@ chat_env() { # exports the Open WebUI environment; NIMCTL_CHAT_VIA_PROXY=1 route
 start_chat() {
   if svc_state chat; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign chat; return 1; }; info "$(tf svc_already "$(t chat)")"; return 0; fi
   has open-webui || { bad "$(tf svc_missing open-webui)"; return 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }
-  [[ "${NIMCTL_CHAT_VIA_PROXY:-0}" == 1 ]] && { svc_running proxy || start_proxy || return 1; }
+  [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && { svc_running proxy || start_proxy || return 1; }
   ( chat_env; nohup open-webui serve --host "$BIND" --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 & echo $! >"$PID_DIR/chat.pid" )
   date +%s >"$PID_DIR/chat.started"
   _start_result chat "$(cat "$PID_DIR/chat.pid")" 150
@@ -133,7 +134,7 @@ restart_if_running() { # after a config change; explicit yes only, because a Cla
 fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same guards as start_*, then exec
   case "$1" in
     proxy) has litellm || { echo "nimctl: litellm missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" ]] || { echo "nimctl: not configured – run nimctl setup" >&2; exit 1; }
-           write_litellm_yaml; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
+           write_litellm_yaml; write_litellm_hooks; throttle_env; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
     ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }

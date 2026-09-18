@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.5.0] – 2026-09-18
+
+### Added
+- **Rate limiting**: a LiteLLM pre-call hook (`~/.nimctl/nimctl_hooks.py`, registered as `callbacks` in the generated
+  config) keeps one token bucket of `NIMCTL_RPM` requests per minute (36) for everything that goes through the proxy.
+  Requests beyond the budget wait for the next free slot instead of failing; after `NIMCTL_RPM_MAX_WAIT` seconds (30)
+  the proxy answers 429 with `Retry-After`. An upstream 429 shrinks the budget by a fifth for five minutes, then it
+  grows back. State in `~/.nimctl/rpm.json`: the dashboard shows a budget line, `nimctl stats` counts throttled
+  requests (`throttled` in `--json`).
+
+### Changed
+- The chat talks to the proxy by default (`NIMCTL_CHAT_VIA_PROXY=1`), so it shares the budget, retries and fallbacks;
+  `NIMCTL_CHAT_VIA_PROXY=0` restores the direct connection.
+- `NIMCTL_RPM` no longer sets LiteLLM's per-deployment `rpm` (which refused requests); it is the budget above.
+
+### Fixed
+- Without a `review` model the generated LiteLLM config was invalid YAML (a `}` inside a `${var:+…}` expansion ended
+  the expansion early), so the proxy failed to start. Found by running the real proxy against the test mock.
+
 ## [1.4.0] – 2026-09-18
 
 ### Added
