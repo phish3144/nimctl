@@ -1,10 +1,10 @@
 # ── Paths & constants ─────────────────────────────────────────────────────────
 NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"
-LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"
+LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"; SEARX_DIR="$NIM_DIR/searxng"
 MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; LOCK_FILE="$NIM_DIR/.lock"
 API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
-PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"; IDE_PORT="${NIMCTL_IDE_PORT:-8080}"
+PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"; IDE_PORT="${NIMCTL_IDE_PORT:-8080}"; SEARCH_PORT="${NIMCTL_SEARCH_PORT:-8888}"
 BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here only (LiteLLM would default to 0.0.0.0)
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this

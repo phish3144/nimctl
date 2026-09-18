@@ -8,7 +8,7 @@ T_de+=(
   [wz_models]="Modelle" [wz_models_hint]="Ich teste alle Kandidaten parallel mit echten Anfragen (max. %ss je Modell) und prüfe, ob das Code-Modell Tool-Calls kann."
   [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten?" [wz_done]="Fertig!"
   [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle und ersetzt tote automatisch)?"
-  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?"
+  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?" [wz_search_q]="Websuche für den Chat einrichten (SearXNG, ~60 MB)?"
   [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen\n           nimctl help   alle Befehle"
   [wz_chat_hint]="Chat: Das erste Konto, das sich unter http://localhost:%s registriert, wird Admin. Passwort vergessen? nimctl chat passwd"
 )
@@ -21,7 +21,7 @@ T_en+=(
   [wz_models]="Models" [wz_models_hint]="I probe all candidates in parallel with real requests (max %ss per model) and check that the code model can make tool calls."
   [wz_start]="Services" [wz_start_q]="Start proxy and chat now?" [wz_done]="Done!"
   [wz_watch_q]="Set up the watchdog timer (probes the models hourly and replaces dead ones automatically)?"
-  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?"
+  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?" [wz_search_q]="Set up web search for the chat (SearXNG, ~60 MB)?"
   [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser\n              nimctl help   all commands"
   [wz_chat_hint]="Chat: the first account registered at http://localhost:%s becomes admin. Forgot the password? nimctl chat passwd"
 )
@@ -47,6 +47,7 @@ wizard() { # wizard [--yes]
   local missing=0 x; for x in uv litellm open-webui claude; do has "$x" && ok "$x" || { bad "$x $(t inst_missing)"; missing=1; }; done
   if ((missing)); then ask "$(t wz_tools_q)" y && inst_all; else ok "$(t wz_tools_ok)"; fi
   if declare -F inst_codeserver >/dev/null && [[ "$IDE_ENABLED" != 1 ]]; then ask "$(t wz_ide_q)" y && inst_codeserver; fi
+  if declare -F inst_searxng >/dev/null && [[ "$SEARCH_ENABLED" != 1 ]]; then ask "$(t wz_search_q)" y && inst_searxng; fi
   inst_alias
   sect "$(tf wz_step 3 5 "$(t wz_models)")"; info "$(tf wz_models_hint "$PROBE_TIMEOUT")"
   auto_select code fast chat review

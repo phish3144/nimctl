@@ -5,7 +5,7 @@ README="$ROOT/README.md"
 missing=(); for c in $(NIMCTL_LANG=en timeout 10 "$N" help | awk '/^  [a-z]/{print $1}'); do grep -q "\`nimctl $c" "$README" || missing+=("$c"); done
 ((${#missing[@]} == 0)) && pass "README documents every command from nimctl help" || fail "README misses commands: ${missing[*]}"
 # internal variables (passed to helper processes or printed by `nimctl env`) are not configuration and need no README entry
-INTERNAL=" NIMCTL_ NIMCTL_CAND_ NIMCTL_WORKSPACE_FILE NIMCTL_ACCOUNTS_ADMIN NIMCTL_ACCOUNTS_DB NIMCTL_ACCOUNTS_EMAIL NIMCTL_ACCOUNTS_HASH NIMCTL_ACCOUNTS_PW NIMCTL_MODEL_CODE NIMCTL_MODEL_FAST NIMCTL_MODEL_CHAT NIMCTL_MODEL_REVIEW "
+INTERNAL=" NIMCTL_ NIMCTL_CAND_ NIMCTL_WORKSPACE_FILE NIMCTL_SEARCH_URL NIMCTL_SEARXNG_REPO NIMCTL_ACCOUNTS_ADMIN NIMCTL_ACCOUNTS_DB NIMCTL_ACCOUNTS_EMAIL NIMCTL_ACCOUNTS_HASH NIMCTL_ACCOUNTS_PW NIMCTL_MODEL_CODE NIMCTL_MODEL_FAST NIMCTL_MODEL_CHAT NIMCTL_MODEL_REVIEW "
 missing=(); for v in $(grep -oh 'NIMCTL_[A-Z_]*' "$ROOT"/src/*.sh "$ROOT/install.sh" | sort -u); do [[ "$INTERNAL" == *" $v "* ]] && continue; grep -q "$v" "$README" || missing+=("$v"); done
 ((${#missing[@]} == 0)) && pass "README documents every NIMCTL_* variable" || fail "README misses variables: ${missing[*]}"
 missing=(); while read -r f; do [[ -e "$ROOT/$f" ]] || missing+=("$f"); done < <(grep -oE '\]\([A-Za-z0-9_./-]+\)' "$README" | sed 's/^](//;s/)$//' | grep -v '^http' | sort -u)

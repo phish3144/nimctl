@@ -22,6 +22,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   local perm; perm=$(stat -c %a "$NIM_DIR" 2>/dev/null || stat -f %Lp "$NIM_DIR" 2>/dev/null || echo 700)
   [[ "$perm" == 700 ]] && ok "$(tf doc_perm_ok "$NIM_DIR")" || { warn "$(tf doc_perm "$NIM_DIR" "$perm")"; doc_issue perm; }
   local s svcs=(proxy chat); [[ "$IDE_ENABLED" == 1 ]] && { svcs+=(ide); has code-server || { bad "code-server $(t inst_missing)"; doc_issue "tool:code-server"; }; }
+  [[ "$SEARCH_ENABLED" == 1 ]] && { svcs+=(search); [[ -x "$SEARX_DIR/venv/bin/python" ]] || { bad "SearXNG $(t inst_missing)"; doc_issue "tool:searxng"; }; }
   for s in "${svcs[@]}"; do
     if svc_state "$s"; then case "$SVC_BY" in foreign) warn "$(tf doc_svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")"; doc_issue "port:$s";; *) ok "$s :$(svc_port "$s") ($(t "by_$SVC_BY"))";; esac
     else info "$s :$(svc_port "$s") $(t down)"; fi
@@ -43,6 +44,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   for i in "${DOC_ISSUES[@]}"; do case "$i" in
     tool:curl|tool:jq) inst_base || remaining+=("$i");;
     tool:code-server) inst_codeserver || remaining+=("$i");;
+    tool:searxng) inst_searxng || remaining+=("$i");;
     tool:*) "inst_${i#tool:}" 2>/dev/null; has "${i#tool:}" || remaining+=("$i");;
     perm) chmod 700 "$NIM_DIR" && ok "chmod 700 $NIM_DIR" || remaining+=("$i");;
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;

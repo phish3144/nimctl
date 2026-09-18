@@ -25,12 +25,13 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.3.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.4.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
   Chat     ✓ up     :3000  systemd
   IDE      ✓ up     :8080  nimctl · pid 41377
+  Search   ✓ up     :8888  nimctl · pid 41402
   Tools    ✓ litellm  ✓ open-webui  ✓ claude  ✓ uv  ✓ code-server
   Today    since 09:14 · 212 requests · 3× 429 · 9 fallbacks
 
@@ -49,7 +50,7 @@ Models
 ────────────────────────────────────────────────────────────────────────────────────
   Services s Start  x Stop  r Restart
   Models   a Auto  p Probe  1-4 pick slot  f Find  t Test  b Bench
-  Use      c Claude Code  w Chat  e Env  g Stats  n Accounts  v IDE
+  Use      c Claude Code  w Chat  e Env  g Stats  n Accounts  o Search  v IDE
   System   k Key  d Doctor  i Install  l Logs  u Update  ? Help  q Quit
   ›
 ```
@@ -155,6 +156,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl chat users` / `nimctl chat passwd [email] [--admin]` / `nimctl chat reset` | List accounts, reset a password (the admin's, for example), or wipe all accounts so the next signup becomes admin |
 | `nimctl accounts` | The same three account actions as an interactive menu (dashboard key `n`) |
 | `nimctl ide [folder]` | Start the browser IDE if needed and open it (the folder, else the git project in the current directory, else the last one); `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
+| `nimctl search ["query"]` | Local web search (SearXNG) for the chat and the IDE: start it, or search from the terminal; `install`, `start`, `stop`, `disable`, `test` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -250,6 +252,29 @@ The IDE listens on `127.0.0.1:8080` (`NIMCTL_IDE_PORT`) with password login and 
 systemd units include it once it is enabled, `nimctl ide disable` takes it out again (the installation stays, `nimctl ide`
 puts it back). More extensions: `NIMCTL_IDE_EXTENSIONS="RooVeterinaryInc.roo-cline" nimctl ide install`.
 
+## Web search
+
+```bash
+nimctl search                  # installs on first use (asks), starts SearXNG on http://localhost:8888
+nimctl search "nvidia nim"     # search from the terminal
+```
+
+The chat can search the web without any cloud search API: nimctl installs [SearXNG](https://docs.searxng.org), a
+metasearch engine that queries Brave, Google, DuckDuckGo, Bing, Wikipedia and others, as a local service. It is not on
+PyPI, so `nimctl search install` clones it into `~/.nimctl/searxng/src` and builds a venv with `uv` (about 60 MB).
+The generated `settings.yml` binds to `127.0.0.1:8888` (`NIMCTL_SEARCH_PORT`), enables the JSON format Open WebUI
+needs, and turns the bot limiter off, so no Redis is required.
+
+Open WebUI gets the search through its start environment (`ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE=searxng`,
+`SEARXNG_QUERY_URL`, `NIMCTL_SEARCH_RESULTS` results per query). Pages go straight into the model's context instead of
+through a local embedding model, which keeps the first search from downloading one. In the chat, the globe icon next
+to the message box switches web search on per message. One thing to know: Open WebUI stores settings changed in its
+admin panel in its database, and those win over the environment afterwards.
+
+The IDE gets the same search as a `web_search` tool in its MCP server, so Continue's agent can look things up too.
+`nimctl start`, `stop`, `restart` and the systemd units include the search once it is enabled; `nimctl search disable`
+takes it out again.
+
 ## Chat accounts
 
 Open WebUI keeps its own accounts. The first account registered at <http://localhost:3000> becomes admin. If you lose
@@ -288,6 +313,7 @@ code-server.yaml  generated code-server config (bind address, password)
 ide-data/       code-server user data, settings and extensions (Continue's own config lives in ~/.continue/config.yaml)
 mcp/shell.py    shell tool for Continue's agent mode (MCP server, returns command output)
 ide-workspace   the project folder the IDE opens and the shell tool runs in
+searxng/        SearXNG source, venv and settings.yml (nimctl search)
 logs/           litellm.log, open-webui.log, code-server.log, watch.log
 run/            pid files and start times
 webui-data/     chat history, uploaded documents, users
@@ -312,6 +338,8 @@ All optional, via environment variables:
 | `NIMCTL_IDE_PORT` | `8080` | code-server port |
 | `NIMCTL_IDE_EXTENSIONS` | | Extra Open VSX extensions `nimctl ide install` adds next to Continue |
 | `NIMCTL_IDE_CONTEXT` | `32768` | Context length Continue assumes for the models |
+| `NIMCTL_SEARCH_PORT` | `8888` | SearXNG port (`nimctl search`) |
+| `NIMCTL_SEARCH_RESULTS` | `5` | Web search results Open WebUI feeds to the model per query |
 | `NIMCTL_BIND` | `127.0.0.1` | Address the services listen on |
 | `NIMCTL_PROBE_TIMEOUT` | `45` | Seconds a model may take to answer a probe |
 | `NIMCTL_REPROBE_HOURS` | `6` | Dashboard re-probes slots whose last probe is older |
@@ -352,7 +380,7 @@ Nothing else runs at install time: the script is one file you can read before pi
 ## Uninstall
 
 ```bash
-nimctl stop                                   # stop proxy, chat and the IDE
+nimctl stop                                   # stop proxy, chat, IDE and search
 nimctl install                                # → 4 removes the systemd units and the watchdog timer, if you enabled them
 rm -rf ~/.nimctl ~/.local/bin/nimctl          # config, logs, chat data (chats and uploads live in ~/.nimctl/webui-data)
 rm -rf ~/.local/lib/code-server-* ~/.local/bin/code-server ~/.continue   # the browser IDE, if you enabled it
