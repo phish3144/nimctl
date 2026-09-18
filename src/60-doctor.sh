@@ -18,6 +18,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   local x; for x in curl jq awk; do has "$x" && ok "$x" || { bad "$x $(t inst_missing)"; doc_issue "tool:$x"; }; done
   if curl -s -m 5 -o /dev/null "$API_BASE/models"; then ok "$(t doc_net) ($API_BASE)"; else bad "$(tf doc_net_no "$API_BASE")"; doc_issue net; fi
   if check_key; then ok "$(t key) $(t key_ok) ($(key_masked))"; local w; w=$(key_warning) && warn "$w"; else bad "$(t key): $KEY_STATE"; doc_issue key; fi
+  pool_doctor
   for x in litellm open-webui claude; do has "$x" && ok "$x $(command -v "$x")" || { bad "$x $(t inst_missing)"; doc_issue "tool:$x"; }; done
   local perm; perm=$(stat -c %a "$NIM_DIR" 2>/dev/null || stat -f %Lp "$NIM_DIR" 2>/dev/null || echo 700)
   [[ "$perm" == 700 ]] && ok "$(tf doc_perm_ok "$NIM_DIR")" || { warn "$(tf doc_perm "$NIM_DIR" "$perm")"; doc_issue perm; }
@@ -49,6 +50,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     perm) chmod 700 "$NIM_DIR" && ok "chmod 700 $NIM_DIR" || remaining+=("$i");;
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
     model:*) auto_select "${i#model:}" || remaining+=("$i");;
+    pool:*) pool_auto_one "${i#pool:}" || remaining+=("$i");;
     restart) restart_all || remaining+=("$i");;
     unit:*) systemctl --user reset-failed "nimctl-${i#unit:}" 2>/dev/null; systemctl --user restart "nimctl-${i#unit:}" 2>/dev/null || remaining+=("$i");;
     *) remaining+=("$i");;

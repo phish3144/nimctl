@@ -21,7 +21,7 @@ T_en+=(
 )
 # Module keys registered with dash_register (src/05-core.sh) are shown in the footer and handled in the loop.
 PANEL_LINES=8
-PAUSE_KEYS=" a f t 1 2 3 4 d l e g n b ? "
+PAUSE_KEYS=" a f t 1 2 3 4 d l e g n b m ? "
 
 svc_row() { # svc_row <proxy|chat> → "✓ läuft  :4000  nimctl" or "✗ aus"
   local s="$1"
@@ -39,6 +39,7 @@ render_dashboard() {
   { [[ "$SEARCH_ENABLED" == 1 ]] || [[ -x "$SEARX_DIR/venv/bin/python" ]]; } && printf "  %-8s %s\n" "$(t svc_search)" "$(svc_row search)"
   local tl="" x; for x in litellm open-webui claude uv code-server; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
   printf "  %-8s %s\n" "$(t tools)" "$tl"
+  printf "  %-8s %s\n" "$(t k_m)" "$(pool_line)"
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
   declare -F throttle_line >/dev/null && { local tl2; tl2=$(throttle_line 2>/dev/null) && printf "  %s\n" "$tl2"; }
   sect "$(t models)"

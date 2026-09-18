@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.5.0"
+VERSION="1.6.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then

@@ -12,9 +12,10 @@ check "setup without stdin explains --yes" "NIMCTL_API_KEY=nvapi" < "$TMP/eof.tx
 # invalid key from the environment is reported, not silently accepted
 check "setup: bad env key reported" "ungültig" < <(NIMCTL_INTERACTIVE='' NIMCTL_API_KEY=nvapi-wrong timeout 20 "$N" setup --yes </dev/null 2>&1)
 # the interactive wizard
-printf 'nvapi-wrong\nnvapi-testkey\nj\nj\nn\n' | timeout 180 "$N" >"$TMP/wiz.txt" 2>&1
+printf 'nvapi-wrong\nnvapi-testkey\nn\nj\nj\nn\n' | timeout 180 "$N" >"$TMP/wiz.txt" 2>&1
 check "wizard: rejects wrong key" "nicht akzeptiert" < "$TMP/wiz.txt"
 check "wizard: accepts key" "gültig – gespeichert" < "$TMP/wiz.txt"
+check "wizard: pool offered after the key" "Ausweich-Anbieter mit kostenlosen Kontingenten" < "$TMP/wiz.txt"
 check "wizard: cold model times out first" "deepseek-v4-pro-0813 +Timeout nach 3s" < "$TMP/wiz.txt"
 check "wizard: retries top candidate with 2x timeout" "Zweiter Versuch für deepseek-ai/deepseek-v4-pro-0813 mit 6s" < "$TMP/wiz.txt"
 check "wizard: auto code = deepseek-v4-pro (after retry)" "code → deepseek-ai/deepseek-v4-pro-0813 \(" < "$TMP/wiz.txt"

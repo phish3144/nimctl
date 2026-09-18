@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mock of NVIDIA's OpenAI-compatible endpoint for nimctl tests.
+"""Mock of NVIDIA's OpenAI-compatible endpoint for nimctl tests – or, with a provider name as second argument,
+of a pool provider (Groq, Cerebras) with its own key and catalog.
 Simulates: valid/invalid keys, a listed-but-dead model (404 Function not found), a very slow model (kimi-k3),
 a cold model (first call slow), an overloaded model (429 worker limit), tool calling (some models cannot),
 and streaming (SSE) for the bench command."""
@@ -16,6 +17,12 @@ SLOW = {"moonshotai/kimi-k3": 40, "nvidia/nemotron-3-ultra-550b-a55b": 1.5}
 COLD = {"deepseek-ai/deepseek-v4-pro-0813": 5}   # first call sleeps this long, later calls are fast
 OVERLOADED = {"poolside/laguna-xs-2.1"}
 NO_TOOLS = {"mistralai/mistral-medium-3-notools", "nvidia/nemotron-3.5-lightning-30b-a3b"}  # answer in prose, never call tools
+PROVIDERS = {  # nimctl pool: key and catalog of the mocked provider
+    "groq": ("gsk_testkey_0123456789", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b", "groq/compound"]),
+    "cerebras": ("csk-testkey-0123456789", ["llama-3.3-70b", "llama3.1-8b", "gpt-oss-120b", "qwen-3-235b-a22b-instruct-2507"]),
+}
+if len(sys.argv) > 2:
+    KEY, MODELS = PROVIDERS[sys.argv[2]]
 seen = set()
 
 class H(BaseHTTPRequestHandler):

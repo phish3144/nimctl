@@ -43,6 +43,7 @@ wizard() { # wizard [--yes]
       set_key "$REPLY" && break; ((tries++)); (( tries >= 5 )) && { bad "$(t aborted)"; return 1; }
     done
   fi
+  pool_wizard
   sect "$(tf wz_step 2 5 "$(t wz_tools)")"
   local missing=0 x; for x in uv litellm open-webui claude; do has "$x" && ok "$x" || { bad "$x $(t inst_missing)"; missing=1; }; done
   if ((missing)); then ask "$(t wz_tools_q)" y && inst_all; else ok "$(t wz_tools_ok)"; fi

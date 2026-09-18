@@ -65,7 +65,7 @@ probe_set() { # probe_set <id> <ok|error> [ms] [tools ok|no] – the tools colum
   with_lock _probe_write "$1" "$2" "${3:-}" "$tools"
 }
 probe_age() { probe_get "$1"; [[ "$PROBE_T" =~ ^[0-9]+$ ]] && echo $(( $(date +%s) - PROBE_T )) || echo 999999; }
-probe_ok_models() { awk -F'\t' '$2=="ok"{print $1}' "$PROBES" | sort -u; }
+probe_ok_models() { local re; re="^($(IFS='|'; printf '%s' "${POOL_PROVIDERS[*]}")):"; awk -F'\t' -v re="$re" '$2=="ok" && $1 !~ re {print $1}' "$PROBES" | sort -u; }   # NVIDIA ids only – pool ids are namespaced
 
 probe_err_text() { # probe_err_text <raw body> <timeout> → readable error
   local out="$1" to="$2" err
@@ -75,14 +75,14 @@ probe_err_text() { # probe_err_text <raw body> <timeout> → readable error
     *ResourceExhausted*|*"request limit"*|*"limit reached"*) err="$(t overloaded)";; esac
   printf '%s' "${err:-$(t noanswer)}"
 }
-probe_one() { # probe_one <id> [timeout] [tools] → "ok <ms>" | "notools <ms>" | error text
-  local id="$1" to="${2:-$PROBE_TIMEOUT}" mode="${3:-plain}" body out t0
+probe_one() { # probe_one <id> [timeout] [tools] → "ok <ms>" | "notools <ms>" | error text; a namespaced id (groq:…) is probed at its provider
+  local id="$1" to="${2:-$PROBE_TIMEOUT}" mode="${3:-plain}" body out t0 pid; pid=$(plain_id "$id")
   if [[ "$mode" == tools ]]; then
-    body=$(jq -n --arg m "$id" '{model:$m,max_tokens:64,tool_choice:"auto",
+    body=$(jq -n --arg m "$pid" '{model:$m,max_tokens:64,tool_choice:"auto",
       tools:[{type:"function",function:{name:"read_file",description:"Read a file from disk",parameters:{type:"object",properties:{path:{type:"string"}},required:["path"]}}}],
       messages:[{role:"user",content:"Use the read_file tool to read README.md. Call the tool, do not answer in prose."}]}')
-  else body=$(jq -n --arg m "$id" '{model:$m,messages:[{role:"user",content:"Hi"}],max_tokens:5}'); fi
-  t0=$(now_ms); out=$(api POST /chat/completions "$to" "$body")
+  else body=$(jq -n --arg m "$pid" '{model:$m,messages:[{role:"user",content:"Hi"}],max_tokens:5}'); fi
+  t0=$(now_ms); out=$(model_api "$id" POST /chat/completions "$to" "$body")
   if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then
     if [[ "$mode" == tools ]] && ! echo "$out" | jq -e '.choices[0].message.tool_calls[0].function.name' >/dev/null 2>&1; then echo "notools $(( $(now_ms) - t0 ))"; return; fi
     echo "ok $(( $(now_ms) - t0 ))"; return
@@ -126,12 +126,13 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
   for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
 }
-slot_candidates() { # slot_candidates <slot> → concrete ids from the catalog, in pattern order (≤3 per pattern)
-  local catalog="$1" slot="$2" pat m seen=" "
-  while read -r pat; do [[ -n "$pat" ]] || continue
+match_candidates() { # match_candidates <catalog> <pattern…> → concrete ids from the catalog, in pattern order (≤3 per pattern)
+  local catalog="$1" pat m seen=" "; shift
+  for pat in "$@"; do [[ -n "$pat" ]] || continue
     while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; printf '%s\n' "$m"; }; done < <(echo "$catalog" | grep -iE -- "$pat" | head -n 3)
-  done < <(candidates "$slot")
+  done
 }
+slot_candidates() { local pats=() pat; while read -r pat; do [[ -n "$pat" ]] && pats+=("$pat"); done < <(candidates "$2"); match_candidates "$1" "${pats[@]}"; }   # slot_candidates <catalog> <slot>
 auto_select() { # auto_select <slot…> – probes the union of all candidates once, then decides per slot
   local slots=("$@") catalog slot m pat first union=() seen=" " n=0; local total=${#slots[@]}
   catalog=$(models_cached) || return 1
@@ -175,23 +176,51 @@ auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "
 # ── LiteLLM config ────────────────────────────────────────────────────────────
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
-  local m seen=" " fb_review=""; [[ -n "$MODEL_REVIEW" ]] && fb_review=', { nim-review: ["nim-code"] }'   # a "}" inside ${var:+…} would end the expansion
-  entry() { printf '  - model_name: %s\n    litellm_params: { model: %s/%s, api_base: %s, api_key: os.environ/NVIDIA_API_KEY%s%s, additional_drop_params: [%s] }\n' "$1" "$PROVIDER" "$2" "$API_BASE" "${3:+, max_tokens: $3}" "" "$DROP"; }
+  local m p s i seen=" " pool_slots=" " fbs=() fb list tail
+  entry() { # entry <name> <id> [max_tokens] [order] – NVIDIA, or the pool provider a namespaced id names (skipped when that provider has no key)
+    local p base keyref id="$2"; p=$(pool_of "$2")
+    if [[ -n "$p" ]]; then pool_configured "$p" || return 0; base=$(pool_base "$p"); keyref="os.environ/${p^^}_API_KEY"; id="${2#*:}"; else base="$API_BASE"; keyref="os.environ/NVIDIA_API_KEY"; fi
+    printf '  - model_name: %s\n    litellm_params: { model: %s/%s, api_base: %s, api_key: %s%s%s, timeout: %s, additional_drop_params: [%s] }\n' "$1" "$PROVIDER" "$id" "$base" "$keyref" "${3:+, max_tokens: $3}" "${4:+, order: $4}" "$STALL_TIMEOUT" "$DROP"
+  }
+  for s in "${SLOTS[@]}"; do for p in $(pool_active); do [[ -n "$(pool_slot_model "$p" "$s")" ]] && { pool_slots+="$s "; break; }; done; done
+  for s in code fast chat review; do   # nim-<slot> → pool-<slot> (when the pool has a model for it) → the fast model; review → the code model
+    [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue
+    case "$s" in code|chat) tail='"nim-fast"';; review) tail='"nim-code"';; *) tail="";; esac
+    list=""; [[ "$pool_slots" == *" $s "* ]] && list="\"pool-$s\""; [[ -n "$tail" ]] && list+="${list:+, }$tail"
+    [[ -n "$list" ]] && fbs+=("{ nim-$s: [$list] }")
+  done
+  fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
   {
     cat <<EOF
 # generated by nimctl – change models via the dashboard, not here
 # NVIDIA validates requests strictly and rejects OpenAI-only parameters that LiteLLM adds while
 # translating Claude Code's Anthropic-format requests (e.g. prompt_cache_key from session metadata).
+# timeout: seconds without a byte from the model (NIMCTL_STALL_TIMEOUT) before the request goes to the fallback. Per
+# deployment, because the Anthropic route Claude Code uses ignores router_settings.stream_timeout (verified 1.101).
 model_list:
 EOF
     entry nim-code "${MODEL_CODE:-none}" 16384; entry nim-fast "${MODEL_FAST:-$MODEL_CODE}" 8192; entry nim-chat "${MODEL_CHAT:-$MODEL_CODE}"
     [[ -n "$MODEL_REVIEW" ]] && entry nim-review "$MODEL_REVIEW" 16384
+    # the pool: pool-<slot> has one deployment per provider, tried in provider order (src/22-pool.sh)
+    i=0; for p in $(pool_active); do ((i++)); for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" ]] || continue
+      if [[ "$s" == fast ]]; then entry pool-fast "$p:$m" 8192 "$i"; else entry "pool-$s" "$p:$m" 16384 "$i"; fi; done; done
     # every model that answered a probe is reachable by its own id, so `nimctl code --model <id>` needs no restart
     for m in $(probe_ok_models) $EXTRA_MODELS; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
+    for p in $(pool_active); do for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" && "$seen" != *" $p:$m "* ]] || continue; seen+="$p:$m "; entry "$p:$m" "$p:$m" 16384; done; done
     cat <<EOF
-# nimctl_hooks.throttle: one token bucket for the whole key (NIMCTL_RPM per minute), see src/25-throttle.sh
+# nimctl_hooks.throttle: one token bucket for the whole NVIDIA key (NIMCTL_RPM per minute), see src/25-throttle.sh
 litellm_settings: { drop_params: true, num_retries: 4, request_timeout: 300, callbacks: nimctl_hooks.throttle }
 router_settings:
+EOF
+    if [[ "$pool_slots" != " " ]]; then cat <<EOF
+  # NVIDIA first. A request that fails there (stall, 429, 5xx) goes to pool-<slot> at once instead of being
+  # retried on the same overloaded model; a provider that fails is cooled down for a while.
+  cooldown_time: 30
+  num_retries: 1
+  retry_after: 3
+  retry_policy: { TimeoutErrorRetries: 0, DefaultRetries: 0, RateLimitErrorRetries: 0, InternalServerErrorRetries: 0, ServiceUnavailableErrorRetries: 0 }
+EOF
+    else cat <<EOF
   # NIM free tier answers slowly or with 429 under load. Never take a model out of rotation
   # (each slot has exactly one), retry with backoff instead, and fall back to the fast model.
   disable_cooldowns: true
@@ -199,7 +228,10 @@ router_settings:
   cooldown_time: 1
   num_retries: 4
   retry_after: 3
-  fallbacks: [ { nim-code: ["nim-fast"] }, { nim-chat: ["nim-fast"] }$fb_review ]
+EOF
+    fi
+    cat <<EOF
+  fallbacks: [ $fb ]
 general_settings: { master_key: $MASTER_KEY }
 EOF
   } >"$LITELLM_YAML.tmp"; chmod 600 "$LITELLM_YAML.tmp"; mv "$LITELLM_YAML.tmp" "$LITELLM_YAML"
