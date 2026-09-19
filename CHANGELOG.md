@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.11.0] – 2026-09-19
+
+### Added
+- **Web UI reworked around the scan.** The **Models** page now carries one table of every catalog entry of every
+  provider with a key – provider, model, answer and latency, tool calling, request sizes, chain ranks, last probe –
+  with search, provider chips, filters (answering, tool-capable, in a chain, chat models), sortable columns and a
+  probe button plus slot picker per row. A **scan card** shows catalog, answering and tool-capable counts, the last
+  probe and the pace per provider and scans one provider or all (request sizes optional); a **finds card** lists
+  the models a scan found suitable for a slot that no ranking pattern names, with checkboxes – taking them over
+  writes `~/.nimctl/discovered` and rebuilds the chain, taken-over models can be removed again. Slot cards show the
+  provider and the request sizes of every rank. The **Pool** page became **Providers** with a card per provider,
+  NVIDIA included: key state, free-tier note and key link, catalog/answering/tool-capable counts, last scan, ranks
+  with probe results, key entry, scan, remove. Overview shows the providers with their rank counts, Statistics a
+  chart of answering models per provider, Settings a **Chains** group (ranks per slot, ranks per provider, scan pace).
+- `nimctl web discover` (JSON: the finds per slot and the scan filters) and the endpoints `GET /api/discover` and
+  `POST /api/discovered` behind it; `/api/state` carries the taken-over models.
+- `nimctl find <provider:model>` probes a pool model by its exact id.
+
 ## [1.10.0] – 2026-09-19
 
 ### Added

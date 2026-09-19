@@ -49,6 +49,7 @@ RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same sh
 RE_CAND_KEY = re.compile(r"^[a-z]+(\.[a-z]+)?$")
 RE_CAND_VAL = re.compile(r"^[A-Za-z0-9._*+?()|^$\[\]\\ :/-]*$")
 RE_ARG = re.compile(r"^[^\x00-\x08\x0a-\x1f\x7f]{0,2000}$")   # printable, no control characters
+RE_MODEL = re.compile(r"^[A-Za-z0-9._/:-]{1,200}$")                # a model id, namespaced for a pool provider (the shape nimctl accepts)
 RE_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")                    # LiteLLM colours its startup banner
 
 with open(os.path.join(WEB, "token")) as _f:
@@ -213,6 +214,16 @@ def candidates_file():
     return out
 
 
+def discovered_file():
+    """~/.nimctl/discovered: the models `nimctl scan --use` (or the page) appended to the rankings, per slot"""
+    out = {}
+    for line in read_text(os.path.join(HOME, "discovered")).splitlines():
+        m = re.match(r"^([a-z]+):\s*(.*)$", line)
+        if m and m.group(1) in SLOTS:
+            out[m.group(1)] = m.group(2).split()
+    return out
+
+
 def settings_file():
     return {k: v for k, v in read_kv(os.path.join(HOME, "settings")).items() if k in SETTINGS_KEYS}
 
@@ -240,6 +251,7 @@ def build_state():
     st["catalog"] = read_text(os.path.join(HOME, "models.cache")).split()
     st["pool_catalogs"] = {p: read_text(os.path.join(HOME, f"models.{p}.cache")).split() for p in PROVIDERS}
     st["candidates"] = candidates_file()
+    st["discovered"] = discovered_file()
     st["bench"] = bench_last()
     st["workspace"] = read_text(os.path.join(HOME, "ide-workspace")).strip()
     st["state_file"] = read_kv(os.path.join(HOME, "state"))
@@ -394,6 +406,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(200, HISTORY)
             if u.path == "/api/candidates":
                 return self.send_json(200, cached("cands", 30, lambda: nimctl_json(["web", "candidates"], 30)))
+            if u.path == "/api/discover":
+                return self.send_json(200, cached("discover", 30, lambda: nimctl_json(["web", "discover"], 90)))
             if u.path == "/api/log":
                 name = (q.get("name") or ["proxy"])[0]
                 if name not in LOGS:
@@ -426,6 +440,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.save_settings(body)
             if u.path == "/api/candidates":
                 return self.save_candidates(body)
+            if u.path == "/api/discovered":
+                return self.save_discovered(body)
             if u.path == "/api/workspace":
                 return self.set_workspace(body)
         except Exception as e:
@@ -521,6 +537,23 @@ class Handler(BaseHTTPRequestHandler):
         write_atomic(os.path.join(HOME, "candidates"), "".join(f"{k}: {v}\n" for k, v in current.items()))
         invalidate()
         return self.send_json(200, {"candidates": current})
+
+    def save_discovered(self, body):
+        """{"discovered": {"code": ["id", …]}} – replaces those slots' lines in ~/.nimctl/discovered, keeps the others; an empty list removes the line"""
+        values = body.get("discovered")
+        if not isinstance(values, dict):
+            return self.send_json(400, {"error": "discovered"})
+        current = discovered_file()
+        for slot, ids in values.items():
+            if slot not in SLOTS or not isinstance(ids, list) or len(ids) > 50 or not all(isinstance(i, str) and RE_MODEL.match(i) for i in ids):
+                return self.send_json(400, {"error": f"bad discovered {slot}"})
+            if ids:
+                current[slot] = list(dict.fromkeys(ids))
+            else:
+                current.pop(slot, None)
+        write_atomic(os.path.join(HOME, "discovered"), "".join(f"{s}: {' '.join(current[s])}\n" for s in SLOTS if current.get(s)))
+        invalidate()
+        return self.send_json(200, {"discovered": current})
 
     def set_workspace(self, body):
         d = body.get("dir")

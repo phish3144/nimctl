@@ -68,28 +68,25 @@ scan_use() { # scan_use <slot> <id…> – append to the slot's line in ~/.nimct
   for m in "$@"; do [[ " $cur " == *" $m "* ]] || cur+=" $m"; done
   { [[ -f "$DISCOVERED_FILE" ]] && grep -vE "^${slot}:" "$DISCOVERED_FILE"; printf '%s: %s\n' "$slot" "${cur# }"; } >"$DISCOVERED_FILE.tmp" && mv "$DISCOVERED_FILE.tmp" "$DISCOVERED_FILE"   # "code: id id …" like ~/.nimctl/candidates
 }
-scan_discover() { # scan_discover <use 0|1> <nim|provider…> – responders of the scanned providers that qualify for a slot but sit in no ranking
-  local use="$1"; shift; local scanned=" $* " slot m res tools p listed any=0 found=() line; [[ -s "$PROBES" ]] || return 0
+scan_found() { # scan_found <slot> <nim|provider…> → responders of those providers that qualify for the slot but sit in no ranking, best latency first
+  local slot="$1"; shift; local scanned=" $* " listed m res tools p; [[ -s "$PROBES" ]] || return 0
+  listed=" $(slot_candidates "$slot" | tr '\n' ' ') "
+  while IFS=$'\t' read -r m res _ _ tools; do
+    [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
+    [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue
+    echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
+    if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi
+    printf '%s\n' "$m"
+  done < <(sort -t$'\t' -k3,3n "$PROBES"); return 0
+}
+scan_discover() { # scan_discover <use 0|1> <nim|provider…> – list the finds per slot; --use (or the question) appends them to the rankings
+  local use="$1"; shift; local slot found=() any=0
   printf '\n'
-  for slot in "${SLOTS[@]}"; do listed=" $(slot_candidates "$slot" | tr '\n' ' ') "; found=()
-    while IFS=$'\t' read -r m res _ _ tools; do
-      [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
-      [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue
-      echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
-      if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi
-      found+=("$m")
-    done < <(sort -t$'\t' -k3,3n "$PROBES")
-    ((${#found[@]})) || continue; any=1; line="${found[*]}"; info "$(tf scan_found "$slot" "$line")"
-    (( use )) && scan_use "$slot" "${found[@]}"
-  done
-  if (( ! any )); then info "$(t scan_nothing)"; return 0; fi
+  for slot in "${SLOTS[@]}"; do mapfile -t found < <(scan_found "$slot" "$@"); ((${#found[@]})) || continue; any=1
+    info "$(tf scan_found "$slot" "${found[*]}")"; (( use )) && scan_use "$slot" "${found[@]}"; done
+  (( any )) || { info "$(t scan_nothing)"; return 0; }
   if (( ! use )) && (( INTERACTIVE )) && ask "$(t scan_use_q)" n; then use=1
-    for slot in "${SLOTS[@]}"; do listed=" $(slot_candidates "$slot" | tr '\n' ' ') "; found=()
-      while IFS=$'\t' read -r m res _ _ tools; do [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
-        [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue; echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
-        if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi; found+=("$m"); done < <(sort -t$'\t' -k3,3n "$PROBES")
-      ((${#found[@]})) && scan_use "$slot" "${found[@]}"; done
-  fi
+    for slot in "${SLOTS[@]}"; do mapfile -t found < <(scan_found "$slot" "$@"); ((${#found[@]})) && scan_use "$slot" "${found[@]}"; done; fi
   if (( use )); then ok "$(t scan_used)"; auto_all || true; restart_if_running; else info "$(tf scan_hint_use "${*//nim/nvidia}")"; fi
 }
 cmd_scan() { # cmd_scan [provider…|all|nvidia] [--sizes] [--use] [--clear]
