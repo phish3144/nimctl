@@ -85,8 +85,9 @@ size_get() { # size_get <id> <tokens> → SIZE_RES (ok|error text|""), SIZE_T (e
 _size_write() { { awk -F'\t' -v id="$1" -v n="$2" '!($1==id && $2==n)' "$SIZES" 2>/dev/null; printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date +%s)"; } >"$SIZES.tmp" && mv "$SIZES.tmp" "$SIZES"; }
 size_set() { valid_model "$1" || return 1; with_lock _size_write "$1" "$2" "${3//$'\t'/ }"; }   # size_set <id> <tokens> <ok|error>
 size_probe() { # size_probe <id> <tokens> → "ok <ms>" | error text: one request of about that many tokens, 5 tokens back
-  local id="$1" n="$2" to=$((PROBE_TIMEOUT * 2)) body out t0; local pad="$TMP_ROOT/pad.$n"
-  [[ -s "$pad" ]] || yes 'The quick brown fox jumps over the lazy dog.' | head -n "$(( n / 10 ))" | tr '\n' ' ' >"$pad"   # ~10 tokens a sentence; a file, not an argument (128 KB limit)
+  local id="$1" n="$2" to=$((PROBE_TIMEOUT * 2)) body out t0 i; local pad="$TMP_ROOT/pad.$n"
+  # ~10 tokens a sentence; a file, not an argument (128 KB limit); no pipe – a runner that ignores SIGPIPE would print "Broken pipe" into the probe line
+  [[ -s "$pad" ]] || { for ((i = 0; i < n / 10; i++)); do printf 'The quick brown fox jumps over the lazy dog. '; done; } >"$pad"
   body=$(jq -n --arg m "$(plain_id "$id")" --rawfile pad "$pad" '{model:$m,max_tokens:5,messages:[{role:"user",content:("Reply with the single word OK. Ignore the text below.\n\n"+$pad)}]}')
   t0=$(now_ms); out=$(model_api "$id" POST /chat/completions "$to" "$body")
   if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then echo "ok $(( $(now_ms) - t0 ))"; return; fi
