@@ -14,7 +14,7 @@ check "web: page carries the language" '<html lang="de">' < <(curl -s "$U/")
 check "web: state has version and slots" '"version":"[0-9.]+","code":"deepseek-ai/deepseek-v4-pro-0813"' < <(curl -s -H "$H" "$U/api/state" | jq -c '{version, code: .slots.code.model}')
 check "web: state lists the settings nimctl reads and masks the key" '"NIMCTL_RPM".*"nvapi-…tkey"' < <(curl -s -H "$H" "$U/api/state" | jq -c '{k: .settings_keys, key: .config.nvidia_key}')
 check "web: stats endpoint" '"data":false|"requests"' < <(curl -s -H "$H" "$U/api/stats" | jq -c .)
-check "web: candidates endpoint shows the effective patterns" '"code":"deepseek-v4-pro laguna-xs' < <(curl -s -H "$H" "$U/api/candidates" | jq -c .)
+check "web: candidates endpoint shows the ranking" '"code":"groq:kimi-k2 deepseek-v4-pro gemini:gemini' < <(curl -s -H "$H" "$U/api/candidates" | jq -c .)
 check "web: settings saved" '"NIMCTL_STALL_TIMEOUT": "120"' < <(curl -s -H "$H" -d '{"settings":{"NIMCTL_STALL_TIMEOUT":"120"}}' "$U/api/settings")
 grep -qx 'NIMCTL_STALL_TIMEOUT=120' "$TMP/home/settings" && [[ $(stat -c %a "$TMP/home/settings") == 600 ]] && pass "web: settings file written, 600" || fail "web: settings file written, 600"
 check "web: a setting value with shell characters is refused" '"error": "bad setting' < <(curl -s -H "$H" -d '{"settings":{"NIMCTL_RPM":"40; rm -rf /"}}' "$U/api/settings")

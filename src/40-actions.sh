@@ -1,6 +1,6 @@
 # ── Actions (shared by the dashboard and the CLI) ─────────────────────────────
 T_de+=(
-  [models]="Modelle" [slots_hint]="code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell für nimctl code --model review"
+  [models]="Modelle" [slots_hint]="code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell für nimctl code --model review · +n = weitere Ränge, die bei Ausfall übernehmen"
   [unprobed]="nicht geprüft → p" [slot_empty]="nicht gewählt → a" [slot_unconfigured]="Slot %s ist nicht konfiguriert → nimctl auto"
   [search]="Suchbegriff (z.B. deepseek, laguna, glm, nemotron)" [nohit]="keine Treffer" [toomany]="%d Treffer – enger filtern (max. %d)"
   [pick_slot]="Modell für Slot %s" [pick_hint]="Suchbegriff (Enter = bereits geprüfte Modelle)" [number]="Nummer (Enter = abbrechen)"
@@ -24,7 +24,7 @@ T_de+=(
   [proxy_rt]="Proxy-Roundtrip (wie Claude Code): %s" [proxy_rt_fail]="Proxy antwortet nicht wie erwartet: %s" [proxy_down]="Proxy läuft nicht → nimctl start"
 )
 T_en+=(
-  [models]="Models" [slots_hint]="code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model for nimctl code --model review"
+  [models]="Models" [slots_hint]="code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model for nimctl code --model review · +n = further ranks that take over on failure"
   [unprobed]="not probed → p" [slot_empty]="not selected → a" [slot_unconfigured]="slot %s is not configured → nimctl auto"
   [search]="Search term (e.g. deepseek, laguna, glm, nemotron)" [nohit]="no matches" [toomany]="%d matches – narrow down (max %d)"
   [pick_slot]="Model for slot %s" [pick_hint]="Search term (Enter = already probed models)" [number]="Number (Enter = cancel)"
@@ -55,6 +55,7 @@ slot_line() { # slot_line <slot> [number] → one dashboard/summary row
   case "$PROBE_TOOLS" in ok) tools="$OK";; no) tools="$WA";; *) tools="$GR";; esac
   case "$PROBE_RES" in ok) flag="$OK"; txt="${D}$(t answers) · $(printf '%5s' "$PROBE_MS") ms · $age${R}";; "") flag="$GR"; txt="${D}$(t unprobed)${R}";; *) flag="$NO"; txt="${RED}$PROBE_RES${R} ${D}· $age${R}";; esac
   local w=$(( COLS - 40 )); (( w > 46 )) && w=46; (( w < 24 )) && w=24
+  local ranks; ranks=$(slot_chain "$slot" | wc -w); (( ranks > 1 )) && txt+=" ${D}· +$((ranks-1)) $(t chain_more)${R}"
   out "  ${B}${n:- }${R}  $(printf '%-7s' "$slot") $(printf "%-${w}s" "$(trunc "$m" "$w")") $flag $txt${tools:+  $tools}"
 }
 key_line() { # → text for the key row; sets KEY_FLAG

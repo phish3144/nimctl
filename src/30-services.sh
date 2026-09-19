@@ -5,7 +5,7 @@ T_de+=(
   [svc_up]="%s läuft  http://localhost:%s" [svc_fail]="%s startet nicht → nimctl logs %s" [svc_died]="%s ist direkt nach dem Start beendet worden → nimctl logs %s"
   [svc_stopped]="%s gestoppt" [svc_foreign]="Port %s ist belegt von %s – nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
   [port_hint]="Anderen Port wählen: %s=%s nimctl" [waiting]="warte auf Port %s … %ss" [browser]="Chat: http://localhost:%s"
-  [restart_q]="Dienste neu starten, damit die Änderung wirkt?" [restart_hint]="Änderung wirkt nach Neustart: nimctl restart"
+  [restart_q]="Proxy neu starten, damit die Änderung wirkt?" [restart_hint]="Änderung wirkt nach Neustart: nimctl restart"
   [claude_attached]="Hinweis: Eine laufende Claude-Code-Sitzung verliert beim Neustart die Verbindung."
   [inst_sysd]="Autostart aktiv (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="Autostart entfernt" [inst_fail]="%s fehlgeschlagen" [no_systemd]="systemd nicht verfügbar – Autostart nur unter Linux mit systemd"
   [unit_failed]="systemd-Unit %s ist im Zustand failed → journalctl --user -u %s"
@@ -16,7 +16,7 @@ T_en+=(
   [svc_up]="%s up  http://localhost:%s" [svc_fail]="%s failed to start → nimctl logs %s" [svc_died]="%s exited right after starting → nimctl logs %s"
   [svc_stopped]="%s stopped" [svc_foreign]="port %s is taken by %s – not started by nimctl" [svc_wasdown]="%s was not running"
   [port_hint]="pick another port: %s=%s nimctl" [waiting]="waiting for port %s … %ss" [browser]="Chat: http://localhost:%s"
-  [restart_q]="Restart services to apply the change?" [restart_hint]="the change applies after a restart: nimctl restart"
+  [restart_q]="Restart the proxy to apply the change?" [restart_hint]="the change applies after a restart: nimctl restart"
   [claude_attached]="Note: a running Claude Code session loses its connection during the restart."
   [inst_sysd]="autostart enabled (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="autostart removed" [inst_fail]="%s failed" [no_systemd]="systemd not available – autostart only on Linux with systemd"
   [unit_failed]="systemd unit %s is in state failed → journalctl --user -u %s"
@@ -126,17 +126,18 @@ stop_svc() {
   esac
 }
 start_all() { local rc=0; start_proxy || rc=1; [[ "$SEARCH_ENABLED" == 1 ]] && { start_search || rc=1; }; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; [[ "$WEB_ENABLED" == 1 ]] && { start_web || rc=1; }; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; [[ "$WEB_ENABLED" == 1 || -f "$PID_DIR/web.pid" ]] && stop_svc web; return 0; }
+# NIMCTL_WEB_CALLER: set by the web UI's server for the commands it runs – those never stop or restart the web UI itself
+stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; [[ -z "${NIMCTL_WEB_CALLER:-}" && ( "$WEB_ENABLED" == 1 || -f "$PID_DIR/web.pid" ) ]] && stop_svc web; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
 }
-restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; [[ "$WEB_ENABLED" == 1 ]] && restart_svc web; return 0; }
-restart_if_running() { # after a config change; explicit yes only, because a Claude Code session may be attached
+restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; [[ -z "${NIMCTL_WEB_CALLER:-}" && "$WEB_ENABLED" == 1 ]] && restart_svc web; return 0; }
+restart_if_running() { # after a model/key/pool change only the proxy carries the change (and the chat when it talks to NVIDIA directly); explicit yes only, a Claude Code session may be attached
   svc_running proxy || svc_running chat || return 0
   (( INTERACTIVE )) || { info "$(t restart_hint)"; return 0; }
   svc_running proxy && info "$(t claude_attached)"
-  if ask "$(t restart_q)" n; then restart_all; else info "$(t restart_hint)"; fi
+  if ask "$(t restart_q)" n; then svc_running proxy && restart_svc proxy; [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 0 ]] && svc_running chat && restart_svc chat; else info "$(t restart_hint)"; fi; return 0
 }
 
 # ── systemd (user units) ──────────────────────────────────────────────────────

@@ -113,7 +113,7 @@ def mask(key):
 # ── nimctl ─────────────────────────────────────────────────────────────────────────────────────────────────
 def base_env():
     env = dict(os.environ)
-    env.update({"NIMCTL_HOME": HOME, "NO_COLOR": "1", "TERM": "dumb", "NIMCTL_INTERACTIVE": "0", "NIMCTL_YES": "1"})
+    env.update({"NIMCTL_HOME": HOME, "NO_COLOR": "1", "TERM": "dumb", "NIMCTL_INTERACTIVE": "0", "NIMCTL_YES": "1", "NIMCTL_WEB_CALLER": "1"})
     env.pop("NIMCTL_WEB_BIN", None)
     return env
 
@@ -215,9 +215,11 @@ def build_state():
         "extra_models": conf.get("EXTRA_MODELS", "").split(),
         "ide_enabled": conf.get("IDE_ENABLED") == "1", "ide_autocomplete": conf.get("IDE_AUTOCOMPLETE") == "1",
         "search_enabled": conf.get("SEARCH_ENABLED") == "1", "web_enabled": conf.get("WEB_ENABLED") == "1",
+        "chains": {s: conf.get("CHAIN_" + s.upper(), "").split() for s in SLOTS},
         "pool": {p: {"key": bool(conf.get(p.upper() + "_API_KEY")), "key_masked": mask(conf.get(p.upper() + "_API_KEY", "")),
-                     "models": parse_pool_models(conf.get("POOL_" + p.upper(), ""))} for p in PROVIDERS},
+                     "ranks": ((st.get("pool") or {}).get(p) or {}).get("ranks", [])} for p in PROVIDERS},
     }
+    st["health"] = read_json(os.path.join(HOME, "health.json"), {}) or {}
     st["settings"] = settings_file()
     st["settings_keys"] = SETTINGS_KEYS
     st["env_overrides"] = sorted(k for k in SETTINGS_KEYS if k in os.environ)

@@ -9,7 +9,7 @@ check "dashboard: last action panel" "Letzte Aktion" < <(printf 'p\nq\n' | timeo
 check "dashboard: help key" "Tasten" < <(printf '?\n\nq\n' | timeout 30 "$N")
 check "dashboard: footer groups" "Dienste +s Start +x Stop +r Neustart" < <(printf 'q\n' | timeout 30 "$N")
 check "dashboard: unknown key" "unbekannte Taste: y" < <(printf 'y\nq\n' | timeout 30 "$N")
-check "dashboard: 4 slots shown" "4 +review +nvidia/nemotron-3-ultra" < <(printf 'q\n' | COLUMNS=120 timeout 30 "$N")
+check "dashboard: 4 slots shown" "4 +review +deepseek-ai/deepseek-v4-pro" < <(printf 'q\n' | COLUMNS=120 timeout 30 "$N")
 check "key: wrong key keeps old" "alter Key bleibt" < <(printf 'k\nnvapi-wrong\n\nq\n' | timeout 30 "$N")
 check "key: same key changes nothing" "gleicher Key" < <(printf 'k\nnvapi-testkey\n\nq\n' | timeout 30 "$N")
 awk -F'\t' '$2=="ok"' "$TMP/home/probes" | grep -q . && pass "key: re-entering same key keeps probes" || fail "key: re-entering same key keeps probes"

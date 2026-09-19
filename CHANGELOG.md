@@ -3,6 +3,30 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.8.0] – 2026-09-19
+
+### Changed
+- **Ranking instead of "NVIDIA first"**: every slot is now a chain of ranks built from one candidate ranking that
+  spans NVIDIA and every pool provider with a key (`provider:pattern` names a provider's catalog). The best responder
+  is rank 1 – with a Groq key that is `groq:kimi-k2` for `code`, not a fallback behind NVIDIA – and the next ranks
+  follow in ranking order, up to `NIMCTL_CHAIN_LEN` (6). Config keys `CHAIN_<SLOT>`; `MODEL_<SLOT>` stays rank 1.
+  `nimctl pool add` rebuilds the chains, `nimctl pool` shows each provider's ranks, `pick <slot> <id>` makes a model
+  rank 1 and moves the rest down, the dashboard shows `+n fallback` per slot, `status --json` the chains and a
+  `health` block. The proxy config has one model group per rank (`nim-<slot>`, `nim-<slot>-r2`, …) with fallbacks
+  down the chain; `pool-<slot>` groups and the per-provider `POOL_<PROVIDER>` config are gone.
+- **Cooldowns by nimctl's hook**: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM never cools a
+  single-deployment group down) is paused for `NIMCTL_COOLDOWN` seconds (120), doubling per consecutive failure up to
+  30 minutes, cleared by a success; the hook routes every request to the best rank that is not paused and registers
+  the pause with LiteLLM so a running request's fallback chain skips it too. State in `~/.nimctl/health.json`:
+  dashboard line `Paused`, web UI notices and chain markers. The request budget counts NVIDIA ranks only.
+- Config changes (`key`, `pick`, `auto`, `pool …`) restart the proxy only, no longer every service; commands run
+  from the web UI never stop or restart the web UI itself (`nimctl pool add` from the page killed the page).
+- Web UI: chains on the slot cards and the overview, ranks per provider on the pool page, paused-rank notices, the
+  ranking editor, `NIMCTL_COOLDOWN` and `NIMCTL_CHAIN_LEN` under Settings.
+
+### Fixed
+- Adding a provider key from the web UI restarted all services including the web UI's own server.
+
 ## [1.7.0] – 2026-09-19
 
 ### Added

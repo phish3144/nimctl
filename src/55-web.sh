@@ -39,10 +39,9 @@ web_disable() { # stop it, take it out of start/stop/restart and systemd; the fi
   if has systemctl && [[ -f "$(unit_dir)/nimctl-web.service" ]]; then systemctl --user disable --now nimctl-web 2>/dev/null; rm -f "$(unit_dir)/nimctl-web.service"; systemctl --user daemon-reload 2>/dev/null; fi
   stop_svc web; WEB_ENABLED=0; save_conf; ok "$(t web_disabled)"
 }
-web_candidates_json() { # the effective candidate patterns per slot and per pool provider, for the UI's editor
-  local j="{}" s p v
+web_candidates_json() { # the effective candidate patterns (the ranking) per slot, for the UI's editor
+  local j="{}" s v
   for s in "${SLOTS[@]}"; do v=$(candidates "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$s" --arg v "${v% }" '$a + {($k): $v}'); done
-  for p in "${POOL_PROVIDERS[@]}"; do for s in "${SLOTS[@]}"; do v=$(pool_candidates "$p" "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$p.$s" --arg v "${v% }" '$a + {($k): $v}'); done; done
   printf '%s\n' "$j"
 }
 cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]

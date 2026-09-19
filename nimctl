@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.7.0"
+VERSION="1.8.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -17,7 +17,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -45,17 +45,21 @@ RE_MODEL='^[A-Za-z0-9._/:-]+$'                        # the only shape a model i
 RE_KEY='^nvapi-[A-Za-z0-9_-]+$'
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
-# Candidate patterns per slot, in order of preference. Matched against the live catalog, so renamed/
-# dated IDs (…-0813) keep working. The first pattern with a responding model wins; latency only decides
-# between several matches of the same pattern. Override with NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
+# Candidate patterns per slot: the ranking. `provider:regex` names a pool provider's catalog (src/22-pool.sh), a bare
+# regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a responding model (tool
+# calling for code/review) adds it to the slot's chain – the first is the slot's model, the others take over one after
+# another when it fails (LiteLLM order + cooldown, see write_litellm_yaml). Quality first, placed by what the free
+# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is
+# not first by default where a provider is as good and more reliable. Override: NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
 # shellcheck disable=SC2034
-CAND_CODE=(deepseek-v4-pro laguna-xs glm-5 qwen3-coder kimi-k3 nemotron-3-ultra nemotron-3-super)
+CAND_CODE=(groq:kimi-k2 deepseek-v4-pro 'gemini:gemini-[0-9.]+-pro$' laguna-xs groq:gpt-oss-120b glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra groq:llama-3.3-70b nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_FAST=(deepseek-v4-flash nemotron-3.5-lightning nemotron-3-nano glm-5.*flash nemotron-3-super)
+CAND_FAST=(deepseek-v4-flash groq:llama-3.1-8b-instant cerebras:llama3.1-8b 'gemini:flash-lite$' groq:gpt-oss-20b nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_CHAT=(nemotron-3-super nemotron-3-ultra deepseek-v4-flash llama-4-maverick mistral-medium)
+CAND_CHAT=(nemotron-3-super groq:llama-3.3-70b 'gemini:gemini-[0-9.]+-flash$' deepseek-v4-flash cerebras:llama-3.3-70b groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
-CAND_REVIEW=(nemotron-3-ultra kimi-k3 deepseek-v4-pro glm-5 nemotron-3-super)
+CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro groq:kimi-k2 nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 groq:gpt-oss-120b mistral:magistral-medium nemotron-3-super)
+CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets
 SLOTS=(code fast chat review)
 TOOL_SLOTS=" code review "                            # slots whose model must support function calling
 
@@ -194,16 +198,16 @@ gen_secret() { if has openssl; then openssl rand -hex 24; else od -An -N24 -tx1 
 load_conf() {
   mkdir -p "$NIM_DIR" "$LOG_DIR" "$PID_DIR"; chmod 700 "$NIM_DIR" 2>/dev/null; touch "$PROBES"
   NVIDIA_API_KEY="${NVIDIA_API_KEY:-${NIMCTL_API_KEY:-}}"
-  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0; SEARCH_ENABLED=0; WEB_ENABLED=0
+  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; CHAIN_CODE=""; CHAIN_FAST=""; CHAIN_CHAT=""; CHAIN_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0; SEARCH_ENABLED=0; WEB_ENABLED=0
   KEY_STATE="unknown"; KEY_TIME=0; KEY_SET_AT=0
   local envkey="$NVIDIA_API_KEY" p pk pool_keys=(); declare -A envpool=()
-  for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; envpool[$p]="${!pk:-}"; printf -v "$pk" '%s' ""; printf -v "POOL_${p^^}" '%s' ""; pool_keys+=("$pk" "POOL_${p^^}"); done
-  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE SEARCH_ENABLED WEB_ENABLED "${pool_keys[@]}"
+  for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; envpool[$p]="${!pk:-}"; printf -v "$pk" '%s' ""; pool_keys+=("$pk"); done
+  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW CHAIN_CODE CHAIN_FAST CHAIN_CHAT CHAIN_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE SEARCH_ENABLED WEB_ENABLED "${pool_keys[@]}"
   [[ -n "$envkey" ]] && NVIDIA_API_KEY="$envkey"           # an explicit environment key wins over the file
-  for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; [[ -n "${envpool[$p]}" ]] && printf -v "$pk" '%s' "${envpool[$p]}"; [[ "${!pk}" =~ $RE_POOL_KEY ]] || printf -v "$pk" '%s' ""; pool_sanitize "$p"; done
+  for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; [[ -n "${envpool[$p]}" ]] && printf -v "$pk" '%s' "${envpool[$p]}"; [[ "${!pk}" =~ $RE_POOL_KEY ]] || printf -v "$pk" '%s' ""; done
   read_kv "$STATE" KEY_STATE KEY_TIME KEY_SET_AT
   [[ "$NVIDIA_API_KEY" =~ $RE_KEY ]] || NVIDIA_API_KEY=""
-  local s v; for s in "${SLOTS[@]}"; do v="MODEL_${s^^}"; valid_model "${!v}" || printf -v "$v" '%s' ""; done
+  local s v; for s in "${SLOTS[@]}"; do v="MODEL_${s^^}"; valid_model "${!v}" || printf -v "$v" '%s' ""; chain_sanitize "$s"; done
   [[ "$KEY_TIME" =~ ^[0-9]+$ ]] || KEY_TIME=0; [[ "$KEY_SET_AT" =~ ^[0-9]+$ ]] || KEY_SET_AT=0
   [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$SEARCH_ENABLED" == 1 ]] || SEARCH_ENABLED=0; [[ "$WEB_ENABLED" == 1 ]] || WEB_ENABLED=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
   [[ "$MASTER_KEY" =~ ^[A-Za-z0-9_-]{16,}$ ]] || { MASTER_KEY="sk-nimctl-$(gen_secret)"; [[ -f "$CONF" ]] && save_conf; }
@@ -211,17 +215,28 @@ load_conf() {
 }
 save_conf() {
   local e="" m; for m in $EXTRA_MODELS; do valid_model "$m" && e+="$m "; done; EXTRA_MODELS="${e% }"
-  local p pv
-  { printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\nSEARCH_ENABLED=%s\nWEB_ENABLED=%s\n' \
-      "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" "$SEARCH_ENABLED" "$WEB_ENABLED"
-    for p in "${POOL_PROVIDERS[@]}"; do pv="POOL_${p^^}"; printf '%s_API_KEY=%s\nPOOL_%s=%s\n' "${p^^}" "$(pool_key "$p")" "${p^^}" "${!pv}"; done   # pool keys and models (src/22-pool.sh)
+  local p
+  { printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nCHAIN_CODE=%s\nCHAIN_FAST=%s\nCHAIN_CHAT=%s\nCHAIN_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\nSEARCH_ENABLED=%s\nWEB_ENABLED=%s\n' \
+      "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$CHAIN_CODE" "$CHAIN_FAST" "$CHAIN_CHAT" "$CHAIN_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" "$SEARCH_ENABLED" "$WEB_ENABLED"
+    for p in "${POOL_PROVIDERS[@]}"; do printf '%s_API_KEY=%s\n' "${p^^}" "$(pool_key "$p")"; done   # pool keys (src/22-pool.sh)
   } >"$CONF.tmp"
   chmod 600 "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
 }
 save_state() { printf 'KEY_STATE=%s\nKEY_TIME=%s\nKEY_SET_AT=%s\n' "$KEY_STATE" "$KEY_TIME" "$KEY_SET_AT" >"$STATE"; }
 configured() { [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" && -n "$MODEL_CHAT" ]]; }
 slot_model() { local v="MODEL_${1^^}"; printf '%s' "${!v}"; }
-set_slot() { local v="MODEL_${1^^}"; printf -v "$v" '%s' "$2"; }
+slot_chain() { local v="CHAIN_${1^^}"; printf '%s' "${!v}"; }                       # the slot's ranks, space separated, first = the slot's model
+set_slot() { # set_slot <slot> <model> – the model becomes rank 1, the rest of the chain moves down
+  local v="MODEL_${1^^}" c="CHAIN_${1^^}" m chain="$2"; printf -v "$v" '%s' "$2"
+  for m in ${!c}; do [[ "$m" != "$2" ]] && chain+=" $m"; done; printf -v "$c" '%s' "$chain"
+}
+set_chain() { local v="MODEL_${1^^}" c="CHAIN_${1^^}"; printf -v "$c" '%s' "$2"; printf -v "$v" '%s' "${2%% *}"; }   # set_chain <slot> "<ranks…>"
+chain_sanitize() { # keeps valid ids only; model and chain agree (chain from the model, or the model from the chain's head)
+  local v="MODEL_${1^^}" c="CHAIN_${1^^}" m new=""; for m in ${!c}; do valid_model "$m" && [[ " $new " != *" $m "* ]] && new+="$m "; done; new="${new% }"
+  if [[ -z "$new" && -n "${!v}" ]]; then new="${!v}"; elif [[ -n "$new" && -z "${!v}" ]]; then printf -v "$v" '%s' "${new%% *}"
+  elif [[ -n "$new" && "${new%% *}" != "${!v}" ]]; then local rest=""; for m in $new; do [[ "$m" != "${!v}" ]] && rest+=" $m"; done; new="${!v}$rest"; fi
+  printf -v "$c" '%s' "$new"
+}
 key_days_left() { # → days until the key is ~180 days old, or "" when unknown
   (( KEY_SET_AT > 0 )) || { printf ''; return; }
   echo $(( 180 - ( $(date +%s) - KEY_SET_AT ) / 86400 ))
@@ -250,6 +265,7 @@ T_de+=(
   [tools_ok]="Tools ✓" [tools_no]="keine Tool-Calls" [catalog_fail]="Katalog nicht abrufbar" [catalog_stale]="Katalog-Abruf fehlgeschlagen – nutze Stand von %s"
   [auto_title]="Automatische Modellwahl" [auto_slot]="Slot %s: %d Kandidaten" [auto_pick]="%s → %s (%s ms)" [auto_none]="kein Kandidat antwortet – Slot %s bleibt: %s"
   [auto_notools]="%s antwortet, kann aber keine Tool-Calls – für Slot %s ungeeignet" [auto_done]="Fertig. Ergebnis:" [auto_progress]="Slot %d/%d"
+  [auto_chain]="Ausweich in dieser Reihenfolge: %s" [chain_more]="Ausweich"
 )
 T_en+=(
   [probing]="probing %d model(s) with a real request (max %ss) …" [probing_tools]="probing tool calling on %d model(s) …"
@@ -258,6 +274,7 @@ T_en+=(
   [tools_ok]="tools ✓" [tools_no]="no tool calls" [catalog_fail]="catalog unavailable" [catalog_stale]="catalog refresh failed – using the copy from %s"
   [auto_title]="Automatic model selection" [auto_slot]="Slot %s: %d candidates" [auto_pick]="%s → %s (%s ms)" [auto_none]="no candidate responds – slot %s stays: %s"
   [auto_notools]="%s responds but cannot make tool calls – unsuitable for slot %s" [auto_done]="Done. Result:" [auto_progress]="slot %d/%d"
+  [auto_chain]="fallback in this order: %s" [chain_more]="fallback"
 )
 
 write_hdr() { # the Authorization header lives in a 600 file inside a 700 tmp dir; curl reads it with -K
@@ -370,18 +387,29 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
   for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
 }
-match_candidates() { # match_candidates <catalog> <pattern…> → concrete ids from the catalog, in pattern order (≤3 per pattern)
-  local catalog="$1" pat m seen=" "; shift
-  for pat in "$@"; do [[ -n "$pat" ]] || continue
-    while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; printf '%s\n' "$m"; }; done < <(echo "$catalog" | grep -iE -- "$pat" | head -n 3)
+pat_provider() { local p="${1%%:*}"; [[ "$1" == *:* && " ${POOL_PROVIDERS[*]} " == *" $p "* ]] && printf '%s' "$p"; return 0; }   # provider of a candidate pattern, "" = NVIDIA
+pat_regex() { if [[ -n "$(pat_provider "$1")" ]]; then printf '%s' "${1#*:}"; else printf '%s' "$1"; fi; }
+declare -A CATALOG_CACHE=()
+catalog_cached() { # catalog_cached <provider|""> → ids (namespaced for a provider; empty when the provider has no key), fetched once per run
+  local p="$1" k="${1:-nim}"                                   # "" (NVIDIA) cannot be an associative-array key
+  if [[ -z "${CATALOG_CACHE[$k]+x}" ]]; then
+    if [[ -z "$p" ]]; then CATALOG_CACHE[$k]=$(models_cached); elif pool_configured "$p"; then CATALOG_CACHE[$k]=$(pool_catalog "$p" | sed "s/^/$p:/"); else CATALOG_CACHE[$k]=""; fi
+  fi
+  printf '%s\n' "${CATALOG_CACHE[$k]}"
+}
+match_candidates() { # match_candidates <pattern…> → concrete ids in ranking order (≤2 per pattern), pool ids namespaced
+  local pat p re m seen=" "
+  for pat in "$@"; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat")
+    while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; printf '%s\n' "$m"; }; done < <(catalog_cached "$p" | grep -iE -- "$re" | head -n 2)
   done
 }
-slot_candidates() { local pats=() pat; while read -r pat; do [[ -n "$pat" ]] && pats+=("$pat"); done < <(candidates "$2"); match_candidates "$1" "${pats[@]}"; }   # slot_candidates <catalog> <slot>
-auto_select() { # auto_select <slot…> – probes the union of all candidates once, then decides per slot
-  local slots=("$@") catalog slot m pat first union=() seen=" " n=0; local total=${#slots[@]}
-  catalog=$(models_cached) || return 1
+slot_candidates() { local pats=() pat; while read -r pat; do [[ -n "$pat" ]] && pats+=("$pat"); done < <(candidates "$1"); match_candidates "${pats[@]}"; }   # slot_candidates <slot>
+pattern_applies() { local p; p=$(pat_provider "$1"); [[ -z "$p" ]] || pool_configured "$p"; }   # a pool pattern counts only when that provider has a key
+auto_select() { # auto_select <slot…> – probes the union of all candidates once, then builds each slot's chain in ranking order
+  local slots=("$@") slot m pat first union=() seen=" " n=0; local total=${#slots[@]}
+  models_cached >/dev/null || return 1
   declare -A CANDS=()
-  for slot in "${slots[@]}"; do CANDS[$slot]=$(slot_candidates "$catalog" "$slot")
+  for slot in "${slots[@]}"; do CANDS[$slot]=$(slot_candidates "$slot")
     while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; union+=("$m"); }; done <<<"${CANDS[$slot]}"; done
   ((${#union[@]})) || { for slot in "${slots[@]}"; do bad "$(tf auto_none "$slot" "$(slot_model "$slot")")"; done; return 1; }
   printf "\n  ${B}%s${R}\n" "$(t auto_title)"; probe_many "${union[@]}"
@@ -390,9 +418,10 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     local cands=() var="MODEL_${slot^^}"; while read -r m; do [[ -n "$m" ]] && cands+=("$m"); done <<<"${CANDS[$slot]}"
     printf "\n  ${B}%s${R}  ${D}%s${R}\n" "$(tf auto_slot "$slot" "${#cands[@]}")" "$(tf auto_progress "$n" "$total")"
     ((${#cands[@]})) || { bad "$(tf auto_none "$slot" "${!var:--}")"; rc=1; continue; }
-    # second chance: if the top-priority pattern only timed out (cold start / load), retry once with 2x timeout
-    first=$(candidates "$slot" | head -n1); local retry=() any_ok=0 r res
-    for m in "${cands[@]}"; do echo "$m" | grep -qiE -- "$first" || continue
+    # second chance: if the top applicable pattern only timed out (cold start / load), retry once with 2x timeout
+    first=""; while read -r pat; do [[ -n "$pat" ]] && pattern_applies "$pat" && { first="$pat"; break; }; done < <(candidates "$slot")
+    local retry=() any_ok=0 r res fp fre; fp=$(pat_provider "$first"); fre=$(pat_regex "$first")
+    for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$fp" ]] && echo "$m" | grep -qiE -- "$fre" || continue
       if [[ -n "${RUN_OK[$m]:-}" ]]; then any_ok=1; else probe_get "$m"; [[ "$PROBE_RES" == *imeout* ]] && retry+=("$m"); fi; done
     if ((any_ok == 0 && ${#retry[@]})); then
       for r in "${retry[@]}"; do info "$(tf retry "$r" $((PROBE_TIMEOUT * 2)))"; res=$(probe_one "$r" $((PROBE_TIMEOUT * 2)))
@@ -401,16 +430,22 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     # models that need function calling: check the responders of this slot once
     if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then local responders=(); for m in "${cands[@]}"; do [[ -n "${RUN_OK[$m]:-}" ]] && responders+=("$m"); done
       ((${#responders[@]})) && probe_tools_many "${responders[@]}"; fi
-    local best="" best_ms=999999
-    while read -r pat; do [[ -n "$pat" ]] || continue
-      for m in "${cands[@]}"; do echo "$m" | grep -qiE -- "$pat" || continue
+    # the chain: patterns in ranking order, a pattern's responders by latency, until CHAIN_LEN ranks
+    local chain=() rows p re notools=" "
+    while read -r pat; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat"); rows=()
+      for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$p" ]] && echo "$m" | grep -qiE -- "$re" || continue
         probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
-        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then info "$(tf auto_notools "$m" "$slot")"; continue; fi
-        (( PROBE_MS < best_ms )) && { best="$m"; best_ms=$PROBE_MS; }
+        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then [[ "$notools" == *" $m "* ]] || { notools+="$m "; info "$(tf auto_notools "$m" "$slot")"; }; continue; fi
+        rows+=("$PROBE_MS $m")
       done
-      [[ -n "$best" ]] && break
+      ((${#rows[@]})) || continue
+      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] && chain+=("$m"); done < <(printf '%s\n' "${rows[@]}" | sort -n)
+      (( ${#chain[@]} >= CHAIN_LEN )) && break
     done < <(candidates "$slot")
-    if [[ -n "$best" ]]; then set_slot "$slot" "$best"; ok "$(tf auto_pick "$slot" "$best" "$best_ms")"; save_conf; write_litellm_yaml
+    if ((${#chain[@]})); then
+      chain=("${chain[@]:0:CHAIN_LEN}"); set_chain "$slot" "${chain[*]}"; probe_get "${chain[0]}"
+      ok "$(tf auto_pick "$slot" "${chain[0]}" "$PROBE_MS")"; (( ${#chain[@]} > 1 )) && info "$(tf auto_chain "${chain[*]:1}")"
+      save_conf; write_litellm_yaml
     else bad "$(tf auto_none "$slot" "${!var:--}")"; rc=1; fi
   done
   return $rc
@@ -418,153 +453,119 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
 auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "$(t auto_done)"; local s; for s in "${SLOTS[@]}"; do slot_line "$s"; done; return $rc; }
 
 # ── LiteLLM config ────────────────────────────────────────────────────────────
+COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused (doubling per consecutive failure, up to 30 min)
+rank_group() { if (( $2 == 1 )); then printf 'nim-%s' "$1"; else printf 'nim-%s-r%s' "$1" "$2"; fi; }   # rank_group <slot> <rank> → model group name
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
-  local m p s i seen=" " pool_slots=" " fbs=() fb list tail
-  entry() { # entry <name> <id> [max_tokens] [order] – NVIDIA, or the pool provider a namespaced id names (skipped when that provider has no key)
+  local m s i n seen=" " fbs=() fb groups nimg="" cj="{}" tail
+  entry() { # entry <name> <id> [max_tokens] – NVIDIA, or the pool provider a namespaced id names (skipped when that provider has no key)
     local p base keyref id="$2"; p=$(pool_of "$2")
     if [[ -n "$p" ]]; then pool_configured "$p" || return 0; base=$(pool_base "$p"); keyref="os.environ/${p^^}_API_KEY"; id="${2#*:}"; else base="$API_BASE"; keyref="os.environ/NVIDIA_API_KEY"; fi
-    printf '  - model_name: %s\n    litellm_params: { model: %s/%s, api_base: %s, api_key: %s%s%s, timeout: %s, additional_drop_params: [%s] }\n' "$1" "$PROVIDER" "$id" "$base" "$keyref" "${3:+, max_tokens: $3}" "${4:+, order: $4}" "$STALL_TIMEOUT" "$DROP"
+    printf '  - model_name: %s\n    litellm_params: { model: %s/%s, api_base: %s, api_key: %s%s, timeout: %s, additional_drop_params: [%s] }\n' "$1" "$PROVIDER" "$id" "$base" "$keyref" "${3:+, max_tokens: $3}" "$STALL_TIMEOUT" "$DROP"
   }
-  for s in "${SLOTS[@]}"; do for p in $(pool_active); do [[ -n "$(pool_slot_model "$p" "$s")" ]] && { pool_slots+="$s "; break; }; done; done
-  for s in code fast chat review; do   # nim-<slot> → pool-<slot> (when the pool has a model for it) → the fast model; review → the code model
-    [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue
-    case "$s" in code|chat) tail='"nim-fast"';; review) tail='"nim-code"';; *) tail="";; esac
-    list=""; [[ "$pool_slots" == *" $s "* ]] && list="\"pool-$s\""; [[ -n "$tail" ]] && list+="${list:+, }$tail"
-    [[ -n "$list" ]] && fbs+=("{ nim-$s: [$list] }")
-  done
-  fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
   {
     cat <<EOF
 # generated by nimctl – change models via the dashboard, not here
 # NVIDIA validates requests strictly and rejects OpenAI-only parameters that LiteLLM adds while
 # translating Claude Code's Anthropic-format requests (e.g. prompt_cache_key from session metadata).
-# timeout: seconds without a byte from the model (NIMCTL_STALL_TIMEOUT) before the request goes to the fallback. Per
-# deployment, because the Anthropic route Claude Code uses ignores router_settings.stream_timeout (verified 1.101).
+# Every slot is a chain of ranks: nim-<slot> is rank 1, nim-<slot>-r2 … the others, each its own group with one
+# deployment, falling back down the chain. nimctl_hooks (src/25-throttle.sh) sends a request to the best rank that
+# is not paused and pauses a rank that fails (timeout: no byte for NIMCTL_STALL_TIMEOUT seconds, 429, 5xx) in
+# LiteLLM's cooldown cache, so the running request's fallbacks and every later request skip it.
 model_list:
 EOF
-    entry nim-code "${MODEL_CODE:-none}" 16384; entry nim-fast "${MODEL_FAST:-$MODEL_CODE}" 8192; entry nim-chat "${MODEL_CHAT:-$MODEL_CODE}"
-    [[ -n "$MODEL_REVIEW" ]] && entry nim-review "$MODEL_REVIEW" 16384
-    # the pool: pool-<slot> has one deployment per provider, tried in provider order (src/22-pool.sh)
-    i=0; for p in $(pool_active); do ((i++)); for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" ]] || continue
-      if [[ "$s" == fast ]]; then entry pool-fast "$p:$m" 8192 "$i"; else entry "pool-$s" "$p:$m" 16384 "$i"; fi; done; done
+    for s in "${SLOTS[@]}"; do [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; i=0; groups=()
+      for m in $(slot_chain "$s"); do ((i++)); groups+=("$(rank_group "$s" "$i")")
+        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
+        [[ -n "$(pool_of "$m")" ]] || nimg+="\"$(rank_group "$s" "$i")\","
+        cj=$(jq -n --argjson a "$cj" --arg g "$(rank_group "$s" "$i")" --arg m "$m" '$a | .models[$g] = $m')
+      done
+      (( i == 0 )) && { m=$(slot_model "$s"); [[ -n "$m" ]] || m="$MODEL_CODE"; entry "nim-$s" "${m:-none}" 16384; groups=("nim-$s"); nimg+="\"nim-$s\","; }
+      cj=$(jq -n --argjson a "$cj" --arg s "$s" --arg g "${groups[*]}" '$a | .[$s] = ($g | split(" "))')
+      # fallbacks: every rank falls through the rest of its chain, then to the fast model (review: the code model)
+      case "$s" in fast) tail="";; review) tail='"nim-code"';; *) tail='"nim-fast"';; esac
+      n=${#groups[@]}; for ((i = 0; i < n; i++)); do local list=""; local j; for ((j = i + 1; j < n; j++)); do list+="${list:+, }\"${groups[j]}\""; done
+        [[ -n "$tail" ]] && list+="${list:+, }$tail"; [[ -n "$list" ]] && fbs+=("{ ${groups[i]}: [$list] }"); done
+    done
     # every model that answered a probe is reachable by its own id, so `nimctl code --model <id>` needs no restart
-    for m in $(probe_ok_models) $EXTRA_MODELS; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
-    for p in $(pool_active); do for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" && "$seen" != *" $p:$m "* ]] || continue; seen+="$p:$m "; entry "$p:$m" "$p:$m" 16384; done; done
+    for m in $(probe_ok_models) $EXTRA_MODELS $CHAIN_CODE $CHAIN_FAST $CHAIN_CHAT $CHAIN_REVIEW; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
+    fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
     cat <<EOF
-# nimctl_hooks.throttle: one token bucket for the whole NVIDIA key (NIMCTL_RPM per minute), see src/25-throttle.sh
-litellm_settings: { drop_params: true, num_retries: 4, request_timeout: 300, callbacks: nimctl_hooks.throttle }
+# nimctl_hooks.throttle: NVIDIA budget (NIMCTL_RPM per minute), chain routing and cooldowns, see src/25-throttle.sh
+litellm_settings: { drop_params: true, num_retries: 1, request_timeout: 300, callbacks: nimctl_hooks.throttle }
 router_settings:
-EOF
-    if [[ "$pool_slots" != " " ]]; then cat <<EOF
-  # NVIDIA first. A request that fails there (stall, 429, 5xx) goes to pool-<slot> at once instead of being
-  # retried on the same overloaded model; a provider that fails is cooled down for a while.
-  cooldown_time: 30
-  num_retries: 1
-  retry_after: 3
-  retry_policy: { TimeoutErrorRetries: 0, DefaultRetries: 0, RateLimitErrorRetries: 0, InternalServerErrorRetries: 0, ServiceUnavailableErrorRetries: 0 }
-EOF
-    else cat <<EOF
-  # NIM free tier answers slowly or with 429 under load. Never take a model out of rotation
-  # (each slot has exactly one), retry with backoff instead, and fall back to the fast model.
+  # cooldowns come from nimctl_hooks (LiteLLM never cools a single-deployment group down by itself); a stall is not
+  # retried on the same rank but handed down the chain, a 429 or 5xx gets one retry first
   disable_cooldowns: true
   allowed_fails: 1000
   cooldown_time: 1
-  num_retries: 4
-  retry_after: 3
-EOF
-    fi
-    cat <<EOF
+  num_retries: 1
+  retry_after: 1
+  retry_policy: { TimeoutErrorRetries: 0, DefaultRetries: 0, RateLimitErrorRetries: 1, InternalServerErrorRetries: 1, ServiceUnavailableErrorRetries: 1, BadRequestErrorRetries: 0, AuthenticationErrorRetries: 0, ContentPolicyViolationErrorRetries: 0 }
   fallbacks: [ $fb ]
 general_settings: { master_key: $MASTER_KEY }
 EOF
   } >"$LITELLM_YAML.tmp"; chmod 600 "$LITELLM_YAML.tmp"; mv "$LITELLM_YAML.tmp" "$LITELLM_YAML"
+  jq -n --argjson a "$cj" --argjson nim "[${nimg%,}]" '$a + {nim: $nim}' >"$NIM_DIR/chains.json.tmp" && mv "$NIM_DIR/chains.json.tmp" "$NIM_DIR/chains.json"
 }
 yaml_has_model() { grep -qE "^  - model_name: $(printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g')\$" "$LITELLM_YAML" 2>/dev/null; }
 
 # ══════ 22-pool.sh ══════
-# ── Provider pool: other free APIs behind NVIDIA ─────────────────────────────────────────────────────────────
+# ── Provider pool: other free APIs next to NVIDIA ─────────────────────────────────────────────────────────────
 # Groq, Google AI Studio, Cerebras, OpenRouter (:free models) and Mistral give away a free tier and speak the
-# OpenAI chat format. `nimctl pool add <provider> <key>` stores the key in ~/.nimctl/config (600), picks one model
-# per slot from the provider's catalog with the same probe NVIDIA gets (ids namespaced <provider>:<id> in the probes
-# file) and writes them into the LiteLLM config as pool-<slot>, the fallback of nim-<slot>. NVIDIA stays first; the
-# pool takes a request only when NVIDIA fails it (no bytes for NIMCTL_STALL_TIMEOUT seconds, 429, 5xx). Providers
-# are tried in the order below (LiteLLM `order`); one that fails is cooled down for a while and the next takes over.
+# OpenAI chat format. `nimctl pool add <provider> <key>` stores the key in ~/.nimctl/config (600) and rebuilds the
+# slot chains: the candidate ranking in src/05-core.sh names provider models with `provider:` and every provider
+# with a key takes part, probed like NVIDIA (ids namespaced <provider>:<id> in the probes file). Whether a provider
+# ranks first or third is a matter of that list, not of being NVIDIA or not.
 POOL_PROVIDERS=(groq gemini cerebras openrouter mistral)
 declare -A POOL_LABEL=([groq]="Groq" [gemini]="Google AI Studio" [cerebras]="Cerebras" [openrouter]="OpenRouter" [mistral]="Mistral")
 declare -A POOL_BASE=([groq]="https://api.groq.com/openai/v1" [gemini]="https://generativelanguage.googleapis.com/v1beta/openai" [cerebras]="https://api.cerebras.ai/v1" [openrouter]="https://openrouter.ai/api/v1" [mistral]="https://api.mistral.ai/v1")
 declare -A POOL_KEY_URL=([groq]="https://console.groq.com/keys" [gemini]="https://aistudio.google.com/apikey" [cerebras]="https://cloud.cerebras.ai" [openrouter]="https://openrouter.ai/settings/keys" [mistral]="https://console.mistral.ai/api-keys")
-# Candidate patterns per provider and slot: regex against the provider's catalog, the first pattern with a responding
-# model wins (tool calling required for code/review). Override: NIMCTL_CAND_<PROVIDER>_<SLOT> or "groq.code: …" in
-# ~/.nimctl/candidates.
-declare -A POOL_CAND=(
-  [groq.code]="gpt-oss-120b kimi-k2 llama-3.3-70b qwen3-32b" [groq.fast]="llama-3.1-8b-instant gpt-oss-20b llama-3.3-70b"
-  [groq.chat]="llama-3.3-70b gpt-oss-120b kimi-k2" [groq.review]="gpt-oss-120b kimi-k2 llama-3.3-70b"
-  [gemini.code]="gemini-[0-9.]+-pro$ gemini-[0-9.]+-flash$" [gemini.fast]="flash-lite$ gemini-[0-9.]+-flash$"
-  [gemini.chat]="gemini-[0-9.]+-flash$ gemini-[0-9.]+-pro$" [gemini.review]="gemini-[0-9.]+-pro$ gemini-[0-9.]+-flash$"
-  [cerebras.code]="gpt-oss-120b qwen-3-235b zai-glm llama-3.3-70b" [cerebras.fast]="llama3.1-8b llama-3.3-70b gpt-oss-120b"
-  [cerebras.chat]="llama-3.3-70b gpt-oss-120b qwen-3-235b" [cerebras.review]="gpt-oss-120b qwen-3-235b llama-3.3-70b"
-  [openrouter.code]="qwen3-coder.*:free deepseek-chat.*:free kimi-k2.*:free glm-4.*:free gpt-oss-120b:free" [openrouter.fast]="gpt-oss-20b:free llama-3.3-70b.*:free qwen3-[0-9]+b.*:free"
-  [openrouter.chat]="deepseek-chat.*:free llama-3.3-70b.*:free gpt-oss-120b:free" [openrouter.review]="deepseek-r1.*:free kimi-k2.*:free gpt-oss-120b:free"
-  [mistral.code]="devstral-medium codestral-latest mistral-medium-latest" [mistral.fast]="mistral-small-latest ministral-8b"
-  [mistral.chat]="mistral-medium-latest mistral-small-latest" [mistral.review]="mistral-medium-latest magistral-medium"
-)
 RE_POOL_KEY='^[A-Za-z0-9_.-]{16,}$'                    # provider keys differ in shape; the real check is the request
 T_de+=(
-  [k_m]="Pool" [h_pool]="Ausweich-Anbieter mit kostenlosen Kontingenten: nimctl pool [add <anbieter> [key]|remove <anbieter>|auto [anbieter]|test|models <anbieter>]"
-  [pool_title]="Pool – Ausweich-Anbieter" [pool_hint]="NVIDIA bleibt erste Wahl. Scheitert eine Anfrage dort (keine Antwort für %ss, 429, 5xx), übernimmt der Pool: nimctl pool add <anbieter> <key>"
+  [k_m]="Pool" [h_pool]="Weitere Anbieter mit kostenlosen Kontingenten in die Rangliste aufnehmen: nimctl pool [add <anbieter> [key]|remove <anbieter>|auto|test|models <anbieter>]"
+  [pool_title]="Pool – Anbieter in der Rangliste" [pool_hint]="Jeder Slot ist eine Kette von Rängen über alle Anbieter (Reihenfolge: Kandidatenliste). Fällt ein Rang aus (keine Antwort für %ss, 429, 5xx), übernimmt der nächste; er pausiert %ss, dann doppelt so lange. Anbieter hinzufügen: nimctl pool add <anbieter> <key>"
   [pool_nokey]="kein Key" [pool_key_url]="Key erzeugen: %s" [pool_unknown]="unbekannter Anbieter: %s (bekannt: %s)" [pool_key_bad]="Key sieht falsch aus (mindestens 16 Zeichen, keine Leerzeichen)"
   [pool_key_in]="Key für %s (Eingabe unsichtbar, Enter = abbrechen)" [pool_checking]="prüfe Key bei %s … " [pool_rejected]="%s lehnt den Key ab (%s)" [pool_offline]="nicht erreichbar"
-  [pool_added]="%s im Pool – übernimmt, wenn NVIDIA ausfällt" [pool_removed]="%s aus dem Pool entfernt" [pool_not_conf]="%s ist nicht im Pool" [pool_auto]="%s: %d Modelle im Katalog, wähle je Slot …"
-  [pool_pick]="%s %-7s → %s (%s ms)" [pool_nopick]="%s %s: kein Kandidat antwortet" [pool_catalog_fail]="%s: Katalog nicht abrufbar"
-  [pool_empty]="Pool leer – nimctl pool add <anbieter> <key>" [pool_empty_dash]="– keiner · m: kostenlose Ausweich-Anbieter hinzufügen"
-  [pool_which]="Anbieter hinzufügen (%s; Enter = zurück)" [pool_test_none]="kein Pool-Modell für Slot %s"
+  [pool_added]="%s ist dabei – die Ketten wurden neu gebaut" [pool_removed]="%s entfernt – die Ketten wurden neu gebaut" [pool_not_conf]="%s ist nicht im Pool" [pool_noranks]="in keiner Kette"
+  [pool_empty]="Pool leer – nimctl pool add <anbieter> <key>" [pool_empty_dash]="– keiner · m: kostenlose Anbieter hinzufügen"
+  [pool_which]="Anbieter hinzufügen (%s; Enter = zurück)"
   [pool_note_groq]="~30 Anfragen/min, ~1.000/Tag, keine Karte nötig" [pool_note_gemini]="10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen"
-  [pool_note_cerebras]="~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell" [pool_note_openrouter]="20 Anfragen/min, 50/Tag (1.000 ab 10 $ Guthaben), nur :free-Modelle"
+  [pool_note_cerebras]="~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell" [pool_note_openrouter]="20 Anfragen/min, 50/Tag (1.000 ab 10 \$ Guthaben), nur :free-Modelle"
   [pool_note_mistral]="Experiment-Tier: ~1 Anfrage/s, 1 Mrd. Tokens/Monat; Daten dürfen zum Training genutzt werden"
-  [pool_wz_q]="Ausweich-Anbieter mit kostenlosen Kontingenten hinzufügen (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral)?"
+  [pool_wz_q]="Weitere Anbieter mit kostenlosen Kontingenten hinzufügen (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral)?"
   [pool_wz_key]="Key für %s (Eingabe unsichtbar, Enter = überspringen)" [pool_env]="%s: Key aus der Umgebung übernommen"
 )
 T_en+=(
-  [k_m]="Pool" [h_pool]="fallback providers with free quotas: nimctl pool [add <provider> [key]|remove <provider>|auto [provider]|test|models <provider>]"
-  [pool_title]="Pool – fallback providers" [pool_hint]="NVIDIA stays first. When a request fails there (no answer for %ss, 429, 5xx) the pool takes over: nimctl pool add <provider> <key>"
+  [k_m]="Pool" [h_pool]="add providers with free quotas to the ranking: nimctl pool [add <provider> [key]|remove <provider>|auto|test|models <provider>]"
+  [pool_title]="Pool – providers in the ranking" [pool_hint]="Every slot is a chain of ranks across all providers (order: the candidate list). When a rank fails (no answer for %ss, 429, 5xx) the next one takes over; it pauses %ss, then twice as long. Add a provider: nimctl pool add <provider> <key>"
   [pool_nokey]="no key" [pool_key_url]="create a key: %s" [pool_unknown]="unknown provider: %s (known: %s)" [pool_key_bad]="key looks wrong (at least 16 characters, no spaces)"
   [pool_key_in]="key for %s (input hidden, Enter = cancel)" [pool_checking]="checking the key at %s … " [pool_rejected]="%s rejects the key (%s)" [pool_offline]="unreachable"
-  [pool_added]="%s in the pool – takes over when NVIDIA fails" [pool_removed]="%s removed from the pool" [pool_not_conf]="%s is not in the pool" [pool_auto]="%s: %d models in the catalog, picking one per slot …"
-  [pool_pick]="%s %-7s → %s (%s ms)" [pool_nopick]="%s %s: no candidate responds" [pool_catalog_fail]="%s: catalog unavailable"
-  [pool_empty]="pool empty – nimctl pool add <provider> <key>" [pool_empty_dash]="– none · m: add free fallback providers"
-  [pool_which]="add a provider (%s; Enter = back)" [pool_test_none]="no pool model for slot %s"
+  [pool_added]="%s is in – the chains were rebuilt" [pool_removed]="%s removed – the chains were rebuilt" [pool_not_conf]="%s is not in the pool" [pool_noranks]="in no chain"
+  [pool_empty]="pool empty – nimctl pool add <provider> <key>" [pool_empty_dash]="– none · m: add free providers"
+  [pool_which]="add a provider (%s; Enter = back)"
   [pool_note_groq]="~30 requests/min, ~1,000/day, no card needed" [pool_note_gemini]="10–15 requests/min, 250–1,000/day; Google may train on free-tier data"
   [pool_note_cerebras]="~30 requests/min, 1M tokens/day, very fast" [pool_note_openrouter]="20 requests/min, 50/day (1,000 with \$10 credit), :free models only"
   [pool_note_mistral]="experiment tier: ~1 request/s, 1B tokens/month; data may be used for training"
-  [pool_wz_q]="Add fallback providers with free quotas (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral)?"
+  [pool_wz_q]="Add providers with free quotas (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral)?"
   [pool_wz_key]="key for %s (input hidden, Enter = skip)" [pool_env]="%s: key taken from the environment"
 )
-pool_of() { local p="${1%%:*}"; [[ "$1" == *:* && " ${POOL_PROVIDERS[*]} " == *" $p "* ]] && printf '%s' "$p"; }   # provider of a namespaced id, else ""
+pool_of() { local p="${1%%:*}"; [[ "$1" == *:* && " ${POOL_PROVIDERS[*]} " == *" $p "* ]] && printf '%s' "$p"; return 0; }   # provider of a namespaced id, else ""
 plain_id() { if [[ -n "$(pool_of "$1")" ]]; then printf '%s' "${1#*:}"; else printf '%s' "$1"; fi; }
 pool_valid() { [[ -n "$1" && " ${POOL_PROVIDERS[*]} " == *" $1 "* ]] || { bad "$(tf pool_unknown "${1:--}" "${POOL_PROVIDERS[*]}")"; return 1; }; }
 pool_key() { local v="${1^^}_API_KEY"; printf '%s' "${!v:-}"; }
 pool_configured() { [[ -n "$(pool_key "$1")" ]]; }
 pool_active() { local p; for p in "${POOL_PROVIDERS[@]}"; do pool_configured "$p" && printf '%s\n' "$p"; done; return 0; }
 pool_base() { local v="NIMCTL_POOL_BASE_${1^^}"; printf '%s' "${!v:-${POOL_BASE[$1]}}"; }   # NIMCTL_POOL_BASE_<PROVIDER>: tests, mirrors
-pool_slot_model() { # pool_slot_model <provider> <slot> → the plain id chosen for that slot, or ""
-  local v="POOL_${1^^}" e; for e in ${!v}; do [[ "${e%%=*}" == "$2" ]] && { printf '%s' "${e#*=}"; return; }; done; return 0
-}
-pool_set_slot() { # pool_set_slot <provider> <slot> <id|""> → rewrites POOL_<PROVIDER> ("code=… fast=… chat=… review=…")
-  local v="POOL_${1^^}" s m new=""
-  for s in "${SLOTS[@]}"; do if [[ "$s" == "$2" ]]; then m="$3"; else m=$(pool_slot_model "$1" "$s"); fi; [[ -n "$m" ]] && new+="$s=$m "; done
-  printf -v "$v" '%s' "${new% }"
-}
-pool_sanitize() { # pool_sanitize <provider> – keep only "slot=id" tokens with a known slot and a valid model id
-  local v="POOL_${1^^}" e new=""; for e in ${!v}; do [[ " ${SLOTS[*]} " == *" ${e%%=*} "* ]] && valid_model "${e#*=}" && new+="$e "; done; printf -v "$v" '%s' "${new% }"
-}
 pool_env() { local p; for p in $(pool_active); do export "${p^^}_API_KEY"; done; }   # the proxy reads the keys from its environment
-pool_api() { # pool_api <provider> <GET|POST> <path> [timeout] [body] – like api(), against the provider's endpoint
-  local p="$1" h="$TMP_ROOT/hdr.$1"; shift
-  [[ -s "$h" ]] || { printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "$(pool_key "$p")" >"$h"; chmod 600 "$h"; }
-  API_BASE="$(pool_base "$p")" HDR_FILE="$h" api "$@"
+pool_hdr() { # pool_hdr <provider> → the curl config file with that provider's Authorization header (600, written once per run)
+  local h="$TMP_ROOT/hdr.$1"
+  [[ -s "$h" ]] || { printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "$(pool_key "$1")" >"$h"; chmod 600 "$h"; }; printf '%s' "$h"
 }
+pool_api() { local p="$1"; shift; API_BASE="$(pool_base "$p")" HDR_FILE="$(pool_hdr "$p")" api "$@"; }   # pool_api <provider> <GET|POST> <path> [timeout] [body] – like api()
 model_api() { local p; p=$(pool_of "$1"); shift; if [[ -n "$p" ]]; then pool_api "$p" "$@"; else api "$@"; fi; }   # model_api <id> <GET|POST> <path> [timeout] [body]
+model_base() { local p; p=$(pool_of "$1"); if [[ -n "$p" ]]; then pool_base "$p"; else printf '%s' "$API_BASE"; fi; }   # endpoint and header file for raw curl (bench)
+model_hdr() { local p; p=$(pool_of "$1"); if [[ -n "$p" ]]; then pool_hdr "$p"; else printf '%s' "$HDR_FILE"; fi; }
 pool_catalog() { # pool_catalog <provider> → plain ids, cached hourly in $NIM_DIR/models.<provider>.cache
   local f="$NIM_DIR/models.$1.cache" json ids
   if [[ ! -s "$f" ]] || (( $(date +%s) - $(mtime "$f") > 3600 )); then
@@ -582,37 +583,10 @@ pool_check() { # pool_check <provider> → 0 when the key is accepted; POOL_ERR 
   if [[ "$1" == openrouter ]]; then pool_api "$1" GET /key 15 >/dev/null; else pool_api "$1" GET /models 15 >/dev/null; fi
   case "$API_CODE" in 200) return 0;; 000) POOL_ERR="$(t pool_offline)";; *) POOL_ERR="HTTP $API_CODE";; esac; return 1
 }
-pool_candidates() { # pool_candidates <provider> <slot> → patterns: env NIMCTL_CAND_<PROVIDER>_<SLOT>, ~/.nimctl/candidates ("groq.code: a b"), defaults
-  local ev="NIMCTL_CAND_${1^^}_${2^^}" line
-  if [[ -n "${!ev:-}" ]]; then printf '%s\n' ${!ev}; return; fi
-  if [[ -f "$CAND_FILE" ]]; then line=$(grep -E "^$1\.$2:" "$CAND_FILE" 2>/dev/null | head -n1); [[ -n "$line" ]] && { printf '%s\n' ${line#*:}; return; }; fi
-  printf '%s\n' ${POOL_CAND[$1.$2]}
+pool_ranks() { # pool_ranks <provider> → "slot rank id" per chain entry of that provider
+  local s i m; for s in "${SLOTS[@]}"; do i=0; for m in $(slot_chain "$s"); do ((i++)); [[ "$(pool_of "$m")" == "$1" ]] && printf '%s %s %s\n' "$s" "$i" "${m#*:}"; done; done; return 0
 }
-pool_auto_one() { # pool_auto_one <provider> – one model per slot from the provider's catalog (probed like NVIDIA's), saved and written to the proxy config
-  local p="$1" catalog slot m pat best best_ms union=() seen=" " rc=0; declare -A C=()
-  catalog=$(pool_catalog "$p"); [[ -n "$catalog" ]] || { bad "$(tf pool_catalog_fail "${POOL_LABEL[$p]}")"; return 1; }
-  info "$(tf pool_auto "${POOL_LABEL[$p]}" "$(echo "$catalog" | wc -l)")"
-  local pats; for slot in "${SLOTS[@]}"; do mapfile -t pats < <(pool_candidates "$p" "$slot"); C[$slot]=$(match_candidates "$catalog" "${pats[@]}")
-    while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; union+=("$p:$m"); }; done <<<"${C[$slot]}"; done
-  ((${#union[@]})) || { bad "$(tf pool_nopick "${POOL_LABEL[$p]}" "*")"; return 1; }
-  probe_many "${union[@]}"
-  local tc=(); for slot in code review; do while read -r m; do [[ -n "$m" && -n "${RUN_OK[$p:$m]:-}" && " ${tc[*]} " != *" $p:$m "* ]] && tc+=("$p:$m"); done <<<"${C[$slot]}"; done
-  ((${#tc[@]})) && probe_tools_many "${tc[@]}"
-  for slot in "${SLOTS[@]}"; do best=""; best_ms=999999
-    while read -r pat; do [[ -n "$pat" ]] || continue
-      while read -r m; do [[ -n "$m" ]] || continue; echo "$m" | grep -qiE -- "$pat" || continue
-        probe_get "$p:$m"; [[ "$PROBE_RES" == ok ]] || continue
-        [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]] && continue
-        (( PROBE_MS < best_ms )) && { best="$m"; best_ms=$PROBE_MS; }
-      done <<<"${C[$slot]}"
-      [[ -n "$best" ]] && break
-    done < <(pool_candidates "$p" "$slot")
-    pool_set_slot "$p" "$slot" "$best"
-    if [[ -n "$best" ]]; then ok "$(tf pool_pick "${POOL_LABEL[$p]}" "$slot" "$best" "$best_ms")"; else warn "$(tf pool_nopick "${POOL_LABEL[$p]}" "$slot")"; rc=1; fi
-  done
-  save_conf; write_litellm_yaml; return $rc
-}
-pool_add() { # pool_add <provider> [key] → key checked at the provider, saved, models selected; exit 64 for an unknown provider
+pool_add() { # pool_add <provider> [key] → key checked at the provider, saved, chains rebuilt; exit 64 for an unknown provider
   local p="$1" key="${2:-}"; pool_valid "$p" || return 64
   if [[ -z "$key" ]]; then info "$(tf pool_key_url "${POOL_KEY_URL[$p]}")"; prompt "$(tf pool_key_in "${POOL_LABEL[$p]}")" hidden || return 1; key="$REPLY"; [[ -z "$key" ]] && { info "$(t aborted)"; return 1; }; fi
   [[ "$key" =~ $RE_POOL_KEY ]] || { bad "$(t pool_key_bad)"; return 1; }
@@ -620,45 +594,41 @@ pool_add() { # pool_add <provider> [key] → key checked at the provider, saved,
   printf "  %s" "$(tf pool_checking "${POOL_LABEL[$p]}")"
   if ! pool_check "$p"; then printf "%s %s\n" "$NO" "$(tf pool_rejected "${POOL_LABEL[$p]}" "$POOL_ERR")"; printf -v "$v" '%s' "$old"; rm -f "$TMP_ROOT/hdr.$p"; return 1; fi
   printf "%s %s\n" "$OK" "$(t key_ok)"; save_conf
-  pool_auto_one "$p" || true; ok "$(tf pool_added "${POOL_LABEL[$p]}")"
+  auto_select "${SLOTS[@]}" || true; ok "$(tf pool_added "${POOL_LABEL[$p]}")"
 }
-pool_remove() { # pool_remove <provider> – key and models out of the config, catalog cache gone; probes stay
-  local p="$1"; pool_valid "$p" || return 64; pool_configured "$p" || { info "$(tf pool_not_conf "${POOL_LABEL[$p]}")"; return 1; }
-  printf -v "${p^^}_API_KEY" '%s' ""; printf -v "POOL_${p^^}" '%s' ""; rm -f "$NIM_DIR/models.$p.cache" "$TMP_ROOT/hdr.$p"
-  save_conf; write_litellm_yaml; ok "$(tf pool_removed "${POOL_LABEL[$p]}")"
+pool_remove() { # pool_remove <provider> – key out of the config, its ranks out of the chains, catalog cache gone; probes stay
+  local p="$1" s m keep; pool_valid "$p" || return 64; pool_configured "$p" || { info "$(tf pool_not_conf "${POOL_LABEL[$p]}")"; return 1; }
+  printf -v "${p^^}_API_KEY" '%s' ""; rm -f "$NIM_DIR/models.$p.cache" "$TMP_ROOT/hdr.$p"
+  for s in "${SLOTS[@]}"; do keep=""; for m in $(slot_chain "$s"); do [[ "$(pool_of "$m")" == "$p" ]] || keep+="${keep:+ }$m"; done; set_chain "$s" "$keep"; done
+  save_conf; auto_select "${SLOTS[@]}" || true; ok "$(tf pool_removed "${POOL_LABEL[$p]}")"
 }
-pool_overview() { # the table: one row per provider – key state, chosen models or where to get a key, free-tier note
-  sect "$(t pool_title)"; info "$(tf pool_hint "$STALL_TIMEOUT")"; printf '\n'
-  local p s m line
+pool_overview() { # the table: one row per provider – key state, its ranks in the chains or where to get a key, free-tier note
+  sect "$(t pool_title)"; info "$(tf pool_hint "$STALL_TIMEOUT" "$COOLDOWN")"; printf '\n'
+  local p line
   for p in "${POOL_PROVIDERS[@]}"; do
-    if pool_configured "$p"; then line=""; for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" ]] && line+="$s=$m  "; done
-      out "  $OK $(printf '%-16s' "${POOL_LABEL[$p]}") ${line:-$(tf pool_nopick "" "*")}"
+    if pool_configured "$p"; then line=""; while read -r s i m; do [[ -n "$s" ]] && line+="$s #$i $m  "; done < <(pool_ranks "$p")
+      out "  $OK $(printf '%-16s' "${POOL_LABEL[$p]}") ${line:-$(t pool_noranks)}"
     else out "  $GR $(printf '%-16s' "${POOL_LABEL[$p]}") ${D}$(t pool_nokey) · $(tf pool_key_url "${POOL_KEY_URL[$p]}")${R}"; fi
     out "     ${D}$(t "pool_note_$p")${R}"
   done
 }
-pool_test() { # Anthropic-format round trip through the proxy for every pool-<slot> that has a deployment
-  svc_running proxy || { bad "$(t proxy_down)"; return 2; }
-  local s p any rc=0; for s in "${SLOTS[@]}"; do any=0; for p in $(pool_active); do [[ -n "$(pool_slot_model "$p" "$s")" ]] && any=1; done
-    if ((any)); then proxy_roundtrip "pool-$s" || rc=1; [[ "$s" == code ]] && { proxy_roundtrip pool-code tools || rc=1; }; else info "$(tf pool_test_none "$s")"; fi; done
-  return $rc
-}
-pool_line() { # one dashboard row: "✓ Groq (4)  ✓ Cerebras (3)" or the hint
-  local p s n line=""
-  for p in "${POOL_PROVIDERS[@]}"; do pool_configured "$p" || continue; n=0; for s in "${SLOTS[@]}"; do [[ -n "$(pool_slot_model "$p" "$s")" ]] && ((n++)); done; line+="$OK ${POOL_LABEL[$p]} ($n)  "; done
+pool_line() { # one dashboard row: "✓ Groq (3)  ✓ Cerebras (2)" – ranks held across the chains – or the hint
+  local p n line=""
+  for p in "${POOL_PROVIDERS[@]}"; do pool_configured "$p" || continue; n=$(pool_ranks "$p" | wc -l); line+="$OK ${POOL_LABEL[$p]} ($n)  "; done
   if [[ -n "$line" ]]; then printf '%s' "${line%  }"; else printf '%s%s%s' "$D" "$(t pool_empty_dash)" "$R"; fi
 }
-pool_json() { # → {"groq": {"models": {"code": …}}, …} for status --json (configured providers only)
-  local j="{}" p s m mj; for p in $(pool_active); do mj="{}"
-    for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); mj=$(jq -n --argjson a "$mj" --arg s "$s" --arg m "$m" '$a + {($s): (if $m=="" then null else $m end)}'); done
-    j=$(jq -n --argjson a "$j" --arg p "$p" --argjson m "$mj" '$a + {($p): {models: $m}}'); done
+pool_json() { # → {"groq": {"ranks": [{"slot": "code", "rank": 2, "model": "…"}]}, …} for status --json (configured providers only)
+  local j="{}" p rj; for p in $(pool_active); do rj="[]"
+    while read -r s i m; do [[ -n "$s" ]] && rj=$(jq -n --argjson a "$rj" --arg s "$s" --arg i "$i" --arg m "$m" '$a + [{slot: $s, rank: ($i|tonumber), model: $m}]'); done < <(pool_ranks "$p")
+    j=$(jq -n --argjson a "$j" --arg p "$p" --argjson r "$rj" '$a + {($p): {ranks: $r}}'); done
   printf '%s' "$j"
 }
 pool_wizard() { # setup: keys from the environment are taken over silently; on a terminal each provider can be added in turn
-  local p v
-  for p in "${POOL_PROVIDERS[@]}"; do pool_configured "$p" || continue; [[ -z "$(pool_slot_model "$p" code)$(pool_slot_model "$p" fast)" ]] || continue
-    if pool_check "$p"; then info "$(tf pool_env "${POOL_LABEL[$p]}")"; save_conf; pool_auto_one "$p" || true; else bad "$(tf pool_rejected "${POOL_LABEL[$p]}" "$POOL_ERR")"; fi
+  local p v added=0
+  for p in "${POOL_PROVIDERS[@]}"; do pool_configured "$p" || continue; [[ -n "$(pool_ranks "$p")" ]] && continue
+    if pool_check "$p"; then info "$(tf pool_env "${POOL_LABEL[$p]}")"; save_conf; added=1; else bad "$(tf pool_rejected "${POOL_LABEL[$p]}" "$POOL_ERR")"; fi
   done
+  (( added )) && { auto_select "${SLOTS[@]}" || true; }
   (( INTERACTIVE )) || return 0
   [[ -z "$(pool_active)" ]] || return 0
   ask "$(t pool_wz_q)" n || return 0
@@ -668,24 +638,22 @@ pool_wizard() { # setup: keys from the environment are taken over silently; on a
     pool_add "$p" "$v" || true
   done
 }
-pool_doctor() { # doctor: key accepted, chosen models still answering (from the stored probes); issues "pool:<provider>"
-  local p s m; for p in $(pool_active); do
+pool_doctor() { # doctor: key accepted, its ranks still answering (from the stored probes); issues "pool:<provider>"
+  local p s i m; for p in $(pool_active); do
     if pool_check "$p"; then ok "$(t k_m) ${POOL_LABEL[$p]}: $(t key_ok)"; else bad "$(t k_m) ${POOL_LABEL[$p]}: $POOL_ERR"; doc_issue "pool:$p"; continue; fi
-    for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" ]] || continue; probe_get "$p:$m"
-      [[ "$PROBE_RES" == ok || -z "$PROBE_RES" ]] || { warn "$(t k_m) ${POOL_LABEL[$p]} $s: $m – $PROBE_RES"; doc_issue "pool:$p"; }; done
+    while read -r s i m; do [[ -n "$s" ]] || continue; probe_get "$p:$m"
+      [[ "$PROBE_RES" == ok || -z "$PROBE_RES" ]] || { warn "$(t k_m) ${POOL_LABEL[$p]} $s #$i: $m – $PROBE_RES"; doc_issue "pool:$p"; }; done < <(pool_ranks "$p")
   done
 }
-cmd_pool() { # cmd_pool [add <provider> [key]|remove <provider>|auto [provider]|test|models <provider>]
-  local sub="${1:-}" rc=0 p; (( $# )) && shift
+cmd_pool() { # cmd_pool [add <provider> [key]|remove <provider>|auto|test|models <provider>]
+  local sub="${1:-}" rc=0; (( $# )) && shift
   case "$sub" in
     "")   pool_overview; (( INTERACTIVE )) || return 0; printf '\n'; prompt "$(tf pool_which "${POOL_PROVIDERS[*]}")" || return 0; [[ -n "$REPLY" ]] || return 0
           pool_add "$REPLY" || return $?; restart_if_running;;
     add)  pool_add "${1:-}" "${2:-}"; rc=$?; (( rc == 0 )) && restart_if_running; return $rc;;
     remove|rm) pool_remove "${1:-}"; rc=$?; (( rc == 0 )) && restart_if_running; return $rc;;
-    auto) if [[ -n "${1:-}" ]]; then pool_valid "$1" || return 64; pool_configured "$1" || { bad "$(tf pool_not_conf "${POOL_LABEL[$1]}")"; return 1; }; pool_auto_one "$1" || rc=1
-          else [[ -n "$(pool_active)" ]] || { info "$(t pool_empty)"; return 1; }; for p in $(pool_active); do pool_auto_one "$p" || rc=1; done; fi
-          restart_if_running; return $rc;;
-    test) pool_test;;
+    auto) auto_all; rc=$?; restart_if_running; return $rc;;
+    test) svc_running proxy || { bad "$(t proxy_down)"; return 2; }; act_proxy;;
     models) pool_valid "${1:-}" || return 64; pool_configured "$1" || { bad "$(tf pool_not_conf "${POOL_LABEL[$1]}")"; return 1; }; pool_catalog "$1";;
     *)    bad "$(t invalid): $sub"; return 64;;
   esac
@@ -693,29 +661,34 @@ cmd_pool() { # cmd_pool [add <provider> [key]|remove <provider>|auto [provider]|
 dash_register m cmd_pool k_m use
 
 # ══════ 25-throttle.sh ══════
-# ── Throttle: never let the NVIDIA key run into its per-minute limit ──────────────────────────────────────────
-# NVIDIA's free tier allows roughly 40 requests per minute per key (unpublished, observed), across all models.
-# $NIM_DIR/nimctl_hooks.py is a LiteLLM pre-call hook with one token bucket for everything that goes through the
-# proxy (Claude Code, the IDE, the chat, the search's query generation): a request that would exceed the budget
-# waits for the next free slot instead of failing; only after NIMCTL_RPM_MAX_WAIT seconds it is refused locally
-# with Retry-After. An upstream 429 shrinks the budget for five minutes, then it grows back. The hook writes its
-# state to $NIM_DIR/rpm.json for the dashboard. Probes, watch and bench talk to NVIDIA directly: the default
-# budget of 36 leaves them room.
+# ── Throttle & chain routing: the LiteLLM hook nimctl writes ──────────────────────────────────────────────────
+# $NIM_DIR/nimctl_hooks.py is one LiteLLM callback with three jobs:
+#  1. Budget: NVIDIA's free tier allows roughly 40 requests per minute per key (unpublished, observed), across all
+#     models. One token bucket for everything that goes to NVIDIA through the proxy: a request beyond the budget waits
+#     for the next free slot instead of failing; after NIMCTL_RPM_MAX_WAIT seconds it is refused with Retry-After. An
+#     upstream 429 shrinks the budget for five minutes. Requests routed to a pool provider do not touch the bucket.
+#  2. Chain routing: every slot is a chain of ranks (model groups nim-<slot>, nim-<slot>-r2, …, see write_litellm_yaml);
+#     a request for nim-<slot> is sent to the best rank that is not cooling down.
+#  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
+#     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
+#     and every later request skip it: 2 minutes, doubling per consecutive failure up to 30, cleared by a success.
+# State for the dashboard and the web UI: $NIM_DIR/rpm.json (budget) and $NIM_DIR/health.json (cooldowns).
 T_de+=(
   [thr_line]="Budget   %s/min · %s frei · %s wartend · %s gebremst%s" [thr_avg]=" (Ø %s s)" [thr_penalty]=" · gedrosselt nach 429 bis %s"
-  [thr_rejected]=" · %s abgewiesen"
+  [thr_rejected]=" · %s abgewiesen" [thr_cool]="Pausiert %s" [thr_cool_item]="%s (%s, bis %s)"
 )
 T_en+=(
   [thr_line]="Budget   %s/min · %s free · %s waiting · %s throttled%s" [thr_avg]=" (avg %s s)" [thr_penalty]=" · reduced after 429 until %s"
-  [thr_rejected]=" · %s rejected"
+  [thr_rejected]=" · %s rejected" [thr_cool]="Paused   %s" [thr_cool_item]="%s (%s, until %s)"
 )
 throttle_env() { # the hook's settings, exported for the proxy process
   export NIMCTL_RPM="${NIMCTL_RPM:-36}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-30}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
+  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN"
   export PYTHONPATH="$NIM_DIR${PYTHONPATH:+:$PYTHONPATH}"
 }
 write_litellm_hooks() { # $NIM_DIR/nimctl_hooks.py – rewritten on every proxy start
   cat >"$NIM_DIR/nimctl_hooks.py.tmp" <<'HOOKS_PY'
-# generated by nimctl – request throttle for the LiteLLM proxy (see src/25-throttle.sh)
+# generated by nimctl – budget, chain routing and cooldowns for the LiteLLM proxy (see src/25-throttle.sh)
 import asyncio
 import json
 import os
@@ -733,11 +706,24 @@ except ImportError:  # pragma: no cover – the proxy always ships fastapi
 RPM = max(1, int(os.environ.get("NIMCTL_RPM", "36") or 36))
 MAX_WAIT = float(os.environ.get("NIMCTL_RPM_MAX_WAIT", "30") or 30)
 STATE = os.environ.get("NIMCTL_RPM_STATE", "")
+HEALTH = os.environ.get("NIMCTL_HEALTH", "")
+CHAINS_FILE = os.environ.get("NIMCTL_CHAINS", "")
+COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "120") or 120)   # first failure; doubles per consecutive failure
+COOLDOWN_MAX = 1800.0
 PENALTY_SECONDS = 300.0
 
 
+def _load_chains():
+    """{"code": ["nim-code", "nim-code-r2", …], …, "nim": [groups that are NVIDIA deployments], "models": {group: id}}"""
+    try:
+        with open(CHAINS_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 class Throttle(CustomLogger):
-    """One token bucket for every request the proxy forwards: wait for a slot instead of failing."""
+    """Budget for NVIDIA, best-healthy-rank routing for the slots, cooldowns LiteLLM honours."""
 
     def __init__(self):
         super().__init__()
@@ -753,8 +739,31 @@ class Throttle(CustomLogger):
         self.rejected = 0
         self.upstream_429 = 0
         self.wait_total = 0.0
+        chains = _load_chains()
+        self.chains = {k: v for k, v in chains.items() if k not in ("nim", "models")}   # slot → ordered groups
+        self.rank = {g: (slot, i) for slot, groups in self.chains.items() for i, g in enumerate(groups)}
+        self.nim = set(chains.get("nim") or [])
+        self.models = chains.get("models") or {}
+        self.cool = {}      # group → (until_monotonic, reason)
+        self.fails = {}     # group → consecutive failures
+        self.recent = {}    # group → monotonic time of the last counted failure
+        self.routed = 0
         self._save()
 
+    # ── routing ───────────────────────────────────────────────────────────────────────────────────
+    def _route(self, model):
+        """The requested group, or the first rank at or after it that is not cooling down."""
+        if model not in self.rank:
+            return model
+        slot, i = self.rank[model]
+        now = time.monotonic()
+        for g in self.chains[slot][i:]:
+            until = self.cool.get(g, (0.0, ""))[0]
+            if until <= now:
+                return g
+        return model
+
+    # ── budget ────────────────────────────────────────────────────────────────────────────────────
     def _refill(self):
         now = time.monotonic()
         self.tokens = min(self.limit, self.tokens + (now - self.last) * self.limit / 60.0)
@@ -774,6 +783,13 @@ class Throttle(CustomLogger):
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         model = str((data or {}).get("model", "?"))
+        target = self._route(model)
+        if target != model:
+            data["model"] = target
+            self.routed += 1
+            print(f"nimctl chain: {model} → {target} ({self.models.get(target, '?')})", flush=True)
+        if self.nim and target not in self.nim and target in self.rank:
+            return data                                   # a pool provider: not NVIDIA's budget
         async with self.lock:
             wait = self._wait_for_slot()
             if wait is None:
@@ -797,10 +813,53 @@ class Throttle(CustomLogger):
         self._save()
         return data
 
+    # ── cooldowns ─────────────────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _group_and_id(kwargs):
+        lp = (kwargs or {}).get("litellm_params") or {}
+        meta = lp.get("metadata") or {}
+        return meta.get("model_group"), (lp.get("model_info") or {}).get("id")
+
+    def _tell_router(self, model_id, exc, seconds):
+        """Register the cooldown with LiteLLM's router, so its fallback chains skip the rank too."""
+        try:
+            from litellm.proxy import proxy_server
+            router = getattr(proxy_server, "llm_router", None)
+            if router is not None and model_id:
+                router.cooldown_cache.add_deployment_to_cooldown(model_id=model_id, original_exception=exc,
+                                                                 exception_status=getattr(exc, "status_code", 500) or 500, cooldown_time=seconds)
+        except Exception as e:  # never let bookkeeping break a request
+            print(f"nimctl chain: could not register cooldown: {e}", flush=True)
+
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        group, model_id = self._group_and_id(kwargs)
+        if group not in self.rank:
+            return
+        exc = (kwargs or {}).get("exception")
+        if group in self.recent and time.monotonic() - self.recent[group] < 5.0:
+            return                                       # the same failure reported twice (the stream and the fallback attempt)
+        self.recent[group] = time.monotonic()
+        n = self.fails.get(group, 0) + 1
+        self.fails[group] = n
+        seconds = min(COOLDOWN * (2 ** (n - 1)), COOLDOWN_MAX)
+        reason = type(exc).__name__ if exc is not None else "error"
+        self.cool[group] = (time.monotonic() + seconds, reason)
+        self._tell_router(model_id, exc if isinstance(exc, Exception) else Exception(reason), seconds)
+        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})", flush=True)
+        self._save()
+
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        group, _ = self._group_and_id(kwargs)
+        if group in self.rank and (self.fails.get(group) or group in self.cool):
+            self.fails.pop(group, None)
+            self.cool.pop(group, None)
+            self._save()
+
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict=None, *args, **kwargs):
         code = getattr(original_exception, "status_code", None)
         name = type(original_exception).__name__
-        if code == 429 or "RateLimit" in name:
+        model = str((request_data or {}).get("model", ""))
+        if (code == 429 or "RateLimit" in name) and (not self.nim or model in self.nim or model not in self.rank):
             async with self.lock:
                 self.upstream_429 += 1
                 self.limit = max(self.capacity * 0.5, self.limit * 0.8)
@@ -810,22 +869,31 @@ class Throttle(CustomLogger):
                 self._save()
             print(f"nimctl throttle: upstream 429, budget reduced to {self.limit:.0f}/min for {int(PENALTY_SECONDS / 60)} min", flush=True)
 
+    # ── state files ───────────────────────────────────────────────────────────────────────────────
     def _save(self):
-        if not STATE:
-            return
         now = time.monotonic()
-        state = {
-            "rpm": int(self.capacity), "budget": round(self.limit), "free": max(0, int(self.tokens)),
-            "waiting": self.waiting, "throttled": self.throttled, "rejected": self.rejected, "upstream_429": self.upstream_429,
-            "avg_wait": round(self.wait_total / self.throttled, 1) if self.throttled else 0.0,
-            "penalty_until": int(time.time() + (self.penalty_until - now)) if self.penalty_until > now else 0,
-            "updated": int(time.time()),
-        }
+        if STATE:
+            state = {
+                "rpm": int(self.capacity), "budget": round(self.limit), "free": max(0, int(self.tokens)),
+                "waiting": self.waiting, "throttled": self.throttled, "rejected": self.rejected, "upstream_429": self.upstream_429,
+                "avg_wait": round(self.wait_total / self.throttled, 1) if self.throttled else 0.0,
+                "penalty_until": int(time.time() + (self.penalty_until - now)) if self.penalty_until > now else 0,
+                "updated": int(time.time()),
+            }
+            self._write(STATE, state)
+        if HEALTH:
+            cool = {g: {"model": self.models.get(g, ""), "slot": self.rank[g][0], "rank": self.rank[g][1] + 1, "reason": r,
+                        "until": int(time.time() + (u - now)), "fails": self.fails.get(g, 0)}
+                    for g, (u, r) in self.cool.items() if u > now and g in self.rank}
+            self._write(HEALTH, {"cooldown": cool, "routed": self.routed, "updated": int(time.time())})
+
+    @staticmethod
+    def _write(path, obj):
         try:
-            tmp = STATE + ".tmp"
+            tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                json.dump(state, f)
-            os.replace(tmp, STATE)
+                json.dump(obj, f)
+            os.replace(tmp, path)
         except OSError:
             pass
 
@@ -843,6 +911,12 @@ throttle_line() { # one dashboard line from rpm.json, only while the proxy is fr
   [[ "$penalty" =~ ^[0-9]+$ ]] && (( penalty > 0 )) && extra+=$(tf thr_penalty "$(fmt_time "$penalty" '+%H:%M')")
   tf thr_line "$budget" "$free" "$waiting" "$throttled" "$extra"
 }
+cooldown_line() { # one dashboard line from health.json: the ranks that are paused right now (empty → returns 1)
+  local f="$NIM_DIR/health.json" items="" line; [[ -s "$f" ]] || return 1
+  while IFS=$'\t' read -r slot rank model reason until; do [[ -n "$slot" ]] || continue; items+="${items:+ · }$(tf thr_cool_item "$slot #$rank $(trunc "$model" 44)" "$reason" "$(fmt_time "$until" '+%H:%M')")"; done \
+    < <(jq -r --argjson now "$(date +%s)" '.cooldown | to_entries[] | select(.value.until > $now) | [.value.slot, .value.rank, .value.model, .value.reason, .value.until] | @tsv' "$f" 2>/dev/null | sort)
+  [[ -n "$items" ]] || return 1; tf thr_cool "$items"
+}
 
 # ══════ 30-services.sh ══════
 # ── Services: LiteLLM proxy and Open WebUI ───────────────────────────────────
@@ -852,7 +926,7 @@ T_de+=(
   [svc_up]="%s läuft  http://localhost:%s" [svc_fail]="%s startet nicht → nimctl logs %s" [svc_died]="%s ist direkt nach dem Start beendet worden → nimctl logs %s"
   [svc_stopped]="%s gestoppt" [svc_foreign]="Port %s ist belegt von %s – nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
   [port_hint]="Anderen Port wählen: %s=%s nimctl" [waiting]="warte auf Port %s … %ss" [browser]="Chat: http://localhost:%s"
-  [restart_q]="Dienste neu starten, damit die Änderung wirkt?" [restart_hint]="Änderung wirkt nach Neustart: nimctl restart"
+  [restart_q]="Proxy neu starten, damit die Änderung wirkt?" [restart_hint]="Änderung wirkt nach Neustart: nimctl restart"
   [claude_attached]="Hinweis: Eine laufende Claude-Code-Sitzung verliert beim Neustart die Verbindung."
   [inst_sysd]="Autostart aktiv (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="Autostart entfernt" [inst_fail]="%s fehlgeschlagen" [no_systemd]="systemd nicht verfügbar – Autostart nur unter Linux mit systemd"
   [unit_failed]="systemd-Unit %s ist im Zustand failed → journalctl --user -u %s"
@@ -863,7 +937,7 @@ T_en+=(
   [svc_up]="%s up  http://localhost:%s" [svc_fail]="%s failed to start → nimctl logs %s" [svc_died]="%s exited right after starting → nimctl logs %s"
   [svc_stopped]="%s stopped" [svc_foreign]="port %s is taken by %s – not started by nimctl" [svc_wasdown]="%s was not running"
   [port_hint]="pick another port: %s=%s nimctl" [waiting]="waiting for port %s … %ss" [browser]="Chat: http://localhost:%s"
-  [restart_q]="Restart services to apply the change?" [restart_hint]="the change applies after a restart: nimctl restart"
+  [restart_q]="Restart the proxy to apply the change?" [restart_hint]="the change applies after a restart: nimctl restart"
   [claude_attached]="Note: a running Claude Code session loses its connection during the restart."
   [inst_sysd]="autostart enabled (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="autostart removed" [inst_fail]="%s failed" [no_systemd]="systemd not available – autostart only on Linux with systemd"
   [unit_failed]="systemd unit %s is in state failed → journalctl --user -u %s"
@@ -973,17 +1047,18 @@ stop_svc() {
   esac
 }
 start_all() { local rc=0; start_proxy || rc=1; [[ "$SEARCH_ENABLED" == 1 ]] && { start_search || rc=1; }; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; [[ "$WEB_ENABLED" == 1 ]] && { start_web || rc=1; }; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; [[ "$WEB_ENABLED" == 1 || -f "$PID_DIR/web.pid" ]] && stop_svc web; return 0; }
+# NIMCTL_WEB_CALLER: set by the web UI's server for the commands it runs – those never stop or restart the web UI itself
+stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; [[ -z "${NIMCTL_WEB_CALLER:-}" && ( "$WEB_ENABLED" == 1 || -f "$PID_DIR/web.pid" ) ]] && stop_svc web; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
 }
-restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; [[ "$WEB_ENABLED" == 1 ]] && restart_svc web; return 0; }
-restart_if_running() { # after a config change; explicit yes only, because a Claude Code session may be attached
+restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; [[ -z "${NIMCTL_WEB_CALLER:-}" && "$WEB_ENABLED" == 1 ]] && restart_svc web; return 0; }
+restart_if_running() { # after a model/key/pool change only the proxy carries the change (and the chat when it talks to NVIDIA directly); explicit yes only, a Claude Code session may be attached
   svc_running proxy || svc_running chat || return 0
   (( INTERACTIVE )) || { info "$(t restart_hint)"; return 0; }
   svc_running proxy && info "$(t claude_attached)"
-  if ask "$(t restart_q)" n; then restart_all; else info "$(t restart_hint)"; fi
+  if ask "$(t restart_q)" n; then svc_running proxy && restart_svc proxy; [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 0 ]] && svc_running chat && restart_svc chat; else info "$(t restart_hint)"; fi; return 0
 }
 
 # ── systemd (user units) ──────────────────────────────────────────────────────
@@ -1019,7 +1094,7 @@ uninst_systemd() {
 # ══════ 40-actions.sh ══════
 # ── Actions (shared by the dashboard and the CLI) ─────────────────────────────
 T_de+=(
-  [models]="Modelle" [slots_hint]="code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell für nimctl code --model review"
+  [models]="Modelle" [slots_hint]="code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell für nimctl code --model review · +n = weitere Ränge, die bei Ausfall übernehmen"
   [unprobed]="nicht geprüft → p" [slot_empty]="nicht gewählt → a" [slot_unconfigured]="Slot %s ist nicht konfiguriert → nimctl auto"
   [search]="Suchbegriff (z.B. deepseek, laguna, glm, nemotron)" [nohit]="keine Treffer" [toomany]="%d Treffer – enger filtern (max. %d)"
   [pick_slot]="Modell für Slot %s" [pick_hint]="Suchbegriff (Enter = bereits geprüfte Modelle)" [number]="Nummer (Enter = abbrechen)"
@@ -1043,7 +1118,7 @@ T_de+=(
   [proxy_rt]="Proxy-Roundtrip (wie Claude Code): %s" [proxy_rt_fail]="Proxy antwortet nicht wie erwartet: %s" [proxy_down]="Proxy läuft nicht → nimctl start"
 )
 T_en+=(
-  [models]="Models" [slots_hint]="code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model for nimctl code --model review"
+  [models]="Models" [slots_hint]="code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model for nimctl code --model review · +n = further ranks that take over on failure"
   [unprobed]="not probed → p" [slot_empty]="not selected → a" [slot_unconfigured]="slot %s is not configured → nimctl auto"
   [search]="Search term (e.g. deepseek, laguna, glm, nemotron)" [nohit]="no matches" [toomany]="%d matches – narrow down (max %d)"
   [pick_slot]="Model for slot %s" [pick_hint]="Search term (Enter = already probed models)" [number]="Number (Enter = cancel)"
@@ -1074,6 +1149,7 @@ slot_line() { # slot_line <slot> [number] → one dashboard/summary row
   case "$PROBE_TOOLS" in ok) tools="$OK";; no) tools="$WA";; *) tools="$GR";; esac
   case "$PROBE_RES" in ok) flag="$OK"; txt="${D}$(t answers) · $(printf '%5s' "$PROBE_MS") ms · $age${R}";; "") flag="$GR"; txt="${D}$(t unprobed)${R}";; *) flag="$NO"; txt="${RED}$PROBE_RES${R} ${D}· $age${R}";; esac
   local w=$(( COLS - 40 )); (( w > 46 )) && w=46; (( w < 24 )) && w=24
+  local ranks; ranks=$(slot_chain "$slot" | wc -w); (( ranks > 1 )) && txt+=" ${D}· +$((ranks-1)) $(t chain_more)${R}"
   out "  ${B}${n:- }${R}  $(printf '%-7s' "$slot") $(printf "%-${w}s" "$(trunc "$m" "$w")") $flag $txt${tools:+  $tools}"
 }
 key_line() { # → text for the key row; sets KEY_FLAG
@@ -1398,7 +1474,7 @@ BENCH_TTFT=""; BENCH_TOKS=""; BENCH_TOKENS=""; BENCH_ERR=""
 bench_stream() { # bench_stream <id> → 0 + BENCH_TTFT/BENCH_TOKS/BENCH_TOKENS, or 1 + BENCH_ERR
   local id="$1" json line first=1 err_body="" ttft_ms="" delta_count=0 completion_tokens=0 last_ms=0 t0 payload delta u
   BENCH_TTFT=""; BENCH_TOKS=""; BENCH_TOKENS=""; BENCH_ERR=""
-  json=$(jq -n --arg m "$id" '{model:$m, stream:true, stream_options:{include_usage:true}, max_tokens:160,
+  json=$(jq -n --arg m "$(plain_id "$id")" '{model:$m, stream:true, stream_options:{include_usage:true}, max_tokens:160,
     messages:[{role:"user", content:"Explain in about 100 words what a reverse proxy does."}]}')
   t0=$(now_ms)
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -1414,7 +1490,7 @@ bench_stream() { # bench_stream <id> → 0 + BENCH_TTFT/BENCH_TOKS/BENCH_TOKENS,
     u=$(printf '%s' "$payload" | jq -r '.usage.completion_tokens // empty' 2>/dev/null)
     [[ -n "$u" ]] && completion_tokens="$u"
     last_ms=$(( $(now_ms) - t0 ))
-  done < <(curl -sN -m 120 -K "$HDR_FILE" "$API_BASE/chat/completions" --data-binary @- <<<"$json" 2>/dev/null)
+  done < <(curl -sN -m 120 -K "$(model_hdr "$id")" "$(model_base "$id")/chat/completions" --data-binary @- <<<"$json" 2>/dev/null)
   if [[ -z "$ttft_ms" ]]; then BENCH_ERR=$(probe_err_text "$err_body" 120); return 1; fi
   (( completion_tokens > 0 )) || completion_tokens=$delta_count
   local denom=$(( last_ms - ttft_ms )) tps="0.0"
@@ -1870,6 +1946,7 @@ render_dashboard() {
   printf "  %-8s %s\n" "$(t k_m)" "$(pool_line)"
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
   declare -F throttle_line >/dev/null && { local tl2; tl2=$(throttle_line 2>/dev/null) && printf "  %s\n" "$tl2"; }
+  declare -F cooldown_line >/dev/null && { local cl; cl=$(cooldown_line 2>/dev/null) && printf "  %s\n" "$cl"; }
   sect "$(t models)"
   local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && { (( COLS >= 100 )) || continue; }; slot_line "$s" "$n"; done
   (( COLS >= 100 )) && info "$(t slots_hint)"
@@ -2240,10 +2317,9 @@ web_disable() { # stop it, take it out of start/stop/restart and systemd; the fi
   if has systemctl && [[ -f "$(unit_dir)/nimctl-web.service" ]]; then systemctl --user disable --now nimctl-web 2>/dev/null; rm -f "$(unit_dir)/nimctl-web.service"; systemctl --user daemon-reload 2>/dev/null; fi
   stop_svc web; WEB_ENABLED=0; save_conf; ok "$(t web_disabled)"
 }
-web_candidates_json() { # the effective candidate patterns per slot and per pool provider, for the UI's editor
-  local j="{}" s p v
+web_candidates_json() { # the effective candidate patterns (the ranking) per slot, for the UI's editor
+  local j="{}" s v
   for s in "${SLOTS[@]}"; do v=$(candidates "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$s" --arg v "${v% }" '$a + {($k): $v}'); done
-  for p in "${POOL_PROVIDERS[@]}"; do for s in "${SLOTS[@]}"; do v=$(pool_candidates "$p" "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$p.$s" --arg v "${v% }" '$a + {($k): $v}'); done; done
   printf '%s\n' "$j"
 }
 cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]
@@ -2314,7 +2390,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     perm) chmod 700 "$NIM_DIR" && ok "chmod 700 $NIM_DIR" || remaining+=("$i");;
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
     model:*) auto_select "${i#model:}" || remaining+=("$i");;
-    pool:*) pool_auto_one "${i#pool:}" || remaining+=("$i");;
+    pool:*) auto_select "${SLOTS[@]}" || remaining+=("$i");;
     restart) restart_all || remaining+=("$i");;
     unit:*) systemctl --user reset-failed "nimctl-${i#unit:}" 2>/dev/null; systemctl --user restart "nimctl-${i#unit:}" 2>/dev/null || remaining+=("$i");;
     *) remaining+=("$i");;
@@ -2486,14 +2562,14 @@ status_json() {
   local up_s=false by_s pid_s; svc_state search && { [[ "$SVC_BY" != foreign ]] && up_s=true; }; by_s="${SVC_BY:-}"; pid_s="${SVC_PID:-}"
   local up_w=false by_w pid_w; svc_state web && { [[ "$SVC_BY" != foreign ]] && up_w=true; }; by_w="${SVC_BY:-}"; pid_w="${SVC_PID:-}"
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); probe_get "$m"
-    sj=$(jq -n --argjson acc "$sj" --arg s "$s" --arg m "$m" --arg res "$PROBE_RES" --arg ms "$PROBE_MS" --arg t "$PROBE_T" --arg tools "$PROBE_TOOLS" \
-      '$acc + {($s): {model: (if $m=="" then null else $m end), state: (if $res=="" then "unprobed" elif $res=="ok" then "ok" else "error" end), error: (if $res=="ok" or $res=="" then null else $res end), ms: ($ms|tonumber? // null), probed: ($t|tonumber? // null), tools: (if $tools=="" then null else $tools end)}}')
+    sj=$(jq -n --argjson acc "$sj" --arg s "$s" --arg m "$m" --arg res "$PROBE_RES" --arg ms "$PROBE_MS" --arg t "$PROBE_T" --arg tools "$PROBE_TOOLS" --arg chain "$(slot_chain "$s")" \
+      '$acc + {($s): {model: (if $m=="" then null else $m end), state: (if $res=="" then "unprobed" elif $res=="ok" then "ok" else "error" end), error: (if $res=="ok" or $res=="" then null else $res end), ms: ($ms|tonumber? // null), probed: ($t|tonumber? // null), tools: (if $tools=="" then null else $tools end), chain: ($chain | split(" ") | map(select(length>0)))}}')
   done
   local tj="{}" x; for x in litellm open-webui claude uv jq curl; do has "$x" && tj=$(jq -n --argjson a "$tj" --arg x "$x" '$a + {($x): true}') || tj=$(jq -n --argjson a "$tj" --arg x "$x" '$a + {($x): false}'); done
   jq -n --arg v "$VERSION" --arg ks "$KEY_STATE" --arg kt "$KEY_TIME" --arg kd "$(key_days_left)" --argjson up_p "$up_p" --arg by_p "$by_p" --arg pid_p "$pid_p" --arg pp "$PROXY_PORT" \
     --argjson up_c "$up_c" --arg by_c "$by_c" --arg pid_c "$pid_c" --arg cp "$CHAT_PORT" --argjson slots "$sj" --argjson tools "$tj" --arg mk "$MASTER_KEY" \
     --argjson up_i "$up_i" --arg by_i "$by_i" --arg pid_i "$pid_i" --arg ip "$IDE_PORT" --arg ie "$IDE_ENABLED" \
-    --argjson up_s "$up_s" --arg by_s "$by_s" --arg pid_s "$pid_s" --arg sp "$SEARCH_PORT" --arg se "$SEARCH_ENABLED" --argjson pool "$(pool_json)" \
+    --argjson up_s "$up_s" --arg by_s "$by_s" --arg pid_s "$pid_s" --arg sp "$SEARCH_PORT" --arg se "$SEARCH_ENABLED" --argjson pool "$(pool_json)" --argjson health "$(jq -c . "$NIM_DIR/health.json" 2>/dev/null || echo "{}")" \
     --argjson up_w "$up_w" --arg by_w "$by_w" --arg pid_w "$pid_w" --arg wp "$WEB_PORT" --arg we "$WEB_ENABLED" \
     '{version:$v, key:{state:$ks, checked:($kt|tonumber? // null), expires_in_days:($kd|tonumber? // null)},
       proxy:{up:$up_p, by:(if $by_p=="" then null else $by_p end), pid:($pid_p|tonumber? // null), port:($pp|tonumber), url:("http://127.0.0.1:"+$pp)},
@@ -2501,7 +2577,7 @@ status_json() {
       ide:{enabled:($ie=="1"), up:$up_i, by:(if $by_i=="" then null else $by_i end), pid:($pid_i|tonumber? // null), port:($ip|tonumber), url:("http://localhost:"+$ip)},
       search:{enabled:($se=="1"), up:$up_s, by:(if $by_s=="" then null else $by_s end), pid:($pid_s|tonumber? // null), port:($sp|tonumber), url:("http://localhost:"+$sp)},
       web:{enabled:($we=="1"), up:$up_w, by:(if $by_w=="" then null else $by_w end), pid:($pid_w|tonumber? // null), port:($wp|tonumber), url:("http://localhost:"+$wp)},
-      pool:$pool, slots:$slots, tools:$tools}'
+      pool:$pool, health:$health, slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
 JSON=0   # set by the global --json flag; commands and modules read it instead of parsing their own argv
@@ -2663,6 +2739,11 @@ tr:last-child td { border-bottom: 0; }
 .toast.on { display: block; }
 .hidden { display: none !important; }
 .slot-model { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.chain { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 12.5px; }
+.chain li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 4px 0; border-top: 1px solid var(--grid); }
+.chain li .rk { width: 18px; color: var(--muted); font-variant-numeric: tabular-nums; } .chain li .id { flex: 1 1 160px; min-width: 0; word-break: break-all; font-family: ui-monospace, Menlo, monospace; }
+.chain li .meta { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.chain li.paused .id { color: var(--muted); text-decoration: line-through; }
 details summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
 kbd { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 .sr { position: absolute; left: -9999px; }
@@ -2761,10 +2842,16 @@ en: {
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
   tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
 }};
+Object.assign(T.de, { s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
+  pool_hint:'Anbieter mit Key nehmen an der Rangliste teil – ihre Modelle stehen dort, wo die Kandidatenliste sie einordnet, nicht automatisch hinter NVIDIA. Die Ketten werden nach jedem Hinzufügen neu gebaut.', no_ranks:'in keiner Kette', ranks:'Ränge',
+  candidates_hint:'Die Rangliste je Slot: reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette. Leer = Standard.' });
+Object.assign(T.en, { s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
+  pool_hint:'Providers with a key take part in the ranking – their models sit where the candidate list places them, not automatically behind NVIDIA. The chains are rebuilt after every addition.', no_ranks:'in no chain', ranks:'Ranks',
+  candidates_hint:'The ranking per slot: regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain. Empty = default.' });
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
 const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
-const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
+const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_COOLDOWN:'120', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -2919,6 +3006,8 @@ function renderNotices() {
   if (S.notices && S.notices.config_changed) box.append(h('div', { class: 'notice' }, h('span', { style: 'flex:1' }, t('config_changed')), btn(t('restart_now'), () => run(['restart']), 'small primary')));
   const days = S.key && S.key.expires_in_days;
   if (days != null && days <= 0) box.append(h('div', { class: 'notice crit' }, t('key_expired'))); else if (days != null && days <= 15) box.append(h('div', { class: 'notice' }, t('key_warn', days)));
+  const cool = S.health && S.health.cooldown || {};
+  Object.values(cool).filter(e => e.until > S.now).sort((a, b) => a.slot.localeCompare(b.slot) || a.rank - b.rank).forEach(e => box.append(h('div', { class: 'notice' }, t('paused_notice', e.slot, e.rank, e.model, hhmm(e.until), e.reason))));
   if (settingsSaved) box.append(h('div', { class: 'notice good' }, h('span', { style: 'flex:1' }, t('s_restart_needed')), btn(t('restart_now'), () => { settingsSaved = false; run(['restart']); }, 'small primary')));
 }
 let settingsSaved = false;
@@ -2932,6 +3021,11 @@ function keyPill() { const k = S.key || {}; const m = { ok: ['good', t('key_ok')
 function svcPill(s) { const v = S[s] || {}; if (v.up) return pill('good', t('up')); if (v.by === 'foreign') return pill('warn', t('foreign')); return pill('crit', t('down')); }
 function svcMeta(s) { const v = S[s] || {}; const parts = [t('port', v.port)]; if (v.up) { if (v.by) parts.push(t('by', v.by)); if (v.pid) parts.push(t('pid', v.pid)); } return parts.join(' · '); }
 function slotInfo(slot) { const sl = (S.slots || {})[slot] || {}; return sl; }
+function groupName(slot, i) { return i === 0 ? 'nim-' + slot : 'nim-' + slot + '-r' + (i + 1); }
+function pausedInfo(slot, i) { const c = S.health && S.health.cooldown || {}; const e = c[groupName(slot, i)]; return e && e.until > S.now ? e : null; }
+function chainList(slot, sl, withButtons) { const chain = sl.chain || []; if (chain.length <= 1 && !withButtons) return null; const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
+  return h('ul', { class: 'chain' }, chain.map((m, i) => { const pi = pausedInfo(slot, i); const pr = probeMap[m]; const prov = m.includes(':') ? m.split(':')[0] : 'nvidia';
+    return h('li', { class: pi ? 'paused' : '' }, h('span', { class: 'rk' }, (i + 1) + '.'), h('span', { class: 'id', title: m + ' (' + prov + ')' }, m), h('span', { class: 'meta' }, pr && pr.result === 'ok' ? h('span', { class: 'small muted tnum' }, pr.ms + ' ms') : pr && pr.result ? pill('crit', pr.result) : null, pi ? pill('warn', t('paused', hhmm(pi.until), pi.reason)) : null, withButtons && i > 0 ? btn(t('make_rank1'), () => run(['pick', slot, m]), 'small ghost') : null)); })); }
 function slotState(sl) { if (!sl.model) return pill('', t('none')); if (sl.state === 'ok') return pill('good', t('answers')); if (sl.state === 'unprobed') return pill('', t('unprobed')); return pill('crit', sl.error || 'error'); }
 
 function renderOverview(host) {
@@ -2957,7 +3051,7 @@ function renderOverview(host) {
   // slots table
   const maxMs = Math.max(1, ...SLOTS.map(s => slotInfo(s).ms || 0));
   host.append(h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h2', null, t('models')), h('table', null, h('thead', null, h('tr', null, h('th', null, t('slot')), h('th', null, t('model')), h('th', null, t('state')), h('th', { class: 'num' }, t('latency')), h('th', null, ''), h('th', null, t('tools')), h('th', null, t('probed')))),
-    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', { class: 'slot-model' }, sl.model || t('none')), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
+    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', null, h('div', { class: 'slot-model' }, sl.model || t('none')), (sl.chain || []).length > 1 ? h('div', { class: 'small muted' }, t('chain') + ': ' + sl.chain.slice(1).map((m, i) => (i + 2) + '. ' + m).join(' · ')) : null), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
     h('div', { class: 'small muted', style: 'margin-top:6px' }, t('help_slots'))));
   // pool summary + requests chart
   const pool = S.config && S.config.pool || {};
@@ -2969,9 +3063,11 @@ function renderOverview(host) {
 let catalogQuery = '';
 function renderModels(host) {
   clear(host);
-  host.append(h('div', { class: 'grid' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('chain_hint', (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT, (S.settings && S.settings.NIMCTL_COOLDOWN) || '120')));
+  host.append(h('div', { class: 'grid wide' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
     h('div', { class: 'slot-model', style: 'margin:6px 0' }, sl.model || t('none')),
     h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
+    chainList(s, sl, true),
     h('div', { class: 'row', style: 'margin-top:8px' }, btn(t('auto'), () => run(['auto', s]), 'small'), btn(t('probe'), () => sl.model && run(['find', sl.model]), 'small'), btn(t('bench'), () => run(['bench', s]), 'small'), btn(t('test'), () => { $('test-model').value = s; $('test-prompt').focus(); }, 'small'))); })));
   // catalog
   const list = h('div', { class: 'list' });
@@ -2994,7 +3090,6 @@ function renderModels(host) {
   const inputs = {}; const grid = h('div', { class: 'grid' });
   const addField = (key, label) => { const eff = CANDS && CANDS[key] || ''; const cur = S.candidates && S.candidates[key] || ''; inputs[key] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(label, inputs[key], t('effective') + ': ' + eff)); };
   SLOTS.forEach(s => addField(s, s));
-  PROVIDERS.forEach(([p, label]) => { if (S.config.pool[p] && S.config.pool[p].key) SLOTS.forEach(s => addField(p + '.' + s, label + ' · ' + s)); });
   cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto']))));
   host.append(cands);
   if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderModels(host); });
@@ -3002,14 +3097,14 @@ function renderModels(host) {
 
 function renderPool(host) {
   clear(host);
-  const pool = S.config && S.config.pool || {}; const stall = (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT;
-  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint', stall)));
-  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('pool_auto'), () => run(['pool', 'auto']))));
+  const pool = S.config && S.config.pool || {};
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint')));
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('auto_all'), () => run(['pool', 'auto']))));
   host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => { const c = pool[p] || {}; const keyIn = h('input', { type: 'password', placeholder: t('pool_key'), autocomplete: 'off' });
     const probeMap = {}; (S.probes || []).forEach(x => { probeMap[x.id] = x; });
     return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, label), c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))), h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
-      c.key ? h('table', { style: 'margin-top:8px' }, h('tbody', null, SLOTS.map(s => { const m = (c.models || {})[s]; const pr = m && probeMap[p + ':' + m]; return h('tr', null, h('td', null, s), h('td', { class: 'mono' }, m || t('none')), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : null,
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_auto'), () => run(['pool', 'auto', p]), 'small') : null, c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
+      c.key ? ((c.ranks || []).length ? h('table', { style: 'margin-top:8px' }, h('tbody', null, c.ranks.map(r => { const pr = probeMap[p + ':' + r.model]; return h('tr', null, h('td', null, r.slot, ' ', h('span', { class: 'muted' }, '#' + r.rank)), h('td', { class: 'mono' }, r.model), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : h('div', { class: 'small muted', style: 'margin-top:8px' }, t('no_ranks'))) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
 }
 
 let logName = 'proxy', logLive = false, logSource = null;
@@ -3075,7 +3170,7 @@ function renderSettings(host) {
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
     group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n'))]),
@@ -3224,7 +3319,7 @@ def mask(key):
 # ── nimctl ─────────────────────────────────────────────────────────────────────────────────────────────────
 def base_env():
     env = dict(os.environ)
-    env.update({"NIMCTL_HOME": HOME, "NO_COLOR": "1", "TERM": "dumb", "NIMCTL_INTERACTIVE": "0", "NIMCTL_YES": "1"})
+    env.update({"NIMCTL_HOME": HOME, "NO_COLOR": "1", "TERM": "dumb", "NIMCTL_INTERACTIVE": "0", "NIMCTL_YES": "1", "NIMCTL_WEB_CALLER": "1"})
     env.pop("NIMCTL_WEB_BIN", None)
     return env
 
@@ -3326,9 +3421,11 @@ def build_state():
         "extra_models": conf.get("EXTRA_MODELS", "").split(),
         "ide_enabled": conf.get("IDE_ENABLED") == "1", "ide_autocomplete": conf.get("IDE_AUTOCOMPLETE") == "1",
         "search_enabled": conf.get("SEARCH_ENABLED") == "1", "web_enabled": conf.get("WEB_ENABLED") == "1",
+        "chains": {s: conf.get("CHAIN_" + s.upper(), "").split() for s in SLOTS},
         "pool": {p: {"key": bool(conf.get(p.upper() + "_API_KEY")), "key_masked": mask(conf.get(p.upper() + "_API_KEY", "")),
-                     "models": parse_pool_models(conf.get("POOL_" + p.upper(), ""))} for p in PROVIDERS},
+                     "ranks": ((st.get("pool") or {}).get(p) or {}).get("ranks", [])} for p in PROVIDERS},
     }
+    st["health"] = read_json(os.path.join(HOME, "health.json"), {}) or {}
     st["settings"] = settings_file()
     st["settings_keys"] = SETTINGS_KEYS
     st["env_overrides"] = sorted(k for k in SETTINGS_KEYS if k in os.environ)

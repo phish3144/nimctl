@@ -6,6 +6,7 @@ T_de+=(
   [tools_ok]="Tools ✓" [tools_no]="keine Tool-Calls" [catalog_fail]="Katalog nicht abrufbar" [catalog_stale]="Katalog-Abruf fehlgeschlagen – nutze Stand von %s"
   [auto_title]="Automatische Modellwahl" [auto_slot]="Slot %s: %d Kandidaten" [auto_pick]="%s → %s (%s ms)" [auto_none]="kein Kandidat antwortet – Slot %s bleibt: %s"
   [auto_notools]="%s antwortet, kann aber keine Tool-Calls – für Slot %s ungeeignet" [auto_done]="Fertig. Ergebnis:" [auto_progress]="Slot %d/%d"
+  [auto_chain]="Ausweich in dieser Reihenfolge: %s" [chain_more]="Ausweich"
 )
 T_en+=(
   [probing]="probing %d model(s) with a real request (max %ss) …" [probing_tools]="probing tool calling on %d model(s) …"
@@ -14,6 +15,7 @@ T_en+=(
   [tools_ok]="tools ✓" [tools_no]="no tool calls" [catalog_fail]="catalog unavailable" [catalog_stale]="catalog refresh failed – using the copy from %s"
   [auto_title]="Automatic model selection" [auto_slot]="Slot %s: %d candidates" [auto_pick]="%s → %s (%s ms)" [auto_none]="no candidate responds – slot %s stays: %s"
   [auto_notools]="%s responds but cannot make tool calls – unsuitable for slot %s" [auto_done]="Done. Result:" [auto_progress]="slot %d/%d"
+  [auto_chain]="fallback in this order: %s" [chain_more]="fallback"
 )
 
 write_hdr() { # the Authorization header lives in a 600 file inside a 700 tmp dir; curl reads it with -K
@@ -126,18 +128,29 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
   for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
 }
-match_candidates() { # match_candidates <catalog> <pattern…> → concrete ids from the catalog, in pattern order (≤3 per pattern)
-  local catalog="$1" pat m seen=" "; shift
-  for pat in "$@"; do [[ -n "$pat" ]] || continue
-    while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; printf '%s\n' "$m"; }; done < <(echo "$catalog" | grep -iE -- "$pat" | head -n 3)
+pat_provider() { local p="${1%%:*}"; [[ "$1" == *:* && " ${POOL_PROVIDERS[*]} " == *" $p "* ]] && printf '%s' "$p"; return 0; }   # provider of a candidate pattern, "" = NVIDIA
+pat_regex() { if [[ -n "$(pat_provider "$1")" ]]; then printf '%s' "${1#*:}"; else printf '%s' "$1"; fi; }
+declare -A CATALOG_CACHE=()
+catalog_cached() { # catalog_cached <provider|""> → ids (namespaced for a provider; empty when the provider has no key), fetched once per run
+  local p="$1" k="${1:-nim}"                                   # "" (NVIDIA) cannot be an associative-array key
+  if [[ -z "${CATALOG_CACHE[$k]+x}" ]]; then
+    if [[ -z "$p" ]]; then CATALOG_CACHE[$k]=$(models_cached); elif pool_configured "$p"; then CATALOG_CACHE[$k]=$(pool_catalog "$p" | sed "s/^/$p:/"); else CATALOG_CACHE[$k]=""; fi
+  fi
+  printf '%s\n' "${CATALOG_CACHE[$k]}"
+}
+match_candidates() { # match_candidates <pattern…> → concrete ids in ranking order (≤2 per pattern), pool ids namespaced
+  local pat p re m seen=" "
+  for pat in "$@"; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat")
+    while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; printf '%s\n' "$m"; }; done < <(catalog_cached "$p" | grep -iE -- "$re" | head -n 2)
   done
 }
-slot_candidates() { local pats=() pat; while read -r pat; do [[ -n "$pat" ]] && pats+=("$pat"); done < <(candidates "$2"); match_candidates "$1" "${pats[@]}"; }   # slot_candidates <catalog> <slot>
-auto_select() { # auto_select <slot…> – probes the union of all candidates once, then decides per slot
-  local slots=("$@") catalog slot m pat first union=() seen=" " n=0; local total=${#slots[@]}
-  catalog=$(models_cached) || return 1
+slot_candidates() { local pats=() pat; while read -r pat; do [[ -n "$pat" ]] && pats+=("$pat"); done < <(candidates "$1"); match_candidates "${pats[@]}"; }   # slot_candidates <slot>
+pattern_applies() { local p; p=$(pat_provider "$1"); [[ -z "$p" ]] || pool_configured "$p"; }   # a pool pattern counts only when that provider has a key
+auto_select() { # auto_select <slot…> – probes the union of all candidates once, then builds each slot's chain in ranking order
+  local slots=("$@") slot m pat first union=() seen=" " n=0; local total=${#slots[@]}
+  models_cached >/dev/null || return 1
   declare -A CANDS=()
-  for slot in "${slots[@]}"; do CANDS[$slot]=$(slot_candidates "$catalog" "$slot")
+  for slot in "${slots[@]}"; do CANDS[$slot]=$(slot_candidates "$slot")
     while read -r m; do [[ -n "$m" && "$seen" != *" $m "* ]] && { seen+="$m "; union+=("$m"); }; done <<<"${CANDS[$slot]}"; done
   ((${#union[@]})) || { for slot in "${slots[@]}"; do bad "$(tf auto_none "$slot" "$(slot_model "$slot")")"; done; return 1; }
   printf "\n  ${B}%s${R}\n" "$(t auto_title)"; probe_many "${union[@]}"
@@ -146,9 +159,10 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     local cands=() var="MODEL_${slot^^}"; while read -r m; do [[ -n "$m" ]] && cands+=("$m"); done <<<"${CANDS[$slot]}"
     printf "\n  ${B}%s${R}  ${D}%s${R}\n" "$(tf auto_slot "$slot" "${#cands[@]}")" "$(tf auto_progress "$n" "$total")"
     ((${#cands[@]})) || { bad "$(tf auto_none "$slot" "${!var:--}")"; rc=1; continue; }
-    # second chance: if the top-priority pattern only timed out (cold start / load), retry once with 2x timeout
-    first=$(candidates "$slot" | head -n1); local retry=() any_ok=0 r res
-    for m in "${cands[@]}"; do echo "$m" | grep -qiE -- "$first" || continue
+    # second chance: if the top applicable pattern only timed out (cold start / load), retry once with 2x timeout
+    first=""; while read -r pat; do [[ -n "$pat" ]] && pattern_applies "$pat" && { first="$pat"; break; }; done < <(candidates "$slot")
+    local retry=() any_ok=0 r res fp fre; fp=$(pat_provider "$first"); fre=$(pat_regex "$first")
+    for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$fp" ]] && echo "$m" | grep -qiE -- "$fre" || continue
       if [[ -n "${RUN_OK[$m]:-}" ]]; then any_ok=1; else probe_get "$m"; [[ "$PROBE_RES" == *imeout* ]] && retry+=("$m"); fi; done
     if ((any_ok == 0 && ${#retry[@]})); then
       for r in "${retry[@]}"; do info "$(tf retry "$r" $((PROBE_TIMEOUT * 2)))"; res=$(probe_one "$r" $((PROBE_TIMEOUT * 2)))
@@ -157,16 +171,22 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     # models that need function calling: check the responders of this slot once
     if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then local responders=(); for m in "${cands[@]}"; do [[ -n "${RUN_OK[$m]:-}" ]] && responders+=("$m"); done
       ((${#responders[@]})) && probe_tools_many "${responders[@]}"; fi
-    local best="" best_ms=999999
-    while read -r pat; do [[ -n "$pat" ]] || continue
-      for m in "${cands[@]}"; do echo "$m" | grep -qiE -- "$pat" || continue
+    # the chain: patterns in ranking order, a pattern's responders by latency, until CHAIN_LEN ranks
+    local chain=() rows p re notools=" "
+    while read -r pat; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat"); rows=()
+      for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$p" ]] && echo "$m" | grep -qiE -- "$re" || continue
         probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
-        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then info "$(tf auto_notools "$m" "$slot")"; continue; fi
-        (( PROBE_MS < best_ms )) && { best="$m"; best_ms=$PROBE_MS; }
+        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then [[ "$notools" == *" $m "* ]] || { notools+="$m "; info "$(tf auto_notools "$m" "$slot")"; }; continue; fi
+        rows+=("$PROBE_MS $m")
       done
-      [[ -n "$best" ]] && break
+      ((${#rows[@]})) || continue
+      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] && chain+=("$m"); done < <(printf '%s\n' "${rows[@]}" | sort -n)
+      (( ${#chain[@]} >= CHAIN_LEN )) && break
     done < <(candidates "$slot")
-    if [[ -n "$best" ]]; then set_slot "$slot" "$best"; ok "$(tf auto_pick "$slot" "$best" "$best_ms")"; save_conf; write_litellm_yaml
+    if ((${#chain[@]})); then
+      chain=("${chain[@]:0:CHAIN_LEN}"); set_chain "$slot" "${chain[*]}"; probe_get "${chain[0]}"
+      ok "$(tf auto_pick "$slot" "${chain[0]}" "$PROBE_MS")"; (( ${#chain[@]} > 1 )) && info "$(tf auto_chain "${chain[*]:1}")"
+      save_conf; write_litellm_yaml
     else bad "$(tf auto_none "$slot" "${!var:--}")"; rc=1; fi
   done
   return $rc
@@ -174,66 +194,59 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
 auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "$(t auto_done)"; local s; for s in "${SLOTS[@]}"; do slot_line "$s"; done; return $rc; }
 
 # ── LiteLLM config ────────────────────────────────────────────────────────────
+COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused (doubling per consecutive failure, up to 30 min)
+rank_group() { if (( $2 == 1 )); then printf 'nim-%s' "$1"; else printf 'nim-%s-r%s' "$1" "$2"; fi; }   # rank_group <slot> <rank> → model group name
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
-  local m p s i seen=" " pool_slots=" " fbs=() fb list tail
-  entry() { # entry <name> <id> [max_tokens] [order] – NVIDIA, or the pool provider a namespaced id names (skipped when that provider has no key)
+  local m s i n seen=" " fbs=() fb groups nimg="" cj="{}" tail
+  entry() { # entry <name> <id> [max_tokens] – NVIDIA, or the pool provider a namespaced id names (skipped when that provider has no key)
     local p base keyref id="$2"; p=$(pool_of "$2")
     if [[ -n "$p" ]]; then pool_configured "$p" || return 0; base=$(pool_base "$p"); keyref="os.environ/${p^^}_API_KEY"; id="${2#*:}"; else base="$API_BASE"; keyref="os.environ/NVIDIA_API_KEY"; fi
-    printf '  - model_name: %s\n    litellm_params: { model: %s/%s, api_base: %s, api_key: %s%s%s, timeout: %s, additional_drop_params: [%s] }\n' "$1" "$PROVIDER" "$id" "$base" "$keyref" "${3:+, max_tokens: $3}" "${4:+, order: $4}" "$STALL_TIMEOUT" "$DROP"
+    printf '  - model_name: %s\n    litellm_params: { model: %s/%s, api_base: %s, api_key: %s%s, timeout: %s, additional_drop_params: [%s] }\n' "$1" "$PROVIDER" "$id" "$base" "$keyref" "${3:+, max_tokens: $3}" "$STALL_TIMEOUT" "$DROP"
   }
-  for s in "${SLOTS[@]}"; do for p in $(pool_active); do [[ -n "$(pool_slot_model "$p" "$s")" ]] && { pool_slots+="$s "; break; }; done; done
-  for s in code fast chat review; do   # nim-<slot> → pool-<slot> (when the pool has a model for it) → the fast model; review → the code model
-    [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue
-    case "$s" in code|chat) tail='"nim-fast"';; review) tail='"nim-code"';; *) tail="";; esac
-    list=""; [[ "$pool_slots" == *" $s "* ]] && list="\"pool-$s\""; [[ -n "$tail" ]] && list+="${list:+, }$tail"
-    [[ -n "$list" ]] && fbs+=("{ nim-$s: [$list] }")
-  done
-  fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
   {
     cat <<EOF
 # generated by nimctl – change models via the dashboard, not here
 # NVIDIA validates requests strictly and rejects OpenAI-only parameters that LiteLLM adds while
 # translating Claude Code's Anthropic-format requests (e.g. prompt_cache_key from session metadata).
-# timeout: seconds without a byte from the model (NIMCTL_STALL_TIMEOUT) before the request goes to the fallback. Per
-# deployment, because the Anthropic route Claude Code uses ignores router_settings.stream_timeout (verified 1.101).
+# Every slot is a chain of ranks: nim-<slot> is rank 1, nim-<slot>-r2 … the others, each its own group with one
+# deployment, falling back down the chain. nimctl_hooks (src/25-throttle.sh) sends a request to the best rank that
+# is not paused and pauses a rank that fails (timeout: no byte for NIMCTL_STALL_TIMEOUT seconds, 429, 5xx) in
+# LiteLLM's cooldown cache, so the running request's fallbacks and every later request skip it.
 model_list:
 EOF
-    entry nim-code "${MODEL_CODE:-none}" 16384; entry nim-fast "${MODEL_FAST:-$MODEL_CODE}" 8192; entry nim-chat "${MODEL_CHAT:-$MODEL_CODE}"
-    [[ -n "$MODEL_REVIEW" ]] && entry nim-review "$MODEL_REVIEW" 16384
-    # the pool: pool-<slot> has one deployment per provider, tried in provider order (src/22-pool.sh)
-    i=0; for p in $(pool_active); do ((i++)); for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" ]] || continue
-      if [[ "$s" == fast ]]; then entry pool-fast "$p:$m" 8192 "$i"; else entry "pool-$s" "$p:$m" 16384 "$i"; fi; done; done
+    for s in "${SLOTS[@]}"; do [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; i=0; groups=()
+      for m in $(slot_chain "$s"); do ((i++)); groups+=("$(rank_group "$s" "$i")")
+        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
+        [[ -n "$(pool_of "$m")" ]] || nimg+="\"$(rank_group "$s" "$i")\","
+        cj=$(jq -n --argjson a "$cj" --arg g "$(rank_group "$s" "$i")" --arg m "$m" '$a | .models[$g] = $m')
+      done
+      (( i == 0 )) && { m=$(slot_model "$s"); [[ -n "$m" ]] || m="$MODEL_CODE"; entry "nim-$s" "${m:-none}" 16384; groups=("nim-$s"); nimg+="\"nim-$s\","; }
+      cj=$(jq -n --argjson a "$cj" --arg s "$s" --arg g "${groups[*]}" '$a | .[$s] = ($g | split(" "))')
+      # fallbacks: every rank falls through the rest of its chain, then to the fast model (review: the code model)
+      case "$s" in fast) tail="";; review) tail='"nim-code"';; *) tail='"nim-fast"';; esac
+      n=${#groups[@]}; for ((i = 0; i < n; i++)); do local list=""; local j; for ((j = i + 1; j < n; j++)); do list+="${list:+, }\"${groups[j]}\""; done
+        [[ -n "$tail" ]] && list+="${list:+, }$tail"; [[ -n "$list" ]] && fbs+=("{ ${groups[i]}: [$list] }"); done
+    done
     # every model that answered a probe is reachable by its own id, so `nimctl code --model <id>` needs no restart
-    for m in $(probe_ok_models) $EXTRA_MODELS; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
-    for p in $(pool_active); do for s in "${SLOTS[@]}"; do m=$(pool_slot_model "$p" "$s"); [[ -n "$m" && "$seen" != *" $p:$m "* ]] || continue; seen+="$p:$m "; entry "$p:$m" "$p:$m" 16384; done; done
+    for m in $(probe_ok_models) $EXTRA_MODELS $CHAIN_CODE $CHAIN_FAST $CHAIN_CHAT $CHAIN_REVIEW; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
+    fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
     cat <<EOF
-# nimctl_hooks.throttle: one token bucket for the whole NVIDIA key (NIMCTL_RPM per minute), see src/25-throttle.sh
-litellm_settings: { drop_params: true, num_retries: 4, request_timeout: 300, callbacks: nimctl_hooks.throttle }
+# nimctl_hooks.throttle: NVIDIA budget (NIMCTL_RPM per minute), chain routing and cooldowns, see src/25-throttle.sh
+litellm_settings: { drop_params: true, num_retries: 1, request_timeout: 300, callbacks: nimctl_hooks.throttle }
 router_settings:
-EOF
-    if [[ "$pool_slots" != " " ]]; then cat <<EOF
-  # NVIDIA first. A request that fails there (stall, 429, 5xx) goes to pool-<slot> at once instead of being
-  # retried on the same overloaded model; a provider that fails is cooled down for a while.
-  cooldown_time: 30
-  num_retries: 1
-  retry_after: 3
-  retry_policy: { TimeoutErrorRetries: 0, DefaultRetries: 0, RateLimitErrorRetries: 0, InternalServerErrorRetries: 0, ServiceUnavailableErrorRetries: 0 }
-EOF
-    else cat <<EOF
-  # NIM free tier answers slowly or with 429 under load. Never take a model out of rotation
-  # (each slot has exactly one), retry with backoff instead, and fall back to the fast model.
+  # cooldowns come from nimctl_hooks (LiteLLM never cools a single-deployment group down by itself); a stall is not
+  # retried on the same rank but handed down the chain, a 429 or 5xx gets one retry first
   disable_cooldowns: true
   allowed_fails: 1000
   cooldown_time: 1
-  num_retries: 4
-  retry_after: 3
-EOF
-    fi
-    cat <<EOF
+  num_retries: 1
+  retry_after: 1
+  retry_policy: { TimeoutErrorRetries: 0, DefaultRetries: 0, RateLimitErrorRetries: 1, InternalServerErrorRetries: 1, ServiceUnavailableErrorRetries: 1, BadRequestErrorRetries: 0, AuthenticationErrorRetries: 0, ContentPolicyViolationErrorRetries: 0 }
   fallbacks: [ $fb ]
 general_settings: { master_key: $MASTER_KEY }
 EOF
   } >"$LITELLM_YAML.tmp"; chmod 600 "$LITELLM_YAML.tmp"; mv "$LITELLM_YAML.tmp" "$LITELLM_YAML"
+  jq -n --argjson a "$cj" --argjson nim "[${nimg%,}]" '$a + {nim: $nim}' >"$NIM_DIR/chains.json.tmp" && mv "$NIM_DIR/chains.json.tmp" "$NIM_DIR/chains.json"
 }
 yaml_has_model() { grep -qE "^  - model_name: $(printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g')\$" "$LITELLM_YAML" 2>/dev/null; }

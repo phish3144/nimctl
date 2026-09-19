@@ -117,6 +117,11 @@ tr:last-child td { border-bottom: 0; }
 .toast.on { display: block; }
 .hidden { display: none !important; }
 .slot-model { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.chain { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 12.5px; }
+.chain li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 4px 0; border-top: 1px solid var(--grid); }
+.chain li .rk { width: 18px; color: var(--muted); font-variant-numeric: tabular-nums; } .chain li .id { flex: 1 1 160px; min-width: 0; word-break: break-all; font-family: ui-monospace, Menlo, monospace; }
+.chain li .meta { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.chain li.paused .id { color: var(--muted); text-decoration: line-through; }
 details summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
 kbd { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 .sr { position: absolute; left: -9999px; }
@@ -215,10 +220,16 @@ en: {
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
   tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
 }};
+Object.assign(T.de, { s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
+  pool_hint:'Anbieter mit Key nehmen an der Rangliste teil – ihre Modelle stehen dort, wo die Kandidatenliste sie einordnet, nicht automatisch hinter NVIDIA. Die Ketten werden nach jedem Hinzufügen neu gebaut.', no_ranks:'in keiner Kette', ranks:'Ränge',
+  candidates_hint:'Die Rangliste je Slot: reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette. Leer = Standard.' });
+Object.assign(T.en, { s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
+  pool_hint:'Providers with a key take part in the ranking – their models sit where the candidate list places them, not automatically behind NVIDIA. The chains are rebuilt after every addition.', no_ranks:'in no chain', ranks:'Ranks',
+  candidates_hint:'The ranking per slot: regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain. Empty = default.' });
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
 const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
-const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
+const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_COOLDOWN:'120', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -373,6 +384,8 @@ function renderNotices() {
   if (S.notices && S.notices.config_changed) box.append(h('div', { class: 'notice' }, h('span', { style: 'flex:1' }, t('config_changed')), btn(t('restart_now'), () => run(['restart']), 'small primary')));
   const days = S.key && S.key.expires_in_days;
   if (days != null && days <= 0) box.append(h('div', { class: 'notice crit' }, t('key_expired'))); else if (days != null && days <= 15) box.append(h('div', { class: 'notice' }, t('key_warn', days)));
+  const cool = S.health && S.health.cooldown || {};
+  Object.values(cool).filter(e => e.until > S.now).sort((a, b) => a.slot.localeCompare(b.slot) || a.rank - b.rank).forEach(e => box.append(h('div', { class: 'notice' }, t('paused_notice', e.slot, e.rank, e.model, hhmm(e.until), e.reason))));
   if (settingsSaved) box.append(h('div', { class: 'notice good' }, h('span', { style: 'flex:1' }, t('s_restart_needed')), btn(t('restart_now'), () => { settingsSaved = false; run(['restart']); }, 'small primary')));
 }
 let settingsSaved = false;
@@ -386,6 +399,11 @@ function keyPill() { const k = S.key || {}; const m = { ok: ['good', t('key_ok')
 function svcPill(s) { const v = S[s] || {}; if (v.up) return pill('good', t('up')); if (v.by === 'foreign') return pill('warn', t('foreign')); return pill('crit', t('down')); }
 function svcMeta(s) { const v = S[s] || {}; const parts = [t('port', v.port)]; if (v.up) { if (v.by) parts.push(t('by', v.by)); if (v.pid) parts.push(t('pid', v.pid)); } return parts.join(' · '); }
 function slotInfo(slot) { const sl = (S.slots || {})[slot] || {}; return sl; }
+function groupName(slot, i) { return i === 0 ? 'nim-' + slot : 'nim-' + slot + '-r' + (i + 1); }
+function pausedInfo(slot, i) { const c = S.health && S.health.cooldown || {}; const e = c[groupName(slot, i)]; return e && e.until > S.now ? e : null; }
+function chainList(slot, sl, withButtons) { const chain = sl.chain || []; if (chain.length <= 1 && !withButtons) return null; const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
+  return h('ul', { class: 'chain' }, chain.map((m, i) => { const pi = pausedInfo(slot, i); const pr = probeMap[m]; const prov = m.includes(':') ? m.split(':')[0] : 'nvidia';
+    return h('li', { class: pi ? 'paused' : '' }, h('span', { class: 'rk' }, (i + 1) + '.'), h('span', { class: 'id', title: m + ' (' + prov + ')' }, m), h('span', { class: 'meta' }, pr && pr.result === 'ok' ? h('span', { class: 'small muted tnum' }, pr.ms + ' ms') : pr && pr.result ? pill('crit', pr.result) : null, pi ? pill('warn', t('paused', hhmm(pi.until), pi.reason)) : null, withButtons && i > 0 ? btn(t('make_rank1'), () => run(['pick', slot, m]), 'small ghost') : null)); })); }
 function slotState(sl) { if (!sl.model) return pill('', t('none')); if (sl.state === 'ok') return pill('good', t('answers')); if (sl.state === 'unprobed') return pill('', t('unprobed')); return pill('crit', sl.error || 'error'); }
 
 function renderOverview(host) {
@@ -411,7 +429,7 @@ function renderOverview(host) {
   // slots table
   const maxMs = Math.max(1, ...SLOTS.map(s => slotInfo(s).ms || 0));
   host.append(h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h2', null, t('models')), h('table', null, h('thead', null, h('tr', null, h('th', null, t('slot')), h('th', null, t('model')), h('th', null, t('state')), h('th', { class: 'num' }, t('latency')), h('th', null, ''), h('th', null, t('tools')), h('th', null, t('probed')))),
-    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', { class: 'slot-model' }, sl.model || t('none')), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
+    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', null, h('div', { class: 'slot-model' }, sl.model || t('none')), (sl.chain || []).length > 1 ? h('div', { class: 'small muted' }, t('chain') + ': ' + sl.chain.slice(1).map((m, i) => (i + 2) + '. ' + m).join(' · ')) : null), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
     h('div', { class: 'small muted', style: 'margin-top:6px' }, t('help_slots'))));
   // pool summary + requests chart
   const pool = S.config && S.config.pool || {};
@@ -423,9 +441,11 @@ function renderOverview(host) {
 let catalogQuery = '';
 function renderModels(host) {
   clear(host);
-  host.append(h('div', { class: 'grid' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('chain_hint', (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT, (S.settings && S.settings.NIMCTL_COOLDOWN) || '120')));
+  host.append(h('div', { class: 'grid wide' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
     h('div', { class: 'slot-model', style: 'margin:6px 0' }, sl.model || t('none')),
     h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
+    chainList(s, sl, true),
     h('div', { class: 'row', style: 'margin-top:8px' }, btn(t('auto'), () => run(['auto', s]), 'small'), btn(t('probe'), () => sl.model && run(['find', sl.model]), 'small'), btn(t('bench'), () => run(['bench', s]), 'small'), btn(t('test'), () => { $('test-model').value = s; $('test-prompt').focus(); }, 'small'))); })));
   // catalog
   const list = h('div', { class: 'list' });
@@ -448,7 +468,6 @@ function renderModels(host) {
   const inputs = {}; const grid = h('div', { class: 'grid' });
   const addField = (key, label) => { const eff = CANDS && CANDS[key] || ''; const cur = S.candidates && S.candidates[key] || ''; inputs[key] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(label, inputs[key], t('effective') + ': ' + eff)); };
   SLOTS.forEach(s => addField(s, s));
-  PROVIDERS.forEach(([p, label]) => { if (S.config.pool[p] && S.config.pool[p].key) SLOTS.forEach(s => addField(p + '.' + s, label + ' · ' + s)); });
   cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto']))));
   host.append(cands);
   if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderModels(host); });
@@ -456,14 +475,14 @@ function renderModels(host) {
 
 function renderPool(host) {
   clear(host);
-  const pool = S.config && S.config.pool || {}; const stall = (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT;
-  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint', stall)));
-  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('pool_auto'), () => run(['pool', 'auto']))));
+  const pool = S.config && S.config.pool || {};
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint')));
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('auto_all'), () => run(['pool', 'auto']))));
   host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => { const c = pool[p] || {}; const keyIn = h('input', { type: 'password', placeholder: t('pool_key'), autocomplete: 'off' });
     const probeMap = {}; (S.probes || []).forEach(x => { probeMap[x.id] = x; });
     return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, label), c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))), h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
-      c.key ? h('table', { style: 'margin-top:8px' }, h('tbody', null, SLOTS.map(s => { const m = (c.models || {})[s]; const pr = m && probeMap[p + ':' + m]; return h('tr', null, h('td', null, s), h('td', { class: 'mono' }, m || t('none')), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : null,
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_auto'), () => run(['pool', 'auto', p]), 'small') : null, c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
+      c.key ? ((c.ranks || []).length ? h('table', { style: 'margin-top:8px' }, h('tbody', null, c.ranks.map(r => { const pr = probeMap[p + ':' + r.model]; return h('tr', null, h('td', null, r.slot, ' ', h('span', { class: 'muted' }, '#' + r.rank)), h('td', { class: 'mono' }, r.model), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : h('div', { class: 'small muted', style: 'margin-top:8px' }, t('no_ranks'))) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
 }
 
 let logName = 'proxy', logLive = false, logSource = null;
@@ -529,7 +548,7 @@ function renderSettings(host) {
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
     group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n'))]),
