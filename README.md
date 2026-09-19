@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.8.1                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.8.2                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -432,7 +432,8 @@ All optional, via environment variables:
 | `NIMCTL_IDE_EXTENSIONS` | | Extra Open VSX extensions `nimctl ide install` adds next to Continue |
 | `NIMCTL_IDE_CONTEXT` | `32768` | Context length Continue assumes for the models |
 | `NIMCTL_SEARCH_PORT` | `8888` | SearXNG port (`nimctl search`) |
-| `NIMCTL_SEARCH_RESULTS` | `5` | Web search results Open WebUI feeds to the model per query |
+| `NIMCTL_SEARCH_RESULTS` | `10` | Web search results Open WebUI feeds to the model per query |
+| `NIMCTL_SEARCH_CONCURRENT` | `8` | Parallel web-search fetches Open WebUI runs per query |
 | `NIMCTL_WEB_PORT` | `4040` | Web UI port (`nimctl web`) |
 | `NIMCTL_BIND` | `127.0.0.1` | Address the services listen on |
 | `NIMCTL_PROBE_TIMEOUT` | `45` | Seconds a model may take to answer a probe |
@@ -445,12 +446,12 @@ All optional, via environment variables:
 | `NIMCTL_CAND_CODE` etc. | built-in rankings | Candidate patterns per slot, space separated: `regex` for NVIDIA, `provider:regex` for a pool provider |
 | `NIMCTL_CHAT_VIA_PROXY` | `1` | Open WebUI talks to the proxy (throttle, retries, fallbacks, curated model list); `0` = directly to NVIDIA |
 | `NIMCTL_CHAT_PASSWORD` | | New password for `nimctl chat passwd` in unattended runs |
-| `NIMCTL_MAX_OUTPUT_TOKENS` | `8192` | Output cap for Claude Code |
-| `NIMCTL_RPM` | `36` | Request budget per minute for the whole key; the proxy delays requests beyond it instead of forwarding them (see Rate limiting) |
-| `NIMCTL_RPM_MAX_WAIT` | `30` | Seconds a request may wait for a free slot before the proxy answers 429 with `Retry-After` |
-| `NIMCTL_STALL_TIMEOUT` | `90` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the next rank |
-| `NIMCTL_COOLDOWN` | `120` | Seconds a failed rank is paused after a timeout or 5xx before it is tried again; doubles on every further failure, up to 30 minutes |
-| `NIMCTL_COOLDOWN_RATELIMIT` | `20` | First cooldown after a rate limit / 429 (shorter than `NIMCTL_COOLDOWN` so code mode recovers faster); doubles on further consecutive failures |
+| `NIMCTL_MAX_OUTPUT_TOKENS` | `16384` | Output cap for Claude Code and chat deployments (reasoning models need headroom) |
+| `NIMCTL_RPM` | `40` | Request budget per minute for the whole key; the proxy delays requests beyond it instead of forwarding them (see Rate limiting) |
+| `NIMCTL_RPM_MAX_WAIT` | `45` | Seconds a request may wait for a free slot before the proxy answers 429 with `Retry-After` |
+| `NIMCTL_STALL_TIMEOUT` | `120` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the next rank |
+| `NIMCTL_COOLDOWN` | `90` | Seconds a failed rank is paused after a timeout or 5xx before it is tried again; doubles on every further failure, up to 30 minutes |
+| `NIMCTL_COOLDOWN_RATELIMIT` | `15` | First cooldown after a rate limit / 429 (shorter than `NIMCTL_COOLDOWN` so code mode recovers faster); doubles on further consecutive failures |
 | `NIMCTL_CHAIN_LEN` | `6` | Ranks per slot the proxy gets |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
 | `NIMCTL_KEY_WARN_DAYS` | `165` | Key age in days after which the dashboard warns (NVIDIA keys last ~180 days) |

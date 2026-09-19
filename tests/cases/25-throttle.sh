@@ -4,7 +4,7 @@
 timeout 60 "$N" start >/dev/null 2>&1
 grep -q 'callbacks: nimctl_hooks.throttle' "$TMP/home/litellm.yaml" && pass "throttle: hook registered in litellm.yaml" || fail "throttle: hook registered in litellm.yaml"
 python3 -m py_compile "$TMP/home/nimctl_hooks.py" 2>/dev/null && [[ $(stat -c %a "$TMP/home/nimctl_hooks.py") == 600 ]] && pass "throttle: hook file written, compiles, 600" || fail "throttle: hook file written, compiles, 600"
-check "throttle: proxy gets budget and PYTHONPATH" "rpm=36 pythonpath=$TMP/home" < "$TMP/home/logs/litellm.log"
+check "throttle: proxy gets budget and PYTHONPATH" "rpm=40 pythonpath=$TMP/home" < "$TMP/home/logs/litellm.log"
 check "chat: through the proxy by default" "default=nim-chat base=http://127.0.0.1:$PP/v1" < "$TMP/home/logs/open-webui.log"
 nocheck "litellm.yaml: no per-deployment rpm any more" "rpm:" < "$TMP/home/litellm.yaml"
 check "litellm.yaml: every rank falls down its chain, then to the fast model" 'fallbacks: \[ \{ nim-code: \["nim-code-r2", .*"nim-fast"\] \}, \{ nim-code-r2: \[.*"nim-fast"\] \}' < "$TMP/home/litellm.yaml"

@@ -22,7 +22,7 @@ check "status: services up (nimctl, pid)" "Proxy +✓ läuft +:$PP +nimctl · pi
 timeout 20 "$N" status >/dev/null 2>&1; assert "status exit code 0 when everything is up" [ $? -eq 0 ]
 mkdir -p "$TMP/proj"
 check "code: proxy round-trip before launch" "Proxy-Roundtrip.*nim-code \(plain\) → [0-9]+ ms" < <(cd "$TMP/proj" && timeout 30 "$N" code --version)
-check "code: env passed to claude" "MODEL=nim-code FAST=nim-fast THINK=0 MAXOUT=8192 TOKEN=sk-nimctl-[0-9a-f]+ args=--version" < <(cd "$TMP/proj" && timeout 30 "$N" code --version)
+check "code: env passed to claude" "MODEL=nim-code FAST=nim-fast THINK=0 MAXOUT=16384 TOKEN=sk-nimctl-[0-9a-f]+ args=--version" < <(cd "$TMP/proj" && timeout 30 "$N" code --version)
 check "code: --model slot" "MODEL=nim-review" < <(cd "$TMP/proj" && timeout 30 "$N" code --model review --version)
 check "code: --model id already in proxy" "MODEL=zai-org/glm-5.3" < <(cd "$TMP/proj" && timeout 30 "$N" code --model zai-org/glm-5.3 --version)
 check "code: --think" "THINK=16000" < <(cd "$TMP/proj" && timeout 30 "$N" code --think --version)

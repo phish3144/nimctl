@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.8.1"
+VERSION="1.8.2"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -17,7 +17,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_SEARCH_CONCURRENT NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -36,7 +36,7 @@ BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here onl
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this
 KEY_WARN_DAYS="${NIMCTL_KEY_WARN_DAYS:-165}"          # NVIDIA keys expire after ~180 days
-STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-90}"          # seconds without a byte from the model (next chunk, or a whole non-streamed answer) before the proxy hands the request to the fallback
+STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-120}"         # seconds without a byte (reasoning models need headroom before fallback)
 # LiteLLM provider prefix. "openai/" would route Anthropic-format requests (Claude Code) to OpenAI's
 # Responses API, which NVIDIA does not serve (404). "custom_openai/" translates via /chat/completions.
 PROVIDER="${NIMCTL_PROVIDER:-custom_openai}"
@@ -454,7 +454,7 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
 auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "$(t auto_done)"; local s; for s in "${SLOTS[@]}"; do slot_line "$s"; done; return $rc; }
 
 # ── LiteLLM config ────────────────────────────────────────────────────────────
-COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused for timeouts/5xx (RateLimit uses NIMCTL_COOLDOWN_RATELIMIT)
+COOLDOWN="${NIMCTL_COOLDOWN:-90}"    # seconds a failed rank is paused for timeouts/5xx (RateLimit uses NIMCTL_COOLDOWN_RATELIMIT)
 rank_group() { if (( $2 == 1 )); then printf 'nim-%s' "$1"; else printf 'nim-%s-r%s' "$1" "$2"; fi; }   # rank_group <slot> <rank> → model group name
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
@@ -477,7 +477,7 @@ model_list:
 EOF
     for s in "${SLOTS[@]}"; do [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; i=0; groups=()
       for m in $(slot_chain "$s"); do ((i++)); groups+=("$(rank_group "$s" "$i")")
-        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
+        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m" "${NIMCTL_MAX_OUTPUT_TOKENS:-16384}"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
         [[ -n "$(pool_of "$m")" ]] || nimg+="\"$(rank_group "$s" "$i")\","
         cj=$(jq -n --argjson a "$cj" --arg g "$(rank_group "$s" "$i")" --arg m "$m" '$a | .models[$g] = $m')
       done
@@ -672,8 +672,8 @@ dash_register m cmd_pool k_m use
 #     a request for nim-<slot> is sent to the best rank that is not cooling down.
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
-#     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (20 s), timeouts/5xx at
-#     NIMCTL_COOLDOWN (120 s), doubling per consecutive failure up to 30 min, cleared by a success.
+#     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (15 s), timeouts/5xx at
+#     NIMCTL_COOLDOWN (90 s), doubling per consecutive failure up to 30 min, cleared by a success.
 # State for the dashboard and the web UI: $NIM_DIR/rpm.json (budget) and $NIM_DIR/health.json (cooldowns).
 T_de+=(
   [thr_line]="Budget   %s/min · %s frei · %s wartend · %s gebremst%s" [thr_avg]=" (Ø %s s)" [thr_penalty]=" · gedrosselt nach 429 bis %s"
@@ -684,8 +684,8 @@ T_en+=(
   [thr_rejected]=" · %s rejected" [thr_cool]="Paused   %s" [thr_cool_item]="%s (%s, until %s)"
 )
 throttle_env() { # the hook's settings, exported for the proxy process
-  export NIMCTL_RPM="${NIMCTL_RPM:-36}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-30}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
-  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-20}"
+  export NIMCTL_RPM="${NIMCTL_RPM:-40}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-45}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
+  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-15}"
   export PYTHONPATH="$NIM_DIR${PYTHONPATH:+:$PYTHONPATH}"
 }
 write_litellm_hooks() { # $NIM_DIR/nimctl_hooks.py – rewritten on every proxy start
@@ -710,8 +710,8 @@ MAX_WAIT = float(os.environ.get("NIMCTL_RPM_MAX_WAIT", "30") or 30)
 STATE = os.environ.get("NIMCTL_RPM_STATE", "")
 HEALTH = os.environ.get("NIMCTL_HEALTH", "")
 CHAINS_FILE = os.environ.get("NIMCTL_CHAINS", "")
-COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "120") or 120)   # first timeout/5xx; doubles per consecutive failure
-COOLDOWN_RATELIMIT = float(os.environ.get("NIMCTL_COOLDOWN_RATELIMIT", "20") or 20)  # first 429 / RateLimitError
+COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "90") or 90)   # first timeout/5xx; doubles per consecutive failure
+COOLDOWN_RATELIMIT = float(os.environ.get("NIMCTL_COOLDOWN_RATELIMIT", "15") or 15)  # first 429 / RateLimitError
 COOLDOWN_MAX = 1800.0
 PENALTY_SECONDS = 300.0
 
@@ -1002,7 +1002,7 @@ chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM
   export ENABLE_OLLAMA_API=false DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true
   if [[ "$SEARCH_ENABLED" == 1 ]]; then   # SearXNG (src/53-search.sh); pages go straight into the context, no local embedding model
     export ENABLE_WEB_SEARCH=true WEB_SEARCH_ENGINE=searxng SEARXNG_QUERY_URL="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
-    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-5}" WEB_SEARCH_CONCURRENT_REQUESTS=5 BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
+    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-10}" WEB_SEARCH_CONCURRENT_REQUESTS="${NIMCTL_SEARCH_CONCURRENT:-8}" BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
   fi
 }
 start_chat() {
@@ -1258,7 +1258,7 @@ proxy_roundtrip() { # proxy_roundtrip <model-name> [tools] – Anthropic-format 
 }
 act_proxy() { local rc=0 s; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
 act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args…]
-  local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-8192}" name
+  local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-16384}" name
   load_profile; [[ -n "$PROFILE_MODEL" ]] && { model="$PROFILE_MODEL"; info "$(tf code_profile "MODEL=$PROFILE_MODEL")"; }
   [[ "$PROFILE_THINK" == 1 ]] && think=1; [[ "$PROFILE_MAXOUT" =~ ^[0-9]+$ ]] && maxout="$PROFILE_MAXOUT"
   while (( $# )); do case "$1" in --model|-m) model="${2:-}"; shift 2;; --model=*) model="${1#*=}"; shift;; --think) think=1; shift;; --no-check) check=0; shift;; --) shift; break;; *) break;; esac; done
@@ -2237,7 +2237,7 @@ search_secret() { # one secret per installation, kept out of settings.yml diffs
 }
 search_write_settings() { # settings.yml: loopback only, html+json (Open WebUI needs json), no limiter, no valkey
   mkdir -p "$SEARX_DIR"
-  printf 'use_default_settings: true\ngeneral: { debug: false, instance_name: "nimctl search", enable_metrics: false }\nsearch: { formats: [html, json], safe_search: 0 }\nserver: { secret_key: "%s", bind_address: "%s", port: %s, limiter: false, image_proxy: false, public_instance: false }\nvalkey: { url: false }\noutgoing: { request_timeout: 6.0, max_request_timeout: 15.0 }\n' \
+  printf 'use_default_settings: true\ngeneral: { debug: false, instance_name: "nimctl search", enable_metrics: false }\nsearch: { formats: [html, json], safe_search: 0 }\nserver: { secret_key: "%s", bind_address: "%s", port: %s, limiter: false, image_proxy: false, public_instance: false }\nvalkey: { url: false }\noutgoing: { request_timeout: 10.0, max_request_timeout: 20.0 }\n' \
     "$(search_secret)" "$BIND" "$SEARCH_PORT" >"$SEARX_DIR/settings.yml.tmp"
   chmod 600 "$SEARX_DIR/settings.yml.tmp"; mv "$SEARX_DIR/settings.yml.tmp" "$SEARX_DIR/settings.yml"
 }
@@ -2255,15 +2255,18 @@ inst_searxng() { # git clone (or pull) + uv venv + requirements + editable insta
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; svc_running chat && info "$(t search_chat_hint)"; }
   ok "$(t search_enabled)"
 }
-chat_sync_searxng() { # point Open WebUI's persisted SearXNG URL at the local instance (DB wins over env after first save)
+chat_sync_searxng() { # point Open WebUI's persisted search settings at the local instance (DB wins over env after first save)
   [[ "$SEARCH_ENABLED" == 1 ]] || return 0
   local db="$NIM_DIR/webui-data/webui.db"
   [[ -f "$db" ]] || return 0
   local url="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
+  local nres="${NIMCTL_SEARCH_RESULTS:-10}" nconc="${NIMCTL_SEARCH_CONCURRENT:-8}"
   if has python3; then
-    NIMCTL_WEBUI_DB="$db" NIMCTL_SEARXNG_URL="$url" python3 - <<'PY' 2>/dev/null || true
+    NIMCTL_WEBUI_DB="$db" NIMCTL_SEARXNG_URL="$url" NIMCTL_SEARCH_RESULTS="$nres" NIMCTL_SEARCH_CONCURRENT="$nconc" python3 - <<'PY' 2>/dev/null || true
 import json, os, sqlite3, time
 db, url = os.environ["NIMCTL_WEBUI_DB"], os.environ["NIMCTL_SEARXNG_URL"]
+nres = int(os.environ.get("NIMCTL_SEARCH_RESULTS") or 10)
+nconc = int(os.environ.get("NIMCTL_SEARCH_CONCURRENT") or 8)
 try:
     con = sqlite3.connect(db, timeout=5)
 except sqlite3.Error:
@@ -2277,6 +2280,11 @@ rows = {
     "web.search.searxng_query_url": url,
     "web.search.engine": "searxng",
     "web.search.enable": True,
+    "web.search.result_count": nres,
+    "web.search.concurrent_requests": nconc,
+    "web.search.bypass_web_search_embedding_and_retrieval": True,
+    "web.search.bypass_embedding_and_retrieval": True,
+    "web.search.confirmation.enable": False,
 }
 try:
     if "key" in cols and "value" in cols:
@@ -2303,6 +2311,12 @@ try:
             search["searxng_query_url"] = url
             search["engine"] = "searxng"
             search["enable"] = True
+            search["result_count"] = nres
+            search["concurrent_requests"] = nconc
+            search["bypass_web_search_embedding_and_retrieval"] = True
+            conf = search.setdefault("confirmation", {})
+            if isinstance(conf, dict):
+                conf["enable"] = False
             payload = json.dumps(data)
             if "updated_at" in cols:
                 con.execute("UPDATE config SET data=?, updated_at=? WHERE id=?", (payload, now, row[0]))
@@ -2318,7 +2332,10 @@ PY
     local esc="${url//\\/\\\\}"; esc="${esc//\"/\\\"}"
     sqlite3 "$db" "INSERT INTO config(key,value,updated_at) VALUES('web.search.searxng_query_url','\"$esc\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
 INSERT INTO config(key,value,updated_at) VALUES('web.search.engine','\"searxng\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
-INSERT INTO config(key,value,updated_at) VALUES('web.search.enable','true',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;" 2>/dev/null || true
+INSERT INTO config(key,value,updated_at) VALUES('web.search.enable','true',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.result_count','$nres',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.concurrent_requests','$nconc',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.confirmation.enable','false',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;" 2>/dev/null || true
   fi
 }
 search_ensure() { # installed, running, enabled
@@ -2328,7 +2345,7 @@ search_ensure() { # installed, running, enabled
   chat_sync_searxng
 }
 search_query() { # search_query <query> [count] → title and url per result
-  local n="${2:-${NIMCTL_SEARCH_RESULTS:-5}}" out
+  local n="${2:-${NIMCTL_SEARCH_RESULTS:-10}}" out
   out=$(curl -sS -m 25 --get --data-urlencode "q=$1" "http://127.0.0.1:$SEARCH_PORT/search?format=json" | jq -r --argjson n "$n" '.results[:$n][] | "\(.title)\n  \(.url)"' 2>/dev/null)
   [[ -n "$out" ]] && printf '%s\n' "$out" || info "$(t search_none)"
 }
