@@ -27,6 +27,12 @@ check "wizard: auto review = deepseek-v4-pro (kimi-k3 times out, gemini has no k
 check "wizard: code chain lists the fallback ranks in ranking order" "Ausweich in dieser Reihenfolge: zai-org/glm-5.3 nvidia/nemotron-3-ultra-550b-a55b nvidia/nemotron-3-super-120b" < "$TMP/wiz.txt"
 grep -q '^CHAIN_CODE=deepseek-ai/deepseek-v4-pro-0813 zai-org/glm-5.3 nvidia/nemotron-3-ultra-550b-a55b nvidia/nemotron-3-super-120b$' "$TMP/home/config" && pass "config: code chain saved" || fail "config: code chain saved"
 check "summary: +n fallback ranks per slot" "code +deepseek-ai/deepseek-v4-pro-0813 .*\+3 Ausweich" < "$TMP/wiz.txt"
+check "wizard: a rank must take a request of the slot's size" "prüfe 32k-Anfrage bei deepseek-ai/deepseek-v4-pro-0813 … ✓ [0-9]+ ms" < "$TMP/wiz.txt"
+check "wizard: a model with a small context window is left out of fast" "nemotron-3-nano-30b-a3b nimmt keine 12k-Anfrage – für Slot fast ungeeignet" < "$TMP/wiz.txt"
+check "wizard: the provider's reason is shown" "maximum context length is 8192 tokens" < "$TMP/wiz.txt"
+awk -F'\t' '$1=="nvidia/nemotron-3-nano-30b-a3b" && $2=="12000" && $3 ~ /8192/ && $4 ~ /^[0-9]+$/' "$TMP/home/sizes" | grep -q . && pass "sizes: rejection cached with the reason" || fail "sizes: rejection cached with the reason"
+awk -F'\t' '$1=="deepseek-ai/deepseek-v4-pro-0813" && $2=="32000" && $3=="ok"' "$TMP/home/sizes" | grep -q . && pass "sizes: acceptance cached" || fail "sizes: acceptance cached"
+check "find: request sizes shown next to the probe" "deepseek-v4-pro-0813 +antwortet [0-9]+ ms .*32k ✓" < <(timeout 30 "$N" find deepseek-v4-pro)
 check "wizard: slow model timeout" "kimi-k3 .*Timeout nach 3s" < "$TMP/wiz.txt"
 check "wizard: progress per slot" "Slot 4/4" < "$TMP/wiz.txt"
 check "wizard: services declined stay down" "Fertig" < "$TMP/wiz.txt"

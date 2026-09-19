@@ -121,6 +121,7 @@ act_pick() { # act_pick <slot> [search] – choose a slot's model from a list; p
   sel=$(echo "$list" | sed -n "${choice}p"); probe_get "$sel"
   if [[ "$PROBE_RES" != ok ]]; then probe_many "$sel"; probe_get "$sel"; fi
   if [[ "$PROBE_RES" == ok && "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then probe_tools_many "$sel"; probe_get "$sel"; [[ "$PROBE_TOOLS" == ok ]] || warn "$(tf auto_notools "$sel" "$slot")"; fi
+  if [[ "$PROBE_RES" == ok && "${SLOT_TOKENS[$slot]:-0}" -gt 0 ]] && ! size_ok "$sel" "${SLOT_TOKENS[$slot]}"; then warn "$(tf pick_toolarge "$sel" "$(size_k "${SLOT_TOKENS[$slot]}")" "$SIZE_RES")"; fi
   if [[ "$PROBE_RES" != ok ]]; then ask "$(t force)" n || { info "$(t unchanged)"; return 1; }; fi
   set_slot "$slot" "$sel"; save_conf; write_litellm_yaml; ok "$(tf set_ok "$slot" "$sel")"; restart_if_running
 }

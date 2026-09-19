@@ -3,6 +3,34 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.9.0] – 2026-09-19
+
+### Fixed
+- **The chat talked to NVIDIA directly and searched through a public SearXNG.** Open WebUI keeps its connection,
+  default model and web-search settings in its database once it has started; the environment only seeds them.
+  Installations set up before 1.1.0 (chat straight to NVIDIA) or with another search URL saved never reached the
+  chain: `Service temporarily overloaded` came straight from NVIDIA, the search got HTML instead of JSON. nimctl now
+  aligns the connection (URL and key), the default model (`nim-chat`) and the search engine and URL in Open WebUI's
+  database before every chat start – both storage schemas, other connections and settings untouched, printed when
+  something changed. `nimctl doctor` reports a chat that still talks past the proxy, `--fix` restarts it.
+- **Groq ranked first for `code` and rejected every request.** Groq's free tier caps a single request at its per-minute
+  token limit (6–12k tokens); a Claude Code request carries 20k+. Every rank now has to take a request of the slot's
+  size before it enters the chain – `code`/`review` 32k tokens, `fast` 12k, `chat` 8k – sent once per model and size
+  by `nimctl auto` and kept for a day in `~/.nimctl/sizes`; probe rows and the web UI show `32k ✓`/`✗` with the
+  provider's reason. Groq is a chat candidate only, a model with a small context window drops out the same way, and
+  `nimctl pick` warns. A rank that still fails with `Request too large` pauses for 30 minutes instead of 2; the proxy
+  log line carries the provider's message.
+- `nimctl search install` on an existing installation failed at `uv venv` (the environment already existed) and
+  skipped the dependency update after `git pull`; the environment is kept now. SearXNG's version is frozen at install
+  time (no `not a git repository` errors at start) and the limiter config file exists (no warning).
+- A tool-calling check that failed for a transient reason (timeout, 429) marked the model `no tool calls` for good.
+  It is retried once with double timeout and otherwise left undecided for this run.
+
+### Changed
+- `NIMCTL_STALL_TIMEOUT` default 90 → 60 seconds: a rank that sends nothing for a minute is handed over sooner.
+- Rankings: `deepseek-v4-pro` and NVIDIA's `kimi-k2` lead `code`, Gemini Flash and Groq's `kimi-k2` lead `chat`;
+  Groq is gone from `code`, `fast` and `review`.
+
 ## [1.8.0] – 2026-09-19
 
 ### Changed

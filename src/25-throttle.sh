@@ -178,11 +178,14 @@ class Throttle(CustomLogger):
         self.recent[group] = time.monotonic()
         n = self.fails.get(group, 0) + 1
         self.fails[group] = n
-        seconds = min(COOLDOWN * (2 ** (n - 1)), COOLDOWN_MAX)
-        reason = type(exc).__name__ if exc is not None else "error"
+        msg = " ".join(str(exc).split())[:160] if exc is not None else ""
+        too_large = getattr(exc, "status_code", None) == 413 or "too large" in msg.lower() or "maximum context length" in msg.lower()
+        # a request the rank cannot take by size (free-tier tokens per minute, context window) will not fit in two minutes either
+        seconds = COOLDOWN_MAX if too_large else min(COOLDOWN * (2 ** (n - 1)), COOLDOWN_MAX)
+        reason = "TooLarge" if too_large else (type(exc).__name__ if exc is not None else "error")
         self.cool[group] = (time.monotonic() + seconds, reason)
         self._tell_router(model_id, exc if isinstance(exc, Exception) else Exception(reason), seconds)
-        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})", flush=True)
+        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})" + (f" – {msg}" if msg else ""), flush=True)
         self._save()
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):

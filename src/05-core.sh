@@ -13,7 +13,7 @@ load_settings() {
   done <"$SETTINGS_FILE"
 }
 load_settings
-CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"
+CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"; SIZES="$NIM_DIR/sizes"
 LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"; SEARX_DIR="$NIM_DIR/searxng"; WEB_DIR="$NIM_DIR/web"
 MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; LOCK_FILE="$NIM_DIR/.lock"
 API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
@@ -22,7 +22,7 @@ BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here onl
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this
 KEY_WARN_DAYS="${NIMCTL_KEY_WARN_DAYS:-165}"          # NVIDIA keys expire after ~180 days
-STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-90}"          # seconds without a byte from the model (next chunk, or a whole non-streamed answer) before the proxy hands the request to the fallback
+STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-60}"          # seconds without a byte from the model (next chunk, or a whole non-streamed answer) before the proxy hands the request to the next rank
 # LiteLLM provider prefix. "openai/" would route Anthropic-format requests (Claude Code) to OpenAI's
 # Responses API, which NVIDIA does not serve (404). "custom_openai/" translates via /chat/completions.
 PROVIDER="${NIMCTL_PROVIDER:-custom_openai}"
@@ -32,22 +32,29 @@ RE_KEY='^nvapi-[A-Za-z0-9_-]+$'
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # Candidate patterns per slot: the ranking. `provider:regex` names a pool provider's catalog (src/22-pool.sh), a bare
-# regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a responding model (tool
-# calling for code/review) adds it to the slot's chain – the first is the slot's model, the others take over one after
-# another when it fails (LiteLLM order + cooldown, see write_litellm_yaml). Quality first, placed by what the free
-# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is
-# not first by default where a provider is as good and more reliable. Override: NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
+# regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a model that answers, makes
+# tool calls where the slot needs them (code/review) and takes a request of the slot's size (SLOT_TOKENS below) adds it
+# to the slot's chain – the first is the slot's model, the others take over one after another when it fails (LiteLLM
+# order + cooldown, see write_litellm_yaml). Quality first, placed by what the free tiers carry: small daily quotas
+# (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is not first by default where a
+# provider is as good and more reliable. Groq's free tier caps a single request at 6–12k tokens (its per-minute token
+# limit), far below what Claude Code sends, so Groq models are chat candidates only. Override: NIMCTL_CAND_<SLOT> or
+# ~/.nimctl/candidates.
 # shellcheck disable=SC2034
-CAND_CODE=(groq:kimi-k2 deepseek-v4-pro 'gemini:gemini-[0-9.]+-pro$' laguna-xs groq:gpt-oss-120b glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra groq:llama-3.3-70b nemotron-3-super)
+CAND_CODE=(deepseek-v4-pro kimi-k2 'gemini:gemini-[0-9.]+-pro$' laguna-xs glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_FAST=(deepseek-v4-flash groq:llama-3.1-8b-instant cerebras:llama3.1-8b 'gemini:flash-lite$' groq:gpt-oss-20b nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
+CAND_FAST=(deepseek-v4-flash cerebras:llama3.1-8b 'gemini:flash-lite$' nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_CHAT=(nemotron-3-super groq:llama-3.3-70b 'gemini:gemini-[0-9.]+-flash$' deepseek-v4-flash cerebras:llama-3.3-70b groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
+CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:kimi-k2 groq:llama-3.3-70b nemotron-3-super deepseek-v4-flash cerebras:llama-3.3-70b groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
-CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro groq:kimi-k2 nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 groq:gpt-oss-120b mistral:magistral-medium nemotron-3-super)
+CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 mistral:magistral-medium nemotron-3-super)
 CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets
 SLOTS=(code fast chat review)
 TOOL_SLOTS=" code review "                            # slots whose model must support function calling
+# Request size (tokens) a rank must take: Claude Code sends its system prompt and tool schemas with every request (20k+
+# tokens), the fast model gets whole pages to summarise, the chat short turns. auto_select sends one request of this size
+# per model and size (cached for a day in ~/.nimctl/sizes) and leaves a model that rejects it out of the slot.
+declare -A SLOT_TOKENS=([code]=32000 [review]=32000 [fast]=12000 [chat]=8000)
 
 # ── Temp files & signals ──────────────────────────────────────────────────────
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nimctl.XXXXXX"); chmod 700 "$TMP_ROOT"

@@ -11,19 +11,26 @@ KEY = "nvapi-testkey"
 MODELS = ["deepseek-ai/deepseek-v4-pro-0813", "deepseek-ai/deepseek-v4-flash-0731", "moonshotai/kimi-k3",
           "moonshotai/kimi-k2.6", "nvidia/nemotron-3-super-120b", "nvidia/nemotron-3.5-lightning-30b-a3b",
           "poolside/laguna-xs-2.1", "nvidia/nemotron-3-ultra-550b-a55b", "zai-org/glm-5.3",
-          "meta/llama-4-maverick-17b-128e-instruct", "mistralai/mistral-medium-3-notools", "nvidia/nemotron-stall-headers"]
+          "meta/llama-4-maverick-17b-128e-instruct", "mistralai/mistral-medium-3-notools", "nvidia/nemotron-stall-headers",
+          "nvidia/nemotron-3-nano-30b-a3b"]
 DEAD = {"moonshotai/kimi-k2.6"}
 SLOW = {"moonshotai/kimi-k3": 40, "nvidia/nemotron-3-ultra-550b-a55b": 1.5, "nvidia/nemotron-stall-headers": 40}
 STALL_HEADERS = {"nvidia/nemotron-stall-headers"}   # streaming: headers first, then 40 s of silence before the first chunk
 COLD = {"deepseek-ai/deepseek-v4-pro-0813": 5}   # first call sleeps this long, later calls are fast
 OVERLOADED = {"poolside/laguna-xs-2.1"}
 NO_TOOLS = {"mistralai/mistral-medium-3-notools", "nvidia/nemotron-3.5-lightning-30b-a3b"}  # answer in prose, never call tools
+CTX = {"nvidia/nemotron-3-nano-30b-a3b": 8192}   # context window: a bigger request gets the OpenAI-style 400
+TPM = {  # free-tier tokens per minute of the mocked providers: a single request above the limit gets Groq's 413
+    "groq": {"llama-3.3-70b-versatile": 12000, "llama-3.1-8b-instant": 6000, "openai/gpt-oss-120b": 8000, "openai/gpt-oss-20b": 8000, "qwen/qwen3-32b": 6000, "groq/compound": 70000, "moonshotai/kimi-k2-instruct-0905": 10000},
+    "cerebras": {"llama-3.3-70b": 60000, "llama3.1-8b": 60000, "gpt-oss-120b": 60000, "qwen-3-235b-a22b-instruct-2507": 60000},
+}
 PROVIDERS = {  # nimctl pool: key and catalog of the mocked provider
-    "groq": ("gsk_testkey_0123456789", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b", "groq/compound"]),
+    "groq": ("gsk_testkey_0123456789", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b", "groq/compound", "moonshotai/kimi-k2-instruct-0905"]),
     "cerebras": ("csk-testkey-0123456789", ["llama-3.3-70b", "llama3.1-8b", "gpt-oss-120b", "qwen-3-235b-a22b-instruct-2507"]),
 }
+LIMITS = {}
 if len(sys.argv) > 2:
-    KEY, MODELS = PROVIDERS[sys.argv[2]]
+    KEY, MODELS = PROVIDERS[sys.argv[2]]; LIMITS = TPM.get(sys.argv[2], {})
 seen = set()
 
 class H(BaseHTTPRequestHandler):
@@ -46,6 +53,11 @@ class H(BaseHTTPRequestHandler):
         if m in DEAD: return self._send(404, {"detail": "Function 'abc': Not found for account 'xyz'"})
         if m not in MODELS: return self._send(404, {"error": {"message": f"model {m} not found"}})
         if m in OVERLOADED: return self._send(429, {"error": {"message": "ResourceExhausted: Worker local total request limit reached (32/32)"}})
+        est = sum(len(str(x.get("content") or "")) for x in body.get("messages", [])) // 4 + 20   # rough token count of the request
+        if m in CTX and est > CTX[m]:
+            return self._send(400, {"error": {"message": f"This model's maximum context length is {CTX[m]} tokens. However, you requested {est} tokens ({est - 5} in the messages, 5 in the completion). Please reduce the length of the messages or completion.", "type": "invalid_request_error", "code": "context_length_exceeded"}})
+        if m in LIMITS and est > LIMITS[m]:
+            return self._send(413, {"error": {"message": f"Request too large for model `{m}` in organization `org_test` service tier `on_demand` on tokens per minute (TPM): Limit {LIMITS[m]}, Requested {est}, please reduce your message size and try again. Need more tokens? Upgrade to Dev Tier.", "type": "tokens", "code": "rate_limit_exceeded"}})
         if m in COLD and m not in seen: seen.add(m); time.sleep(COLD[m])
         wants_tools = bool(body.get("tools")) and m not in NO_TOOLS
         if body.get("stream") and m in STALL_HEADERS:

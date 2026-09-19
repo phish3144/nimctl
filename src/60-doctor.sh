@@ -3,11 +3,13 @@ T_de+=(
   [doc_title]="Doctor – Diagnose" [doc_fix]="Beheben?" [doc_ok]="Alles in Ordnung" [doc_issues]="%d Problem(e): %s"
   [doc_net]="NVIDIA erreichbar" [doc_net_no]="NVIDIA nicht erreichbar (%s)" [doc_perm]="Dateirechte auf %s: %s (sollte 700 sein)" [doc_perm_ok]="Dateirechte %s 700"
   [doc_awk]="awk fehlt" [doc_bash]="bash %s" [doc_svc_foreign]="Port %s belegt von %s" [doc_fixing]="Behebe …" [doc_remaining]="Verbleibend: %s"
+  [doc_chat_db]="Chat spricht mit %s statt %s – Open WebUI hat die Verbindung einer älteren Version gespeichert; ein Chat-Neustart gleicht sie an"
 )
 T_en+=(
   [doc_title]="Doctor – diagnosis" [doc_fix]="Fix it?" [doc_ok]="All good" [doc_issues]="%d issue(s): %s"
   [doc_net]="NVIDIA reachable" [doc_net_no]="NVIDIA unreachable (%s)" [doc_perm]="permissions on %s: %s (should be 700)" [doc_perm_ok]="permissions %s 700"
   [doc_awk]="awk missing" [doc_bash]="bash %s" [doc_svc_foreign]="port %s taken by %s" [doc_fixing]="Fixing …" [doc_remaining]="remaining: %s"
+  [doc_chat_db]="chat talks to %s instead of %s – Open WebUI kept the connection of an older version; a chat restart aligns it"
 )
 DOC_ISSUES=()
 doc_issue() { DOC_ISSUES+=("$1"); }
@@ -31,6 +33,8 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     unit_failed "$s" && { warn "$(tf unit_failed "nimctl-$s" "nimctl-$s")"; doc_issue "unit:$s"; }
   done
   config_newer_than_proxy && { warn "$(t config_changed)"; doc_issue restart; }
+  if svc_running chat; then local want bases; want="http://127.0.0.1:$PROXY_PORT/v1"; [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] || want="$API_BASE"
+    bases=$(chat_db_bases); [[ -z "$bases" ]] || grep -qxF -- "$want" <<<"$bases" || { warn "$(tf doc_chat_db "$(head -n1 <<<"$bases")" "$want")"; doc_issue chat:db; }; fi
   if [[ "$KEY_STATE" == ok ]] && configured; then
     act_probe >/dev/null 2>&1 || true
     for s in "${SLOTS[@]}"; do local m; m=$(slot_model "$s"); [[ -n "$m" ]] || continue; probe_get "$m"
@@ -52,6 +56,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
     model:*) auto_select "${i#model:}" || remaining+=("$i");;
     pool:*) auto_select "${SLOTS[@]}" || remaining+=("$i");;
+    chat:db) restart_svc chat || remaining+=("$i");;
     restart) restart_all || remaining+=("$i");;
     unit:*) systemctl --user reset-failed "nimctl-${i#unit:}" 2>/dev/null; systemctl --user restart "nimctl-${i#unit:}" 2>/dev/null || remaining+=("$i");;
     *) remaining+=("$i");;

@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.8.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.9.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -193,24 +193,31 @@ pattern with a responding model (tool calling for `code`/`review`) adds it to th
 Quality decides the order, placed by what the free tiers carry – small daily quotas (Gemini Pro, OpenRouter) sit late
 in the busy slots and early in `review`, and NVIDIA is not first where a provider is as good and more reliable.
 
+Every rank must also take a request of the slot's size. Claude Code sends its system prompt and tool schemas with every
+request (20k+ tokens), so `code` and `review` need a model that accepts 32k tokens, `fast` 12k (whole pages to
+summarise), `chat` 8k. `nimctl auto` sends one request of that size per model and size, keeps the answer for a day in
+`~/.nimctl/sizes` (probe rows and the web UI show `32k ✓`/`✗` with the provider's reason) and leaves a model that
+rejects it out of the slot. Groq's free tier caps a single request at its per-minute token limit (6–12k tokens), so
+Groq models are chat candidates only; a model with a small context window drops out the same way.
+
 | Slot | Used for | Default ranking (first pattern with a responding model = rank 1, the rest follow) |
 |---|---|---|
-| `code` | Claude Code main model – must make tool calls | groq:kimi-k2 · deepseek-v4-pro · gemini:gemini-*-pro · laguna-xs · groq:gpt-oss-120b · glm-5 · qwen3-coder · openrouter:qwen3-coder:free · mistral:devstral-medium · gemini:gemini-*-flash · kimi-k3 · cerebras:gpt-oss-120b · nemotron-3-ultra · groq:llama-3.3-70b · nemotron-3-super |
-| `fast` | Claude Code side tasks (`ANTHROPIC_SMALL_FAST_MODEL`) and the last fallback of the other slots | deepseek-v4-flash · groq:llama-3.1-8b-instant · cerebras:llama3.1-8b · gemini:flash-lite · groq:gpt-oss-20b · nemotron-3.5-lightning · nemotron-3-nano · mistral:mistral-small · cerebras:llama-3.3-70b · glm-5-flash · openrouter:gpt-oss-20b:free · nemotron-3-super |
-| `chat` | Browser chat default model | nemotron-3-super · groq:llama-3.3-70b · gemini:gemini-*-flash · deepseek-v4-flash · cerebras:llama-3.3-70b · groq:gpt-oss-120b · nemotron-3-ultra · mistral:mistral-medium · openrouter:deepseek-chat:free · llama-4-maverick |
-| `review` | Big, slow model for `nimctl code --model review` – must make tool calls | gemini:gemini-*-pro · kimi-k3 · deepseek-v4-pro · groq:kimi-k2 · nemotron-3-ultra · openrouter:deepseek-r1:free · glm-5 · groq:gpt-oss-120b · mistral:magistral-medium · nemotron-3-super |
+| `code` | Claude Code main model – must make tool calls and take 32k tokens | deepseek-v4-pro · kimi-k2 · gemini:gemini-*-pro · laguna-xs · glm-5 · qwen3-coder · openrouter:qwen3-coder:free · mistral:devstral-medium · gemini:gemini-*-flash · kimi-k3 · cerebras:gpt-oss-120b · nemotron-3-ultra · nemotron-3-super |
+| `fast` | Claude Code side tasks (`ANTHROPIC_SMALL_FAST_MODEL`) and the last fallback of the other slots – 12k tokens | deepseek-v4-flash · cerebras:llama3.1-8b · gemini:flash-lite · nemotron-3.5-lightning · nemotron-3-nano · mistral:mistral-small · cerebras:llama-3.3-70b · glm-5-flash · openrouter:gpt-oss-20b:free · nemotron-3-super |
+| `chat` | Browser chat default model – 8k tokens | gemini:gemini-*-flash · groq:kimi-k2 · groq:llama-3.3-70b · nemotron-3-super · deepseek-v4-flash · cerebras:llama-3.3-70b · groq:gpt-oss-120b · nemotron-3-ultra · mistral:mistral-medium · openrouter:deepseek-chat:free · llama-4-maverick |
+| `review` | Big, slow model for `nimctl code --model review` – must make tool calls and take 32k tokens | gemini:gemini-*-pro · kimi-k3 · deepseek-v4-pro · nemotron-3-ultra · openrouter:deepseek-r1:free · glm-5 · mistral:magistral-medium · nemotron-3-super |
 
 Selection rule: the patterns are case-insensitive regular expressions (`glm-5.*flash` also matches `glm-5.3-flash`);
 a pattern whose provider has no key is skipped; latency only decides between several matches of the same pattern.
 The top candidate gets a second attempt with double timeout when it only timed out (cold start). `nimctl auto`
 rebuilds the chains, `nimctl pick <slot> <id>` makes a model rank 1 (the rest moves down), the dashboard shows
 `+n fallback` per slot and `nimctl status --json` the whole chain. Override the ranking with
-`NIMCTL_CAND_CODE="groq:kimi-k2 deepseek-v4-pro"` or a `~/.nimctl/candidates` file (`code: groq:kimi-k2 deepseek-v4-pro`,
+`NIMCTL_CAND_CODE="deepseek-v4-pro kimi-k2"` or a `~/.nimctl/candidates` file (`code: deepseek-v4-pro kimi-k2`,
 one line per slot) – the web UI has an editor for it.
 
 At run time the proxy's hook (`~/.nimctl/nimctl_hooks.py`) sends a request for a slot to the best rank that is not
 paused; a rank that fails is paused for `NIMCTL_COOLDOWN` seconds (120), twice as long on every further failure, up
-to 30 minutes, and cleared by a success. The pause is registered with LiteLLM too, so the fallback chain of a running
+to 30 minutes (a `Request too large` failure pauses for the full 30 minutes at once), and cleared by a success. The pause is registered with LiteLLM too, so the fallback chain of a running
 request skips it. One limit remains: a single request that hits two ranks that both stall after sending their HTTP
 headers ends in an error – LiteLLM recovers a mid-stream failure once – and the client's own retry (Claude Code
 retries by itself) lands on the healthy rank. The dashboard shows paused ranks (`Paused` line), the web UI marks them.
@@ -287,7 +294,10 @@ Open WebUI gets the search through its start environment (`ENABLE_WEB_SEARCH`, `
 `SEARXNG_QUERY_URL`, `NIMCTL_SEARCH_RESULTS` results per query). Pages go straight into the model's context instead of
 through a local embedding model, which keeps the first search from downloading one. In the chat, the globe icon next
 to the message box switches web search on per message. One thing to know: Open WebUI stores settings changed in its
-admin panel in its database, and those win over the environment afterwards.
+admin panel in its database, and those win over the environment afterwards – which is why nimctl aligns the
+connection (proxy URL and key), the default model and the search engine and URL in that database before every chat
+start, leaving every other setting and connection alone; `nimctl doctor` reports a chat that still talks past the
+proxy.
 
 The IDE gets the same search as a `web_search` tool in its MCP server, so Continue's agent can look things up too.
 `nimctl start`, `stop`, `restart` and the systemd units include the search once it is enabled; `nimctl search disable`
@@ -313,9 +323,9 @@ nimctl chat reset                  # wipe all accounts; the next signup becomes 
 ```
  nimctl code ──► Claude Code ──(Anthropic API)──► LiteLLM proxy 127.0.0.1:4000 ──(OpenAI API)──► integrate.api.nvidia.com
  nimctl ide  ──► code-server 127.0.0.1:8080 + Continue ──(OpenAI API)──► LiteLLM proxy ─────────────────────► integrate.api.nvidia.com
- nimctl chat ──► Open WebUI 127.0.0.1:3000 ───────────────────────────────────────(OpenAI API)──► integrate.api.nvidia.com
-                                          (NIMCTL_CHAT_VIA_PROXY=0: directly to NVIDIA instead)
- inside the proxy: nim-<slot> = rank 1 of the slot's chain ──(no byte for 90 s, 429, 5xx)──► rank 2 ──► rank 3 … (NVIDIA and pool providers, by ranking)
+ nimctl chat ──► Open WebUI 127.0.0.1:3000 ──(OpenAI API)──► LiteLLM proxy ─────────────────────► integrate.api.nvidia.com
+                                          (the connection lives in Open WebUI's database, aligned at every start; NIMCTL_CHAT_VIA_PROXY=0: directly to NVIDIA)
+ inside the proxy: nim-<slot> = rank 1 of the slot's chain ──(no byte for 60 s, 429, 5xx, request too large)──► rank 2 ──► rank 3 … (NVIDIA and pool providers, by ranking)
  nimctl web  ──► browser 127.0.0.1:4040 ──► web/server.py (Python stdlib) ──► nimctl commands and the files below
 ```
 
@@ -329,6 +339,7 @@ litellm.yaml    generated proxy config – do not edit, use the dashboard
 chains.json     the slot chains as the proxy hook sees them (rank groups → models)
 health.json     paused ranks (written by the proxy hook; dashboard line `Paused`, web UI notices)
 probes          last probe result per model (ok/error, latency, time, tool calling); pool models as <provider>:<id>
+sizes           which request sizes a model takes (per model and size: ok/error, time) – a rank must take its slot's size
 bench           bench results
 models.cache    catalog snapshot (refreshed hourly, used as fallback when NVIDIA is unreachable)
 models.<provider>.cache  catalog snapshot per pool provider
@@ -373,7 +384,7 @@ sending a byte, or refuses with 429. `nimctl pool add <provider> <key>` brings o
 
 | Provider | Free tier (as of 2026-09; unpublished, changes) | Key |
 |---|---|---|
-| `groq` | ~30 requests/min, ~1,000/day, no card; llama-3.3-70b, gpt-oss-120b, kimi-k2, qwen3-32b | https://console.groq.com/keys |
+| `groq` | ~30 requests/min, ~1,000/day, no card; at most 6–12k tokens per request (its per-minute token limit), so chat only; kimi-k2, llama-3.3-70b, gpt-oss-120b | https://console.groq.com/keys |
 | `gemini` | 10–15 requests/min, 250–1,000/day; Gemini Flash, Flash-Lite, Pro. Google may train on free-tier data | https://aistudio.google.com/apikey |
 | `cerebras` | ~30 requests/min, 1M tokens/day, very fast; gpt-oss-120b, qwen-3-235b, llama-3.3-70b | https://cloud.cerebras.ai |
 | `openrouter` | 20 requests/min, 50/day (1,000 with $10 credit); `:free` models only, which may train on your data | https://openrouter.ai/settings/keys |
@@ -381,11 +392,13 @@ sending a byte, or refuses with 429. `nimctl pool add <provider> <key>` brings o
 
 The key is checked at the provider before it is saved (`~/.nimctl/config`, mode 600, never on a command line), then
 the chains of all four slots are rebuilt: the provider's models take the ranks the candidate list gives them (see
-[The four model slots](#the-four-model-slots)) – with a Groq key, `groq:kimi-k2` is rank 1 for `code` when it
-answers, not a fallback behind NVIDIA. `nimctl pool` shows each provider's ranks, `nimctl pool remove <provider>`
+[The four model slots](#the-four-model-slots)) – with a Groq key, `groq:kimi-k2` is rank 1 for `chat` when it
+answers, not a fallback behind NVIDIA; `code` and `review` skip Groq, whose free tier takes at most 6–12k tokens per
+request. `nimctl pool` shows each provider's ranks, `nimctl pool remove <provider>`
 takes its ranks out and rebuilds, `nimctl pool auto` rebuilds everything, `nimctl pool test` runs the proxy round trip.
-Pool models are also reachable by their own id, e.g. `nimctl code --model groq:openai/gpt-oss-120b`, and can be
-picked into a slot with `nimctl pick code groq:openai/gpt-oss-120b`. The dashboard has the `Pool` row (key `m`),
+Pool models are also reachable by their own id, e.g. `nimctl code --model cerebras:gpt-oss-120b`, and can be picked
+into a slot with `nimctl pick chat groq:moonshotai/kimi-k2-instruct-0905` (`pick` warns when the model takes no
+request of the slot's size). The dashboard has the `Pool` row (key `m`),
 `nimctl status --json` a `pool` object with the ranks, `nimctl doctor` checks keys and ranks. The setup wizard offers
 the pool right after the NVIDIA key; unattended setups take keys from `GROQ_API_KEY`, `GEMINI_API_KEY`,
 `CEREBRAS_API_KEY`, `OPENROUTER_API_KEY` and `MISTRAL_API_KEY`. The request budget (see [Rate limiting](#rate-limiting))
@@ -443,7 +456,7 @@ All optional, via environment variables:
 | `NIMCTL_MAX_OUTPUT_TOKENS` | `8192` | Output cap for Claude Code |
 | `NIMCTL_RPM` | `36` | Request budget per minute for the whole key; the proxy delays requests beyond it instead of forwarding them (see Rate limiting) |
 | `NIMCTL_RPM_MAX_WAIT` | `30` | Seconds a request may wait for a free slot before the proxy answers 429 with `Retry-After` |
-| `NIMCTL_STALL_TIMEOUT` | `90` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the next rank |
+| `NIMCTL_STALL_TIMEOUT` | `60` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the next rank |
 | `NIMCTL_COOLDOWN` | `120` | Seconds a failed rank is paused before it is tried again; doubles on every further failure, up to 30 minutes |
 | `NIMCTL_CHAIN_LEN` | `6` | Ranks per slot the proxy gets |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
@@ -499,7 +512,10 @@ Less reliable: long tool chains, multi-file rewrites, extended thinking. Keep `c
 | `✗ timeout after 45s` | Model overloaded on the free tier | Usually temporary; `p` later, or choose a faster one |
 | `✗ rate limit (429)` | ~40 req/min per model exceeded | Wait a minute; fallback to `fast` kicks in automatically |
 | `✗ overloaded (worker limit)` | NVIDIA's workers for that model are full | Try later or another model |
-| Answers break off; `Timeout on reading data from socket` in `nimctl logs proxy` | A rank sent nothing for `NIMCTL_STALL_TIMEOUT` seconds (90) | The next rank takes over and the failed one pauses; add providers so the chain has somewhere to go: `nimctl pool add groq <key>` |
+| Answers break off; `Timeout on reading data from socket` in `nimctl logs proxy` | A rank sent nothing for `NIMCTL_STALL_TIMEOUT` seconds (60) | The next rank takes over and the failed one pauses; add providers so the chain has somewhere to go: `nimctl pool add gemini <key>` |
+| `Request too large … tokens per minute (TPM)` in `nimctl logs proxy` | The provider's free tier caps a single request below what the client sends (Groq: 6–12k tokens) | The rank pauses for 30 minutes and the next one takes over; `nimctl auto` keeps such models out of the slot |
+| Chat answers end in `Service temporarily overloaded`; `nimctl logs chat` shows requests to `integrate.api.nvidia.com` | Open WebUI kept the direct NVIDIA connection of an older nimctl in its database, past the chain | `nimctl restart` – nimctl aligns connection, default model and search at every chat start; `nimctl doctor --fix` does the same |
+| Web search in the chat fails with `decode JSON` or `404` | Open WebUI had another search URL stored | `nimctl restart` – the chat searches through the local SearXNG again |
 | `! no tool calls` | Model answers but cannot call functions | Not usable for `code`/`review`; fine for `chat` |
 | Key `invalid/expired` | Keys expire after 6 months (the dashboard warns two weeks ahead) | `k`, paste a new one |
 | `port 4000 is taken by …` | Another program listens there; nimctl never touches it | `NIMCTL_PROXY_PORT=4100 nimctl` |

@@ -9,7 +9,7 @@ T_de+=(
   [search_disabled]="Websuche deaktiviert – start/stop/restart lassen sie aus; wieder an: nimctl search start"
   [search_git_missing]="git fehlt – nötig, um SearXNG zu holen" [search_settings]="SearXNG-Konfiguration: %s" [search_url]="Suche: http://localhost:%s  · nimctl search \"Suchbegriff\""
   [search_none]="keine Treffer" [search_chat_hint]="Chat neu starten, damit die Websuche dort erscheint: nimctl restart"
-  [search_persist]="Open WebUI merkt sich Änderungen aus dem Admin-Panel; die Umgebung setzt nur den Anfangswert"
+  [search_persist]="Open WebUI merkt sich Einstellungen aus dem Admin-Panel; Verbindung, Standardmodell und Suche gleicht nimctl bei jedem Chat-Start an"
 )
 T_en+=(
   [k_o]="Search" [h_search]="web search (SearXNG) for the chat and the IDE: nimctl search [\"query\"|start|stop|disable|install|test]"
@@ -17,7 +17,7 @@ T_en+=(
   [search_disabled]="web search disabled – start/stop/restart leave it out; back on: nimctl search start"
   [search_git_missing]="git missing – needed to fetch SearXNG" [search_settings]="SearXNG configuration: %s" [search_url]="search: http://localhost:%s  · nimctl search \"query\""
   [search_none]="no results" [search_chat_hint]="restart the chat so web search shows up there: nimctl restart"
-  [search_persist]="Open WebUI remembers changes made in its admin panel; the environment only sets the initial value"
+  [search_persist]="Open WebUI remembers settings made in its admin panel; nimctl aligns the connection, the default model and the search at every chat start"
 )
 search_python() { local p="$SEARX_DIR/venv/bin/python"; [[ -x "$p" ]] && printf '%s' "$p"; }
 search_secret() { # one secret per installation, kept out of settings.yml diffs
@@ -28,16 +28,18 @@ search_write_settings() { # settings.yml: loopback only, html+json (Open WebUI n
   printf 'use_default_settings: true\ngeneral: { debug: false, instance_name: "nimctl search", enable_metrics: false }\nsearch: { formats: [html, json], safe_search: 0 }\nserver: { secret_key: "%s", bind_address: "%s", port: %s, limiter: false, image_proxy: false, public_instance: false }\nvalkey: { url: false }\noutgoing: { request_timeout: 6.0, max_request_timeout: 15.0 }\n' \
     "$(search_secret)" "$BIND" "$SEARCH_PORT" >"$SEARX_DIR/settings.yml.tmp"
   chmod 600 "$SEARX_DIR/settings.yml.tmp"; mv "$SEARX_DIR/settings.yml.tmp" "$SEARX_DIR/settings.yml"
+  [[ -f "$SEARX_DIR/limiter.toml" ]] || : >"$SEARX_DIR/limiter.toml"   # the bot-detection module looks for it even with the limiter off
 }
-inst_searxng() { # git clone (or pull) + uv venv + requirements + editable install; sets SEARCH_ENABLED
+inst_searxng() { # git clone (or pull) + uv venv (kept when it exists) + requirements + editable install + frozen version (no git calls at run time); sets SEARCH_ENABLED
   has git || { bad "$(t search_git_missing)"; return 1; }
   declare -F inst_uv >/dev/null && ! has uv && inst_uv; has uv || { bad "$(tf inst_fail uv)"; return 1; }
   local repo="${NIMCTL_SEARXNG_REPO:-https://github.com/searxng/searxng}" log="$LOG_DIR/searxng-install.log" py="$SEARX_DIR/venv/bin/python"
   mkdir -p "$SEARX_DIR"; printf "  %s" "$(t search_installing)"
   if { if [[ -d "$SEARX_DIR/src/.git" ]]; then git -C "$SEARX_DIR/src" pull --ff-only; else git clone --depth 1 "$repo" "$SEARX_DIR/src"; fi &&
-       uv venv --python '>=3.11' "$SEARX_DIR/venv" &&
+       { [[ -x "$py" ]] || uv venv --python '>=3.11' "$SEARX_DIR/venv"; } &&
        uv pip install --python "$py" setuptools wheel -r "$SEARX_DIR/src/requirements.txt" &&
-       uv pip install --python "$py" --no-build-isolation -e "$SEARX_DIR/src"; } >"$log" 2>&1 && [[ -x "$py" ]]; then printf "%s\n" "$OK"
+       uv pip install --python "$py" --no-build-isolation -e "$SEARX_DIR/src" &&
+       { "$py" -m searx.version freeze || true; }; } >"$log" 2>&1 && [[ -x "$py" ]]; then printf "%s\n" "$OK"
   else printf "%s\n" "$NO"; bad "$(tf inst_fail SearXNG) → $log"; return 1; fi
   search_write_settings
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; svc_running chat && info "$(t search_chat_hint)"; }

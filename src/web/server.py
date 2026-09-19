@@ -176,6 +176,17 @@ def probes():
     return rows
 
 
+def sizes():
+    """~/.nimctl/sizes: which request sizes a model takes (id, tokens, ok/error, time)"""
+    rows = []
+    for line in read_text(os.path.join(HOME, "sizes")).splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4 or not parts[1].isdigit():
+            continue
+        rows.append({"id": parts[0], "tokens": int(parts[1]), "result": parts[2], "probed": int(parts[3]) if parts[3].isdigit() else None})
+    return rows
+
+
 def bench_last():
     last = {}
     for line in read_text(os.path.join(HOME, "bench")).splitlines():
@@ -225,6 +236,7 @@ def build_state():
     st["env_overrides"] = sorted(k for k in SETTINGS_KEYS if k in os.environ)
     st["rpm"] = read_json(os.path.join(HOME, "rpm.json"), {})
     st["probes"] = probes()
+    st["sizes"] = sizes()
     st["catalog"] = read_text(os.path.join(HOME, "models.cache")).split()
     st["pool_catalogs"] = {p: read_text(os.path.join(HOME, f"models.{p}.cache")).split() for p in PROVIDERS}
     st["candidates"] = candidates_file()
