@@ -25,7 +25,7 @@ awk -F'\t' '$1=="groq:moonshotai/kimi-k2-instruct-0905" && $2=="ok"' "$TMP/home/
 awk -F'\t' '$1=="groq:openai/gpt-oss-120b" && $2=="8000" && $3 ~ /too large/' "$TMP/home/sizes" | grep -q . && pass "sizes: Groq's rejection cached with the reason" || fail "sizes: Groq's rejection cached with the reason"
 awk -F'\t' '$1=="groq:moonshotai/kimi-k2-instruct-0905" && $2=="8000" && $3=="ok"' "$TMP/home/sizes" | grep -q . && pass "sizes: Groq's kimi-k2 takes an 8k request" || fail "sizes: Groq's kimi-k2 takes an 8k request"
 Y="$TMP/home/litellm.yaml"
-grep -A1 'model_name: nim-chat$' "$Y" | grep -q "model: custom_openai/moonshotai/kimi-k2-instruct-0905, api_base: http://127.0.0.1:$GP/v1, api_key: os.environ/GROQ_API_KEY, timeout: 60," && pass "litellm.yaml: rank 1 of chat is its own group at Groq with Groq's key" || { fail "litellm.yaml: rank 1 of chat"; grep -A1 'nim-chat$' "$Y"; }
+grep -A1 'model_name: nim-chat$' "$Y" | grep -q "model: custom_openai/moonshotai/kimi-k2-instruct-0905, api_base: http://127.0.0.1:$GP/v1, api_key: os.environ/GROQ_API_KEY, timeout: 120," && pass "litellm.yaml: rank 1 of chat is its own group at Groq with Groq's key" || { fail "litellm.yaml: rank 1 of chat"; grep -A1 'nim-chat$' "$Y"; }
 check "litellm.yaml: rank 1 falls down the chain, then to the fast model" 'fallbacks: \[ \{ nim-code: \["nim-code-r2", "nim-code-r3", "nim-code-r4", "nim-fast"\] \}' < "$Y"
 check "litellm.yaml: the last rank falls to the fast model only" '\{ nim-code-r4: \["nim-fast"\] \}' < "$Y"
 check "litellm.yaml: the review chain ends at the code model" '\{ nim-review-r[0-9]: \["nim-code"\] \}' < "$Y"

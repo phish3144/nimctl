@@ -11,8 +11,10 @@ All notable changes to this project are documented here. Format follows
   Installations set up before 1.1.0 (chat straight to NVIDIA) or with another search URL saved never reached the
   chain: `Service temporarily overloaded` came straight from NVIDIA, the search got HTML instead of JSON. nimctl now
   aligns the connection (URL and key), the default model (`nim-chat`) and the search engine and URL in Open WebUI's
-  database before every chat start – both storage schemas, other connections and settings untouched, printed when
-  something changed. `nimctl doctor` reports a chat that still talks past the proxy, `--fix` restarts it.
+  database before every chat start and when the search is switched on – both storage schemas, other connections and
+  settings untouched, printed when something changed (this replaces 1.8.1's search-only sync and carries its result
+  count, concurrency, bypass and confirmation settings). `nimctl doctor` reports a chat that still talks past the proxy,
+  `--fix` restarts it.
 - **Groq ranked first for `code` and rejected every request.** Groq's free tier caps a single request at its per-minute
   token limit (6–12k tokens); a Claude Code request carries 20k+. Every rank now has to take a request of the slot's
   size before it enters the chain – `code`/`review` 32k tokens, `fast` 12k, `chat` 8k – sent once per model and size
@@ -20,16 +22,53 @@ All notable changes to this project are documented here. Format follows
   provider's reason. Groq is a chat candidate only, a model with a small context window drops out the same way, and
   `nimctl pick` warns. A rank that still fails with `Request too large` pauses for 30 minutes instead of 2; the proxy
   log line carries the provider's message.
-- `nimctl search install` on an existing installation failed at `uv venv` (the environment already existed) and
-  skipped the dependency update after `git pull`; the environment is kept now. SearXNG's version is frozen at install
-  time (no `not a git repository` errors at start) and the limiter config file exists (no warning).
+- `nimctl search install` on an existing installation skipped the dependency update after `git pull` when `uv venv`
+  refused the existing environment; the environment is now kept and updated in place (1.8.1 recreated it with
+  `--clear`). SearXNG's version is frozen at install time (no `not a git repository` errors at start) and the limiter
+  config file exists (no warning).
 - A tool-calling check that failed for a transient reason (timeout, 429) marked the model `no tool calls` for good.
   It is retried once with double timeout and otherwise left undecided for this run.
 
 ### Changed
-- `NIMCTL_STALL_TIMEOUT` default 90 → 60 seconds: a rank that sends nothing for a minute is handed over sooner.
-- Rankings: `deepseek-v4-pro` and NVIDIA's `kimi-k2` lead `code`, Gemini Flash and Groq's `kimi-k2` lead `chat`;
-  Groq is gone from `code`, `fast` and `review`.
+- Rankings: `deepseek-v4-pro` and NVIDIA's `kimi-k2` lead `code`; Gemini Flash, Groq's `kimi-k2` and `llama-3.3-70b`
+  and Cerebras lead `chat` ahead of `nemotron-3-super`; Groq is gone from `code`, `fast` and `review`.
+- The web UI's Settings page has `NIMCTL_COOLDOWN_RATELIMIT` and `NIMCTL_SEARCH_CONCURRENT`.
+
+## [1.8.2] – 2026-09-19
+
+### Changed
+- **Stronger out-of-the-box defaults** (every install, not only local tweaks):
+  - Web search: `NIMCTL_SEARCH_RESULTS` default **10**, concurrent requests **8** (`NIMCTL_SEARCH_CONCURRENT`); Open WebUI DB sync also sets result count, concurrency, bypass-embedding, and turns search confirmation **off**.
+  - SearXNG outgoing timeouts **10 s / 20 s** (was 6 / 15).
+  - Proxy: `NIMCTL_RPM` **40**, `NIMCTL_RPM_MAX_WAIT` **45**, stall timeout **120 s**, cooldown **90 s**, rate-limit cooldown **15 s**.
+  - Chat deployments and Claude Code: default `NIMCTL_MAX_OUTPUT_TOKENS` **16384** so reasoning models are less likely to return empty `finish_reason: length` answers.
+- `NIMCTL_SEARCH_CONCURRENT` is a first-class settings key (web UI / `~/.nimctl/settings`).
+
+### Notes
+- Existing installs pick up the new defaults after `nimctl update` and `nimctl restart` (chat start re-syncs the Open WebUI DB). Values already set in `~/.nimctl/settings` or the environment still win.
+
+## [1.8.1] – 2026-09-19
+
+### Fixed
+- **SearXNG reinstall**: `nimctl search install` creates the venv with `uv venv --clear`, so a second install no longer
+  fails when `~/.nimctl/searxng/venv` already exists.
+- **Open WebUI search URL**: when search is enabled, `start_chat` / `nimctl search start` write the local SearXNG JSON
+  URL into `~/.nimctl/webui-data/webui.db` (`web.search.searxng_query_url`, engine `searxng`, enable true). Open WebUI
+  prefers the DB over env after the first admin save, so a previously persisted public instance (often HTML/Turnstile)
+  no longer overrides the local service.
+- **Rate-limit cooldowns**: a `RateLimitError` / 429 starts a short pause (`NIMCTL_COOLDOWN_RATELIMIT`, default 20 s)
+  instead of the full `NIMCTL_COOLDOWN` (120 s) used for timeouts and 5xx; still doubles per consecutive failure and is
+  registered with LiteLLM's cooldown cache.
+
+### Changed
+- **Chat candidate ranking**: `CAND_CHAT` puts Gemini Flash and Groq ahead of `nemotron-3-super` so `nimctl auto` builds
+  healthier chat chains when those free tiers are configured (NVIDIA free-tier mid-stream 503s were common with
+  nemotron first). Tool-capable rankings for `code` / `review` are unchanged.
+
+### Notes
+- Full-page reloads in the **Open WebUI** chat come from Open WebUI's own `/_app/version.json` update checker, not from
+  nimctl's web UI (which only soft-refreshes every 5 s). There is no clean env flag to disable that checker; leave it
+  alone.
 
 ## [1.8.0] – 2026-09-19
 

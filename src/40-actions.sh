@@ -158,7 +158,7 @@ proxy_roundtrip() { # proxy_roundtrip <model-name> [tools] – Anthropic-format 
 }
 act_proxy() { local rc=0 s; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
 act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args…]
-  local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-8192}" name
+  local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-16384}" name
   load_profile; [[ -n "$PROFILE_MODEL" ]] && { model="$PROFILE_MODEL"; info "$(tf code_profile "MODEL=$PROFILE_MODEL")"; }
   [[ "$PROFILE_THINK" == 1 ]] && think=1; [[ "$PROFILE_MAXOUT" =~ ^[0-9]+$ ]] && maxout="$PROFILE_MAXOUT"
   while (( $# )); do case "$1" in --model|-m) model="${2:-}"; shift 2;; --model=*) model="${1#*=}"; shift;; --think) think=1; shift;; --no-check) check=0; shift;; --) shift; break;; *) break;; esac; done

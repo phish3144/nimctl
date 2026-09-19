@@ -4,7 +4,7 @@
 timeout 60 "$N" start >/dev/null 2>&1
 grep -q 'callbacks: nimctl_hooks.throttle' "$TMP/home/litellm.yaml" && pass "throttle: hook registered in litellm.yaml" || fail "throttle: hook registered in litellm.yaml"
 python3 -m py_compile "$TMP/home/nimctl_hooks.py" 2>/dev/null && [[ $(stat -c %a "$TMP/home/nimctl_hooks.py") == 600 ]] && pass "throttle: hook file written, compiles, 600" || fail "throttle: hook file written, compiles, 600"
-check "throttle: proxy gets budget and PYTHONPATH" "rpm=36 pythonpath=$TMP/home" < "$TMP/home/logs/litellm.log"
+check "throttle: proxy gets budget and PYTHONPATH" "rpm=40 pythonpath=$TMP/home" < "$TMP/home/logs/litellm.log"
 check "chat: through the proxy by default" "default=nim-chat base=http://127.0.0.1:$PP/v1" < "$TMP/home/logs/open-webui.log"
 nocheck "litellm.yaml: no per-deployment rpm any more" "rpm:" < "$TMP/home/litellm.yaml"
 check "litellm.yaml: every rank falls down its chain, then to the fast model" 'fallbacks: \[ \{ nim-code: \["nim-code-r2", .*"nim-fast"\] \}, \{ nim-code-r2: \[.*"nim-fast"\] \}' < "$TMP/home/litellm.yaml"
@@ -69,6 +69,30 @@ async def main():
 asyncio.run(main())
 PY
 check "hook: chain routing – a failed rank is paused, requests go to the next healthy rank, success clears it, pool ranks skip the budget, an oversized request pauses for the maximum" "chain ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=120 NIMCTL_RPM_MAX_WAIT=0.6 NIMCTL_RPM_STATE="$TMP/rpm-test2.json" NIMCTL_CHAINS="$TMP/chains-test.json" NIMCTL_HEALTH="$TMP/health-test.json" timeout 30 python3 "$TMP/chain_test.py" 2>&1)
+cat >"$TMP/cooldown_rl_test.py" <<'PY'
+import asyncio, os, time
+import nimctl_hooks as h
+t = h.throttle
+class RL(Exception):
+    status_code = 429
+def kw(group, exc):
+    return {"litellm_params": {"metadata": {"model_group": group}, "model_info": {"id": "dep-" + group}}, "exception": exc}
+async def main():
+    await t.async_log_failure_event(kw("nim-code", RL("rate")), None, 0, 0)
+    until, reason = t.cool["nim-code"]
+    left = until - time.monotonic()
+    assert reason == "RL", reason
+    assert 15 <= left <= 25, f"RateLimit first cooldown should be ~20s, got {left:.1f}s"
+    t.fails.clear(); t.cool.clear(); t.recent.clear()
+    await t.async_log_failure_event(kw("nim-code", TimeoutError("stall")), None, 0, 0)
+    until, reason = t.cool["nim-code"]
+    left = until - time.monotonic()
+    assert reason == "TimeoutError", reason
+    assert 100 <= left <= 140, f"Timeout first cooldown should be ~120s, got {left:.1f}s"
+    print("cooldown bases ok", round(left))
+asyncio.run(main())
+PY
+check "hook: RateLimit cooldown starts short, timeout keeps NIMCTL_COOLDOWN" "cooldown bases ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=120 NIMCTL_RPM_MAX_WAIT=0.6 NIMCTL_RPM_STATE="$TMP/rpm-rl.json" NIMCTL_CHAINS="$TMP/chains-test.json" NIMCTL_HEALTH="$TMP/health-rl.json" NIMCTL_COOLDOWN=120 NIMCTL_COOLDOWN_RATELIMIT=20 timeout 30 python3 "$TMP/cooldown_rl_test.py" 2>&1)
 printf '{"cooldown":{"nim-code":{"model":"deepseek-ai/deepseek-v4-pro-0813","slot":"code","rank":1,"reason":"Timeout","until":%s,"fails":1}},"routed":1,"updated":%s}\n' "$(( $(date +%s) + 300 ))" "$(date +%s)" >"$TMP/home/health.json"
 check "dashboard: paused ranks from health.json" "Pausiert +code #1 deepseek-ai/deepseek-v4-pro-0813 \(Timeout, bis [0-9]{2}:[0-9]{2}\)" < <(timeout 20 "$N" status)
 check "status --json: health block" '"cooldown":\{"nim-code":\{' < <(timeout 20 "$N" status --json | jq -c .health)

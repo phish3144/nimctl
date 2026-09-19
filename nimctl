@@ -17,7 +17,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_SEARCH_CONCURRENT NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -36,7 +36,7 @@ BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here onl
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this
 KEY_WARN_DAYS="${NIMCTL_KEY_WARN_DAYS:-165}"          # NVIDIA keys expire after ~180 days
-STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-60}"          # seconds without a byte from the model (next chunk, or a whole non-streamed answer) before the proxy hands the request to the next rank
+STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-120}"         # seconds without a byte from the model (next chunk, or a whole non-streamed answer) before the proxy hands the request to the next rank; reasoning models need headroom
 # LiteLLM provider prefix. "openai/" would route Anthropic-format requests (Claude Code) to OpenAI's
 # Responses API, which NVIDIA does not serve (404). "custom_openai/" translates via /chat/completions.
 PROVIDER="${NIMCTL_PROVIDER:-custom_openai}"
@@ -51,7 +51,8 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 # to the slot's chain – the first is the slot's model, the others take over one after another when it fails (LiteLLM
 # order + cooldown, see write_litellm_yaml). Quality first, placed by what the free tiers carry: small daily quotas
 # (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is not first by default where a
-# provider is as good and more reliable. Groq's free tier caps a single request at 6–12k tokens (its per-minute token
+# provider is as good and more reliable – `chat` prefers Gemini Flash, Groq and Cerebras ahead of nemotron-3-super, whose
+# mid-stream 503s are common on the free tier. Groq's free tier caps a single request at 6–12k tokens (its per-minute token
 # limit), far below what Claude Code sends, so Groq models are chat candidates only. Override: NIMCTL_CAND_<SLOT> or
 # ~/.nimctl/candidates.
 # shellcheck disable=SC2034
@@ -59,7 +60,7 @@ CAND_CODE=(deepseek-v4-pro kimi-k2 'gemini:gemini-[0-9.]+-pro$' laguna-xs glm-5 
 # shellcheck disable=SC2034
 CAND_FAST=(deepseek-v4-flash cerebras:llama3.1-8b 'gemini:flash-lite$' nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:kimi-k2 groq:llama-3.3-70b nemotron-3-super deepseek-v4-flash cerebras:llama-3.3-70b groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
+CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:kimi-k2 groq:llama-3.3-70b cerebras:llama-3.3-70b nemotron-3-super deepseek-v4-flash groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
 CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 mistral:magistral-medium nemotron-3-super)
 CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets
@@ -505,7 +506,7 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
 auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "$(t auto_done)"; local s; for s in "${SLOTS[@]}"; do slot_line "$s"; done; return $rc; }
 
 # ── LiteLLM config ────────────────────────────────────────────────────────────
-COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused (doubling per consecutive failure, up to 30 min)
+COOLDOWN="${NIMCTL_COOLDOWN:-90}"    # seconds a failed rank is paused for timeouts/5xx (RateLimit uses NIMCTL_COOLDOWN_RATELIMIT)
 rank_group() { if (( $2 == 1 )); then printf 'nim-%s' "$1"; else printf 'nim-%s-r%s' "$1" "$2"; fi; }   # rank_group <slot> <rank> → model group name
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
@@ -528,7 +529,7 @@ model_list:
 EOF
     for s in "${SLOTS[@]}"; do [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; i=0; groups=()
       for m in $(slot_chain "$s"); do ((i++)); groups+=("$(rank_group "$s" "$i")")
-        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
+        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m" "${NIMCTL_MAX_OUTPUT_TOKENS:-16384}"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
         [[ -n "$(pool_of "$m")" ]] || nimg+="\"$(rank_group "$s" "$i")\","
         cj=$(jq -n --argjson a "$cj" --arg g "$(rank_group "$s" "$i")" --arg m "$m" '$a | .models[$g] = $m')
       done
@@ -723,7 +724,9 @@ dash_register m cmd_pool k_m use
 #     a request for nim-<slot> is sent to the best rank that is not cooling down.
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
-#     and every later request skip it: 2 minutes, doubling per consecutive failure up to 30, cleared by a success.
+#     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (15 s), timeouts/5xx at
+#     NIMCTL_COOLDOWN (90 s), doubling per consecutive failure up to 30 min, cleared by a success; a request the rank
+#     cannot take by size (413, "Request too large", context length) pauses it for the full 30 min at once.
 # State for the dashboard and the web UI: $NIM_DIR/rpm.json (budget) and $NIM_DIR/health.json (cooldowns).
 T_de+=(
   [thr_line]="Budget   %s/min · %s frei · %s wartend · %s gebremst%s" [thr_avg]=" (Ø %s s)" [thr_penalty]=" · gedrosselt nach 429 bis %s"
@@ -734,8 +737,8 @@ T_en+=(
   [thr_rejected]=" · %s rejected" [thr_cool]="Paused   %s" [thr_cool_item]="%s (%s, until %s)"
 )
 throttle_env() { # the hook's settings, exported for the proxy process
-  export NIMCTL_RPM="${NIMCTL_RPM:-36}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-30}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
-  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN"
+  export NIMCTL_RPM="${NIMCTL_RPM:-40}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-45}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
+  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-15}"
   export PYTHONPATH="$NIM_DIR${PYTHONPATH:+:$PYTHONPATH}"
 }
 write_litellm_hooks() { # $NIM_DIR/nimctl_hooks.py – rewritten on every proxy start
@@ -760,7 +763,8 @@ MAX_WAIT = float(os.environ.get("NIMCTL_RPM_MAX_WAIT", "30") or 30)
 STATE = os.environ.get("NIMCTL_RPM_STATE", "")
 HEALTH = os.environ.get("NIMCTL_HEALTH", "")
 CHAINS_FILE = os.environ.get("NIMCTL_CHAINS", "")
-COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "120") or 120)   # first failure; doubles per consecutive failure
+COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "90") or 90)   # first timeout/5xx; doubles per consecutive failure
+COOLDOWN_RATELIMIT = float(os.environ.get("NIMCTL_COOLDOWN_RATELIMIT", "15") or 15)  # first 429 / RateLimitError
 COOLDOWN_MAX = 1800.0
 PENALTY_SECONDS = 300.0
 
@@ -893,11 +897,15 @@ class Throttle(CustomLogger):
         self.recent[group] = time.monotonic()
         n = self.fails.get(group, 0) + 1
         self.fails[group] = n
+        reason = type(exc).__name__ if exc is not None else "error"
+        code = getattr(exc, "status_code", None) if exc is not None else None
         msg = " ".join(str(exc).split())[:160] if exc is not None else ""
-        too_large = getattr(exc, "status_code", None) == 413 or "too large" in msg.lower() or "maximum context length" in msg.lower()
-        # a request the rank cannot take by size (free-tier tokens per minute, context window) will not fit in two minutes either
-        seconds = COOLDOWN_MAX if too_large else min(COOLDOWN * (2 ** (n - 1)), COOLDOWN_MAX)
-        reason = "TooLarge" if too_large else (type(exc).__name__ if exc is not None else "error")
+        too_large = code == 413 or "too large" in msg.lower() or "maximum context length" in msg.lower()
+        base = COOLDOWN_RATELIMIT if (code == 429 or "RateLimit" in reason) else COOLDOWN
+        # a request the rank cannot take by size (free-tier tokens per minute, context window) will not fit in a few minutes either
+        seconds = COOLDOWN_MAX if too_large else min(base * (2 ** (n - 1)), COOLDOWN_MAX)
+        if too_large:
+            reason = "TooLarge"
         self.cool[group] = (time.monotonic() + seconds, reason)
         self._tell_router(model_id, exc if isinstance(exc, Exception) else Exception(reason), seconds)
         print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})" + (f" – {msg}" if msg else ""), flush=True)
@@ -1054,19 +1062,23 @@ chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM
   export ENABLE_OLLAMA_API=false DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true
   if [[ "$SEARCH_ENABLED" == 1 ]]; then   # SearXNG (src/53-search.sh); pages go straight into the context, no local embedding model
     export ENABLE_WEB_SEARCH=true WEB_SEARCH_ENGINE=searxng SEARXNG_QUERY_URL="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
-    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-5}" WEB_SEARCH_CONCURRENT_REQUESTS=5 BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
+    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-10}" WEB_SEARCH_CONCURRENT_REQUESTS="${NIMCTL_SEARCH_CONCURRENT:-8}" BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
   fi
 }
 chat_sync_db() { # Open WebUI keeps connection, default model and web search in its database once it has started – the environment only seeds
-  # them (an install from before 1.1.0 still talked to NVIDIA directly, past the chain). Align what nimctl owns before every start, both
-  # storage schemas (one JSON blob, one row per key); other connections and settings stay as they are. Needs chat_env's exports.
-  local db py out; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
-  out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" "$py" - <<'PY' 2>&1
+  # them (an install from before 1.1.0 still talked to NVIDIA directly, past the chain; a public SearXNG saved once stayed). Align what
+  # nimctl owns before every chat start and when the search is switched on, both storage schemas (one JSON blob, one row per key);
+  # other connections and settings stay as they are.
+  local db py out base key default; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then base="http://127.0.0.1:$PROXY_PORT/v1"; key="$MASTER_KEY"; default="nim-chat"; else base="$API_BASE"; key="$NVIDIA_API_KEY"; default="$MODEL_CHAT"; fi
+  out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_BASE="$base" NIMCTL_CHAT_KEY="$key" NIMCTL_CHAT_DEFAULT="$default" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" \
+       NIMCTL_CHAT_SEARX="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json" NIMCTL_CHAT_RESULTS="${NIMCTL_SEARCH_RESULTS:-10}" NIMCTL_CHAT_CONCURRENT="${NIMCTL_SEARCH_CONCURRENT:-8}" "$py" - <<'PY' 2>&1
 import json, os, re, sqlite3, sys, time
 db = os.environ["NIMCTL_CHAT_DB"]
-base, key = os.environ.get("OPENAI_API_BASE_URL", ""), os.environ.get("OPENAI_API_KEY", "")
-default, searx = os.environ.get("DEFAULT_MODELS", ""), os.environ.get("SEARXNG_QUERY_URL", "")
-search_on = os.environ.get("NIMCTL_CHAT_SEARCH") == "1"
+base, key, default = os.environ.get("NIMCTL_CHAT_BASE", ""), os.environ.get("NIMCTL_CHAT_KEY", ""), os.environ.get("NIMCTL_CHAT_DEFAULT", "")
+searx, search_on = os.environ.get("NIMCTL_CHAT_SEARX", ""), os.environ.get("NIMCTL_CHAT_SEARCH") == "1"
+extras = {"result_count": int(os.environ.get("NIMCTL_CHAT_RESULTS") or 10), "concurrent_requests": int(os.environ.get("NIMCTL_CHAT_CONCURRENT") or 8),
+          "bypass_embedding_and_retrieval": True, "confirmation.enable": False}   # what chat_env exports for a first start, for a database that already holds them
 OURS = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/v1/?$|integrate\.api\.nvidia\.com")   # nimctl's connection: the proxy, or NVIDIA directly
 LOCAL = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/")
 changed = []
@@ -1082,9 +1094,10 @@ def connection(urls, keys):
     return urls, keys
 
 def search(cfg):
-    """cfg: the stored enable/engine/searxng_query_url; returns what to change"""
+    """cfg: the stored search settings; returns what to change"""
     if search_on:
         new = {"enable": True, "engine": "searxng", "searxng_query_url": searx}
+        new.update({k: v for k, v in extras.items() if k in cfg})
     elif cfg.get("engine") == "searxng" and cfg.get("enable") and LOCAL.match(str(cfg.get("searxng_query_url", ""))):
         new = {"enable": False}                       # nimctl's search is off and would not answer
     else:
@@ -1114,12 +1127,12 @@ if "key" in cols and "value" in cols:                  # one row per key
         u, k = connection(urls, keys); put("openai.api_base_urls", u); put("openai.api_keys", k)
         if get("openai.enable") is False:
             put("openai.enable", True); changed.append("connection on")
-    cfg = {n: get("web.search." + n) for n in ("enable", "engine", "searxng_query_url")}
-    if any(v is not None for v in cfg.values()):
+    cfg = {n: get("web.search." + n) for n in ("enable", "engine", "searxng_query_url", *extras)}
+    if any(cfg[n] is not None for n in ("enable", "engine", "searxng_query_url")):
         for k, v in search({k: v for k, v in cfg.items() if v is not None}).items():
             put("web.search." + k, v)
     d = get("ui.default_models")
-    if isinstance(d, str) and d and default and not d.startswith("nim-"):
+    if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
         put("ui.default_models", default); changed.append("default model → " + default)
 elif "data" in cols:                                   # one JSON blob (older versions)
     row = con.execute("SELECT id, data FROM config ORDER BY id DESC LIMIT 1").fetchone()
@@ -1139,11 +1152,16 @@ elif "data" in cols:                                   # one JSON blob (older ve
         if isinstance(node, dict):
             ws = node; break
     if ws is not None:
-        ws.update(search(ws))
+        flat = dict(ws); flat["confirmation.enable"] = (ws.get("confirmation") or {}).get("enable") if isinstance(ws.get("confirmation"), dict) else None
+        for k, v in search({k: v for k, v in flat.items() if v is not None}).items():
+            if k == "confirmation.enable":
+                ws.setdefault("confirmation", {})["enable"] = v
+            else:
+                ws[k] = v
     ui = data.get("ui")
     if isinstance(ui, dict):
         d = ui.get("default_models")
-        if isinstance(d, str) and d and default and not d.startswith("nim-"):
+        if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
             ui["default_models"] = default; changed.append("default model → " + default)
     if changed:
         con.execute("UPDATE config SET data=? WHERE id=?", (json.dumps(data), row[0]))
@@ -1425,7 +1443,7 @@ proxy_roundtrip() { # proxy_roundtrip <model-name> [tools] – Anthropic-format 
 }
 act_proxy() { local rc=0 s; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
 act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args…]
-  local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-8192}" name
+  local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-16384}" name
   load_profile; [[ -n "$PROFILE_MODEL" ]] && { model="$PROFILE_MODEL"; info "$(tf code_profile "MODEL=$PROFILE_MODEL")"; }
   [[ "$PROFILE_THINK" == 1 ]] && think=1; [[ "$PROFILE_MAXOUT" =~ ^[0-9]+$ ]] && maxout="$PROFILE_MAXOUT"
   while (( $# )); do case "$1" in --model|-m) model="${2:-}"; shift 2;; --model=*) model="${1#*=}"; shift;; --think) think=1; shift;; --no-check) check=0; shift;; --) shift; break;; *) break;; esac; done
@@ -2388,7 +2406,7 @@ T_de+=(
   [search_disabled]="Websuche deaktiviert – start/stop/restart lassen sie aus; wieder an: nimctl search start"
   [search_git_missing]="git fehlt – nötig, um SearXNG zu holen" [search_settings]="SearXNG-Konfiguration: %s" [search_url]="Suche: http://localhost:%s  · nimctl search \"Suchbegriff\""
   [search_none]="keine Treffer" [search_chat_hint]="Chat neu starten, damit die Websuche dort erscheint: nimctl restart"
-  [search_persist]="Open WebUI merkt sich Einstellungen aus dem Admin-Panel; Verbindung, Standardmodell und Suche gleicht nimctl bei jedem Chat-Start an"
+  [search_persist]="Open WebUI merkt sich Einstellungen aus dem Admin-Panel; Verbindung, Standardmodell und die lokale SearXNG-URL gleicht nimctl bei jedem Chat-Start und beim Einschalten der Suche an"
 )
 T_en+=(
   [k_o]="Search" [h_search]="web search (SearXNG) for the chat and the IDE: nimctl search [\"query\"|start|stop|disable|install|test]"
@@ -2396,7 +2414,7 @@ T_en+=(
   [search_disabled]="web search disabled – start/stop/restart leave it out; back on: nimctl search start"
   [search_git_missing]="git missing – needed to fetch SearXNG" [search_settings]="SearXNG configuration: %s" [search_url]="search: http://localhost:%s  · nimctl search \"query\""
   [search_none]="no results" [search_chat_hint]="restart the chat so web search shows up there: nimctl restart"
-  [search_persist]="Open WebUI remembers settings made in its admin panel; nimctl aligns the connection, the default model and the search at every chat start"
+  [search_persist]="Open WebUI remembers settings made in its admin panel; nimctl aligns the connection, the default model and the local SearXNG URL at every chat start and when the search is switched on"
 )
 search_python() { local p="$SEARX_DIR/venv/bin/python"; [[ -x "$p" ]] && printf '%s' "$p"; }
 search_secret() { # one secret per installation, kept out of settings.yml diffs
@@ -2404,7 +2422,7 @@ search_secret() { # one secret per installation, kept out of settings.yml diffs
 }
 search_write_settings() { # settings.yml: loopback only, html+json (Open WebUI needs json), no limiter, no valkey
   mkdir -p "$SEARX_DIR"
-  printf 'use_default_settings: true\ngeneral: { debug: false, instance_name: "nimctl search", enable_metrics: false }\nsearch: { formats: [html, json], safe_search: 0 }\nserver: { secret_key: "%s", bind_address: "%s", port: %s, limiter: false, image_proxy: false, public_instance: false }\nvalkey: { url: false }\noutgoing: { request_timeout: 6.0, max_request_timeout: 15.0 }\n' \
+  printf 'use_default_settings: true\ngeneral: { debug: false, instance_name: "nimctl search", enable_metrics: false }\nsearch: { formats: [html, json], safe_search: 0 }\nserver: { secret_key: "%s", bind_address: "%s", port: %s, limiter: false, image_proxy: false, public_instance: false }\nvalkey: { url: false }\noutgoing: { request_timeout: 10.0, max_request_timeout: 20.0 }\n' \
     "$(search_secret)" "$BIND" "$SEARCH_PORT" >"$SEARX_DIR/settings.yml.tmp"
   chmod 600 "$SEARX_DIR/settings.yml.tmp"; mv "$SEARX_DIR/settings.yml.tmp" "$SEARX_DIR/settings.yml"
   [[ -f "$SEARX_DIR/limiter.toml" ]] || : >"$SEARX_DIR/limiter.toml"   # the bot-detection module looks for it even with the limiter off
@@ -2428,9 +2446,10 @@ search_ensure() { # installed, running, enabled
   search_python >/dev/null || { bad "$(tf svc_missing SearXNG)"; info "→ nimctl search install"; return 1; }
   svc_running search || start_search || return 1
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; ok "$(t search_enabled)"; svc_running chat && info "$(t search_chat_hint)"; }
+  chat_sync_db   # a running chat reads the search settings from its database (src/30-services.sh)
 }
 search_query() { # search_query <query> [count] → title and url per result
-  local n="${2:-${NIMCTL_SEARCH_RESULTS:-5}}" out
+  local n="${2:-${NIMCTL_SEARCH_RESULTS:-10}}" out
   out=$(curl -sS -m 25 --get --data-urlencode "q=$1" "http://127.0.0.1:$SEARCH_PORT/search?format=json" | jq -r --argjson n "$n" '.results[:$n][] | "\(.title)\n  \(.url)"' 2>/dev/null)
   [[ -n "$out" ]] && printf '%s\n' "$out" || info "$(t search_none)"
 }
@@ -3023,16 +3042,16 @@ en: {
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
   tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
 }};
-Object.assign(T.de, { size_hint:'Jeder Rang muss außerdem eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens) – Modelle, die sie ablehnen (✗ hinter der Größe, Grund im Tooltip), bleiben draußen; Groqs Free-Tier nimmt höchstens 6–12k Tokens je Anfrage.', s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
+Object.assign(T.de, { s_cooldown_rl:'Pause nach 429 (s)', s_cooldown_rl_h:'erste Pause nach einem Rate-Limit – kürzer als nach Timeout/5xx, danach ebenfalls verdoppelt', s_search_c:'Parallele Seitenabrufe je Suche', size_hint:'Jeder Rang muss außerdem eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens) – Modelle, die sie ablehnen (✗ hinter der Größe, Grund im Tooltip), bleiben draußen; Groqs Free-Tier nimmt höchstens 6–12k Tokens je Anfrage.', s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
   pool_hint:'Anbieter mit Key nehmen an der Rangliste teil – ihre Modelle stehen dort, wo die Kandidatenliste sie einordnet, nicht automatisch hinter NVIDIA. Die Ketten werden nach jedem Hinzufügen neu gebaut.', no_ranks:'in keiner Kette', ranks:'Ränge',
   candidates_hint:'Die Rangliste je Slot: reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette. Leer = Standard.' });
-Object.assign(T.en, { size_hint:'Every rank must also take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens) – models that reject it (✗ after the size, reason in the tooltip) stay out; Groq\'s free tier takes at most 6–12k tokens per request.', s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
+Object.assign(T.en, { s_cooldown_rl:'Pause after 429 (s)', s_cooldown_rl_h:'first pause after a rate limit – shorter than after a timeout/5xx, doubling afterwards as well', s_search_c:'Parallel page fetches per search', size_hint:'Every rank must also take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens) – models that reject it (✗ after the size, reason in the tooltip) stay out; Groq\'s free tier takes at most 6–12k tokens per request.', s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
   pool_hint:'Providers with a key take part in the ranking – their models sit where the candidate list places them, not automatically behind NVIDIA. The chains are rebuilt after every addition.', no_ranks:'in no chain', ranks:'Ranks',
   candidates_hint:'The ranking per slot: regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain. Empty = default.' });
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
 const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
-const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'60', NIMCTL_COOLDOWN:'120', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
+const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -3353,10 +3372,10 @@ function renderSettings(host) {
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
-    group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n'))]),
+    group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n')), sf('NIMCTL_SEARCH_CONCURRENT', t('s_search_c'))]),
     group(t('s_ui'), [sf('NIMCTL_LANG', t('s_lang'), '', 'select'), field(t('s_theme'), h('select', { onchange: (e) => setTheme(e.target.value) }, [['', 'theme_auto'], ['light', 'theme_light'], ['dark', 'theme_dark']].map(([v, k]) => h('option', { value: v, selected: (localStorage.getItem('theme') || '') === v }, t(k)))))])));
   host.append(h('div', { class: 'row', style: 'margin:12px 0' }, saveBtn));
   host.append(h('div', { class: 'grid wide' },

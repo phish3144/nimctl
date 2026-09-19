@@ -239,7 +239,7 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
 auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "$(t auto_done)"; local s; for s in "${SLOTS[@]}"; do slot_line "$s"; done; return $rc; }
 
 # ── LiteLLM config ────────────────────────────────────────────────────────────
-COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused (doubling per consecutive failure, up to 30 min)
+COOLDOWN="${NIMCTL_COOLDOWN:-90}"    # seconds a failed rank is paused for timeouts/5xx (RateLimit uses NIMCTL_COOLDOWN_RATELIMIT)
 rank_group() { if (( $2 == 1 )); then printf 'nim-%s' "$1"; else printf 'nim-%s-r%s' "$1" "$2"; fi; }   # rank_group <slot> <rank> → model group name
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
@@ -262,7 +262,7 @@ model_list:
 EOF
     for s in "${SLOTS[@]}"; do [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; i=0; groups=()
       for m in $(slot_chain "$s"); do ((i++)); groups+=("$(rank_group "$s" "$i")")
-        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
+        if [[ "$s" == fast ]]; then entry "$(rank_group "$s" "$i")" "$m" 8192; elif [[ "$s" == chat ]]; then entry "$(rank_group "$s" "$i")" "$m" "${NIMCTL_MAX_OUTPUT_TOKENS:-16384}"; else entry "$(rank_group "$s" "$i")" "$m" 16384; fi
         [[ -n "$(pool_of "$m")" ]] || nimg+="\"$(rank_group "$s" "$i")\","
         cj=$(jq -n --argjson a "$cj" --arg g "$(rank_group "$s" "$i")" --arg m "$m" '$a | .models[$g] = $m')
       done

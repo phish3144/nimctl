@@ -78,19 +78,23 @@ chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM
   export ENABLE_OLLAMA_API=false DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true
   if [[ "$SEARCH_ENABLED" == 1 ]]; then   # SearXNG (src/53-search.sh); pages go straight into the context, no local embedding model
     export ENABLE_WEB_SEARCH=true WEB_SEARCH_ENGINE=searxng SEARXNG_QUERY_URL="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
-    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-5}" WEB_SEARCH_CONCURRENT_REQUESTS=5 BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
+    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-10}" WEB_SEARCH_CONCURRENT_REQUESTS="${NIMCTL_SEARCH_CONCURRENT:-8}" BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
   fi
 }
 chat_sync_db() { # Open WebUI keeps connection, default model and web search in its database once it has started – the environment only seeds
-  # them (an install from before 1.1.0 still talked to NVIDIA directly, past the chain). Align what nimctl owns before every start, both
-  # storage schemas (one JSON blob, one row per key); other connections and settings stay as they are. Needs chat_env's exports.
-  local db py out; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
-  out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" "$py" - <<'PY' 2>&1
+  # them (an install from before 1.1.0 still talked to NVIDIA directly, past the chain; a public SearXNG saved once stayed). Align what
+  # nimctl owns before every chat start and when the search is switched on, both storage schemas (one JSON blob, one row per key);
+  # other connections and settings stay as they are.
+  local db py out base key default; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then base="http://127.0.0.1:$PROXY_PORT/v1"; key="$MASTER_KEY"; default="nim-chat"; else base="$API_BASE"; key="$NVIDIA_API_KEY"; default="$MODEL_CHAT"; fi
+  out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_BASE="$base" NIMCTL_CHAT_KEY="$key" NIMCTL_CHAT_DEFAULT="$default" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" \
+       NIMCTL_CHAT_SEARX="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json" NIMCTL_CHAT_RESULTS="${NIMCTL_SEARCH_RESULTS:-10}" NIMCTL_CHAT_CONCURRENT="${NIMCTL_SEARCH_CONCURRENT:-8}" "$py" - <<'PY' 2>&1
 import json, os, re, sqlite3, sys, time
 db = os.environ["NIMCTL_CHAT_DB"]
-base, key = os.environ.get("OPENAI_API_BASE_URL", ""), os.environ.get("OPENAI_API_KEY", "")
-default, searx = os.environ.get("DEFAULT_MODELS", ""), os.environ.get("SEARXNG_QUERY_URL", "")
-search_on = os.environ.get("NIMCTL_CHAT_SEARCH") == "1"
+base, key, default = os.environ.get("NIMCTL_CHAT_BASE", ""), os.environ.get("NIMCTL_CHAT_KEY", ""), os.environ.get("NIMCTL_CHAT_DEFAULT", "")
+searx, search_on = os.environ.get("NIMCTL_CHAT_SEARX", ""), os.environ.get("NIMCTL_CHAT_SEARCH") == "1"
+extras = {"result_count": int(os.environ.get("NIMCTL_CHAT_RESULTS") or 10), "concurrent_requests": int(os.environ.get("NIMCTL_CHAT_CONCURRENT") or 8),
+          "bypass_embedding_and_retrieval": True, "confirmation.enable": False}   # what chat_env exports for a first start, for a database that already holds them
 OURS = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/v1/?$|integrate\.api\.nvidia\.com")   # nimctl's connection: the proxy, or NVIDIA directly
 LOCAL = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/")
 changed = []
@@ -106,9 +110,10 @@ def connection(urls, keys):
     return urls, keys
 
 def search(cfg):
-    """cfg: the stored enable/engine/searxng_query_url; returns what to change"""
+    """cfg: the stored search settings; returns what to change"""
     if search_on:
         new = {"enable": True, "engine": "searxng", "searxng_query_url": searx}
+        new.update({k: v for k, v in extras.items() if k in cfg})
     elif cfg.get("engine") == "searxng" and cfg.get("enable") and LOCAL.match(str(cfg.get("searxng_query_url", ""))):
         new = {"enable": False}                       # nimctl's search is off and would not answer
     else:
@@ -138,12 +143,12 @@ if "key" in cols and "value" in cols:                  # one row per key
         u, k = connection(urls, keys); put("openai.api_base_urls", u); put("openai.api_keys", k)
         if get("openai.enable") is False:
             put("openai.enable", True); changed.append("connection on")
-    cfg = {n: get("web.search." + n) for n in ("enable", "engine", "searxng_query_url")}
-    if any(v is not None for v in cfg.values()):
+    cfg = {n: get("web.search." + n) for n in ("enable", "engine", "searxng_query_url", *extras)}
+    if any(cfg[n] is not None for n in ("enable", "engine", "searxng_query_url")):
         for k, v in search({k: v for k, v in cfg.items() if v is not None}).items():
             put("web.search." + k, v)
     d = get("ui.default_models")
-    if isinstance(d, str) and d and default and not d.startswith("nim-"):
+    if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
         put("ui.default_models", default); changed.append("default model → " + default)
 elif "data" in cols:                                   # one JSON blob (older versions)
     row = con.execute("SELECT id, data FROM config ORDER BY id DESC LIMIT 1").fetchone()
@@ -163,11 +168,16 @@ elif "data" in cols:                                   # one JSON blob (older ve
         if isinstance(node, dict):
             ws = node; break
     if ws is not None:
-        ws.update(search(ws))
+        flat = dict(ws); flat["confirmation.enable"] = (ws.get("confirmation") or {}).get("enable") if isinstance(ws.get("confirmation"), dict) else None
+        for k, v in search({k: v for k, v in flat.items() if v is not None}).items():
+            if k == "confirmation.enable":
+                ws.setdefault("confirmation", {})["enable"] = v
+            else:
+                ws[k] = v
     ui = data.get("ui")
     if isinstance(ui, dict):
         d = ui.get("default_models")
-        if isinstance(d, str) and d and default and not d.startswith("nim-"):
+        if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
             ui["default_models"] = default; changed.append("default model → " + default)
     if changed:
         con.execute("UPDATE config SET data=? WHERE id=?", (json.dumps(data), row[0]))
