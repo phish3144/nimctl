@@ -19,7 +19,7 @@ T_de+=(
   [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  5) Web-UI  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
   [env_hint]="# Für andere Werkzeuge (Aider, Continue, Zed, OpenAI-SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# Hinweis: Proxy läuft nicht – nimctl start"
   [inst_title]="Installation" [inst_missing]="fehlt" [inst_menu]="1) alles Fehlende installieren  2) PATH/Aliase  3) Autostart (systemd) an  4) Autostart aus  5) Shell-Completion%s  (Enter = zurück)"
-  [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_npm]="npm fehlt – Node.js installieren: %s" [inst_working]="installiere %s … (2–5 Min.)"
+  [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_alias_bad]="%s ist nicht ausführbar – neu installieren: curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash" [inst_path_hint]="nimctl ist in dieser Shell noch nicht im PATH – neues Terminal öffnen oder:  export PATH=\"\$HOME/.local/bin:\$PATH\"" [inst_npm]="npm fehlt – Node.js installieren: %s" [inst_working]="installiere %s … (2–5 Min.)"
   [sudo_jq]="jq/curl fehlen – Installation: %s" [tools_missing_ro]="%s fehlt – bitte installieren: nimctl install (oder: %s)"
   [proxy_rt]="Proxy-Roundtrip (wie Claude Code): %s" [proxy_rt_fail]="Proxy antwortet nicht wie erwartet: %s" [proxy_down]="Proxy läuft nicht → nimctl start"
 )
@@ -43,7 +43,7 @@ T_en+=(
   [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  5) Web UI  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
   [env_hint]="# For other tools (Aider, Continue, Zed, OpenAI SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# note: proxy is not running – nimctl start"
   [inst_title]="Installation" [inst_missing]="missing" [inst_menu]="1) install everything missing  2) PATH/aliases  3) autostart (systemd) on  4) autostart off  5) shell completion%s  (Enter = back)"
-  [inst_alias]="Commands available: nimctl, nimctl code" [inst_npm]="npm missing – install Node.js: %s" [inst_working]="installing %s … (2–5 min)"
+  [inst_alias]="Commands available: nimctl, nimctl code" [inst_alias_bad]="%s is not executable – reinstall: curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | bash" [inst_path_hint]="nimctl is not on this shell's PATH yet – open a new terminal or:  export PATH=\"\$HOME/.local/bin:\$PATH\"" [inst_npm]="npm missing – install Node.js: %s" [inst_working]="installing %s … (2–5 min)"
   [sudo_jq]="jq/curl missing – install: %s" [tools_missing_ro]="%s missing – please install: nimctl install (or: %s)"
   [proxy_rt]="Proxy round-trip (like Claude Code): %s" [proxy_rt_fail]="Proxy did not answer as expected: %s" [proxy_down]="proxy is not running → nimctl start"
 )
@@ -216,11 +216,20 @@ inst_litellm() { has litellm && return; inst_uv; info "$(tf inst_working litellm
 inst_webui()   { has open-webui && return; inst_uv; info "$(tf inst_working open-webui)"; uv tool install open-webui --python 3.11 >/dev/null 2>&1 && ok "open-webui" || bad "$(tf inst_fail open-webui)"; }
 inst_claude()  { has claude && return; has npm || { bad "$(tf inst_npm "$(pkg_hint nodejs npm)")"; return 1; }; info "$(tf inst_working claude)"; npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 && ok "claude" || bad "$(tf inst_fail claude)"; }
 inst_all()     { inst_base; inst_uv; inst_litellm; inst_webui; inst_claude; }
-inst_alias() { # PATH entry for bash and zsh, idempotent; symlink when nimctl lives elsewhere
-  local self line='export PATH="$HOME/.local/bin:$PATH"' rc; self=$(realpath_ "$0")
+inst_alias() { # PATH entry for bash and zsh, idempotent; ~/.local/bin/nimctl is this script: untouched when it already is (whatever the
+  # path spelling – a symlinked home, a trailing slash), a symlink when this runs from a git clone, a copy from anywhere else (a download, a temp dir)
+  local self link="$HOME/.local/bin/nimctl" line='export PATH="$HOME/.local/bin:$PATH"' rc cur; self=$(realpath_ "$0")
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do [[ -f "$rc" ]] || { [[ "$rc" == *bashrc ]] || continue; }; grep -qF '.local/bin' "$rc" 2>/dev/null || echo "$line" >>"$rc"; done
-  [[ "$self" == "$HOME/.local/bin/nimctl" ]] || { mkdir -p "$HOME/.local/bin"; ln -sf "$self" "$HOME/.local/bin/nimctl"; }
-  ok "$(t inst_alias)"
+  cur=$(realpath_ "$link" 2>/dev/null) || cur=""
+  if [[ "$cur" != "$self" ]]; then mkdir -p "$HOME/.local/bin"
+    if [[ -f "${self%/*}/build.sh" && -d "${self%/*}/src" ]]; then ln -sfn "$self" "$link"
+    else cp -f "$self" "$link.tmp" && chmod +x "$link.tmp" && mv -f "$link.tmp" "$link"; fi
+  fi
+  [[ -x "$link" ]] || { bad "$(tf inst_alias_bad "$link")"; return 1; }
+  ok "$(t inst_alias)"; path_hint
+}
+path_hint() { # the shell that started nimctl does not find it yet (fresh install): say what to do – only where a person reads it
+  (( INTERACTIVE )) || return 0; PATH="$PATH_ORIG" command -v nimctl >/dev/null 2>&1 || info "$(t inst_path_hint)"; return 0
 }
 act_install() {
   sect "$(t inst_title)"; local x extra=""; for x in uv jq litellm open-webui claude; do has "$x" && ok "$x" || bad "$x $(t inst_missing)"; done

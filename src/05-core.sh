@@ -29,6 +29,7 @@ PROVIDER="${NIMCTL_PROVIDER:-custom_openai}"
 KEY_URL="https://build.nvidia.com/settings/api-keys"
 RE_MODEL='^[A-Za-z0-9._/:-]+$'                        # the only shape a model id may have before it touches config/yaml/probes
 RE_KEY='^nvapi-[A-Za-z0-9_-]+$'
+PATH_ORIG="${NIMCTL_PATH_ORIG:-$PATH}"                # the caller's PATH (install.sh passes its own) – to tell when nimctl is not on it yet
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # Candidate patterns per slot: the ranking. `provider:regex` names a pool provider's catalog (src/22-pool.sh), a bare

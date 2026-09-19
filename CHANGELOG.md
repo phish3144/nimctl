@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.11.1] – 2026-09-19
+
+### Fixed
+- **`nimctl` could vanish from `~/.local/bin` after the wizard.** Its PATH step re-created `~/.local/bin/nimctl` as a
+  symlink to wherever nimctl was running from whenever that path was spelled differently (a home directory reached
+  through a symlink, a trailing slash) – on BSD/macOS `ln` that replaces the installed file with a link to itself –
+  and a wizard started from a downloaded copy left a link to that download behind. The step now leaves the file alone
+  when it already is this script, links only into a git clone and copies from anywhere else; `install.sh` from a
+  clone no longer trips over such a link. `nimctl doctor` checks `~/.local/bin/nimctl` (`--fix` restores it) and the
+  wizard, `install alias` and `doctor` say when the shell that started them does not find nimctl yet (fresh
+  install: open a new terminal or `export PATH="$HOME/.local/bin:$PATH"`).
+
 ## [1.11.0] – 2026-09-19
 
 ### Added

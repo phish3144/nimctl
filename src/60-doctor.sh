@@ -4,12 +4,14 @@ T_de+=(
   [doc_net]="NVIDIA erreichbar" [doc_net_no]="NVIDIA nicht erreichbar (%s)" [doc_perm]="Dateirechte auf %s: %s (sollte 700 sein)" [doc_perm_ok]="Dateirechte %s 700"
   [doc_awk]="awk fehlt" [doc_bash]="bash %s" [doc_svc_foreign]="Port %s belegt von %s" [doc_fixing]="Behebe …" [doc_remaining]="Verbleibend: %s"
   [doc_chat_db]="Chat spricht mit %s statt %s – Open WebUI hat die Verbindung einer älteren Version gespeichert; ein Chat-Neustart gleicht sie an"
+  [doc_bin]="%s fehlt oder ist nicht ausführbar – nimctl ist so nicht im PATH" [doc_bin_ok]="nimctl %s"
 )
 T_en+=(
   [doc_title]="Doctor – diagnosis" [doc_fix]="Fix it?" [doc_ok]="All good" [doc_issues]="%d issue(s): %s"
   [doc_net]="NVIDIA reachable" [doc_net_no]="NVIDIA unreachable (%s)" [doc_perm]="permissions on %s: %s (should be 700)" [doc_perm_ok]="permissions %s 700"
   [doc_awk]="awk missing" [doc_bash]="bash %s" [doc_svc_foreign]="port %s taken by %s" [doc_fixing]="Fixing …" [doc_remaining]="remaining: %s"
   [doc_chat_db]="chat talks to %s instead of %s – Open WebUI kept the connection of an older version; a chat restart aligns it"
+  [doc_bin]="%s missing or not executable – nimctl is not on the PATH this way" [doc_bin_ok]="nimctl %s"
 )
 DOC_ISSUES=()
 doc_issue() { DOC_ISSUES+=("$1"); }
@@ -18,6 +20,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   sect "$(t doc_title)"; DOC_ISSUES=()
   ok "$(tf doc_bash "$BASH_VERSION")"
   local x; for x in curl jq awk; do has "$x" && ok "$x" || { bad "$x $(t inst_missing)"; doc_issue "tool:$x"; }; done
+  local bin="$HOME/.local/bin/nimctl"; if [[ -x "$bin" ]]; then ok "$(tf doc_bin_ok "$bin$([[ -L "$bin" ]] && printf ' → %s' "$(realpath_ "$bin")")")"; else bad "$(tf doc_bin "$bin")"; doc_issue bin; fi; path_hint
   if curl -s -m 5 -o /dev/null "$API_BASE/models"; then ok "$(t doc_net) ($API_BASE)"; else bad "$(tf doc_net_no "$API_BASE")"; doc_issue net; fi
   if check_key; then ok "$(t key) $(t key_ok) ($(key_masked))"; local w; w=$(key_warning) && warn "$w"; else bad "$(t key): $KEY_STATE"; doc_issue key; fi
   pool_doctor
@@ -53,6 +56,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     tool:searxng) inst_searxng || remaining+=("$i");;
     tool:*) "inst_${i#tool:}" 2>/dev/null; has "${i#tool:}" || remaining+=("$i");;
     perm) chmod 700 "$NIM_DIR" && ok "chmod 700 $NIM_DIR" || remaining+=("$i");;
+    bin) inst_alias || remaining+=("$i");;
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
     model:*) auto_select "${i#model:}" || remaining+=("$i");;
     pool:*) auto_select "${SLOTS[@]}" || remaining+=("$i");;
