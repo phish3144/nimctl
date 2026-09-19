@@ -66,7 +66,7 @@ scan_provider() { # scan_provider <nim|provider> <sizes 0|1> – probes the cata
 scan_use() { # scan_use <slot> <id…> – append to the slot's line in ~/.nimctl/discovered
   local slot="$1" cur="" m; shift; [[ -f "$DISCOVERED_FILE" ]] && cur=$(grep -E "^${slot}:" "$DISCOVERED_FILE" | head -n1); cur="${cur#*:}"
   for m in "$@"; do [[ " $cur " == *" $m "* ]] || cur+=" $m"; done
-  { [[ -f "$DISCOVERED_FILE" ]] && grep -vE "^${slot}:" "$DISCOVERED_FILE"; printf '%s:%s\n' "$slot" "${cur# }"; } >"$DISCOVERED_FILE.tmp" && mv "$DISCOVERED_FILE.tmp" "$DISCOVERED_FILE"
+  { [[ -f "$DISCOVERED_FILE" ]] && grep -vE "^${slot}:" "$DISCOVERED_FILE"; printf '%s: %s\n' "$slot" "${cur# }"; } >"$DISCOVERED_FILE.tmp" && mv "$DISCOVERED_FILE.tmp" "$DISCOVERED_FILE"   # "code: id id …" like ~/.nimctl/candidates
 }
 scan_discover() { # scan_discover <use 0|1> <nim|provider…> – responders of the scanned providers that qualify for a slot but sit in no ranking
   local use="$1"; shift; local scanned=" $* " slot m res tools p listed any=0 found=() line; [[ -s "$PROBES" ]] || return 0
