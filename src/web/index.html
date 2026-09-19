@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%274%27 fill=%27%232a78d6%27/%3E%3Ctext x=%278%27 y=%2712%27 font-size=%2710%27 text-anchor=%27middle%27 fill=%27white%27 font-family=%27sans-serif%27 font-weight=%27700%27%3En%3C/text%3E%3C/svg%3E">
+<title>nimctl</title>
+<style>
+/* nimctl web UI – written to ~/.nimctl/web/index.html by nimctl (src/55-web.sh, embedded by build.sh). Vanilla HTML/JS,
+   nothing loaded from the network. Colors follow one role palette in light and dark; series colors are used for marks
+   only, text always wears the ink tokens. */
+:root {
+  color-scheme: light;
+  --bg:#f9f9f7; --surface:#fcfcfb; --surface-2:#f0efec; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --grid:#e1e0d9; --axis:#c3c2b7;
+  --border:rgba(11,11,11,.10); --accent:#2a78d6; --accent-ink:#ffffff; --track:#cde2fb;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300;
+  --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b; --good-text:#006300; --crit-text:#b32b2b;
+  --shadow:0 1px 2px rgba(11,11,11,.06), 0 4px 16px rgba(11,11,11,.04);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark;
+  --bg:#0d0d0d; --surface:#1a1a19; --surface-2:#242422; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835;
+  --border:rgba(255,255,255,.10); --accent:#3987e5; --accent-ink:#ffffff; --track:#184f95;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --good-text:#0ca30c; --crit-text:#e66767;
+  --shadow:0 1px 2px rgba(0,0,0,.4); } }
+:root[data-theme="dark"] { color-scheme: dark;
+  --bg:#0d0d0d; --surface:#1a1a19; --surface-2:#242422; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835;
+  --border:rgba(255,255,255,.10); --accent:#3987e5; --accent-ink:#ffffff; --track:#184f95;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --good-text:#0ca30c; --crit-text:#e66767;
+  --shadow:0 1px 2px rgba(0,0,0,.4); }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: inherit; }
+.top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.brand { font-weight: 650; font-size: 16px; letter-spacing: .01em; display: flex; align-items: center; gap: 8px; }
+.brand small { color: var(--muted); font-weight: 400; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--ink2); cursor: pointer; }
+nav button:hover { background: var(--surface-2); color: var(--ink); }
+nav button[aria-current="page"] { background: var(--accent); color: var(--accent-ink); }
+.topright { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.busy { display: none; align-items: center; gap: 6px; color: var(--ink2); font-size: 13px; }
+.busy.on { display: inline-flex; }
+.spin { width: 12px; height: 12px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+main { max-width: 1240px; margin: 0 auto; padding: 16px; padding-bottom: 260px; }
+.page { display: none; } .page.on { display: block; }
+h1 { font-size: 20px; margin: 4px 0 12px; font-weight: 650; }
+h2 { font-size: 15px; margin: 0 0 8px; font-weight: 650; }
+h3 { font-size: 13px; margin: 12px 0 6px; font-weight: 600; color: var(--ink2); text-transform: uppercase; letter-spacing: .04em; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); align-items: start; }
+.grid.wide { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
+.kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-bottom: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; box-shadow: var(--shadow); min-width: 0; }
+.card.span2 { grid-column: span 2; } @media (max-width: 720px) { .card.span2 { grid-column: span 1; } }
+.tile .label { color: var(--ink2); font-size: 13px; }
+.tile .value { font-size: 28px; font-weight: 600; line-height: 1.2; margin: 4px 0 2px; }
+.tile .sub { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row.between { justify-content: space-between; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--surface-2); color: var(--ink2); white-space: nowrap; }
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.good .dot { background: var(--good); } .pill.warn .dot { background: var(--warn); } .pill.crit .dot { background: var(--crit); }
+.pill.good { color: var(--good-text); } .pill.crit { color: var(--crit-text); }
+.muted { color: var(--muted); } .small { font-size: 12px; } .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.tnum { font-variant-numeric: tabular-nums; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; color: var(--ink); white-space: nowrap; }
+.btn:hover { background: var(--surface-2); } .btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; } .btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--crit-text); border-color: var(--crit); } .btn.small { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+.btn.ghost { border-color: transparent; background: none; color: var(--ink2); }
+input[type=text], input[type=password], input[type=number], select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink); }
+input:disabled { opacity: .6; } textarea { min-height: 70px; resize: vertical; }
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink2); }
+label.field .help { font-size: 12px; color: var(--muted); }
+label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+th { color: var(--ink2); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+.notice { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); border-left: 3px solid var(--warn); margin-bottom: 12px; }
+.notice.crit { border-left-color: var(--crit); } .notice.good { border-left-color: var(--good); }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 6px 10px; font-size: 12px; min-width: 120px; display: none; z-index: 5; }
+.chart .tip .k { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.chart .tip .k b { font-variant-numeric: tabular-nums; }
+.chart .tip .key { width: 12px; height: 0; border-top: 2px solid var(--muted); }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--ink2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.legend i.line { height: 0; border-top: 2px solid; border-radius: 0; }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.chart-head .sub { color: var(--muted); font-size: 12px; }
+.filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.filters .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.filters .seg button { border: 0; background: var(--surface); padding: 5px 10px; cursor: pointer; color: var(--ink2); }
+.filters .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.meter { height: 10px; border-radius: 5px; background: var(--track); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); border-radius: 5px; }
+.meter.warn i { background: var(--warn); } .meter.crit i { background: var(--crit); }
+.bar-track { height: 6px; background: var(--grid); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.bar-track i { display: block; height: 100%; background: var(--s1); border-radius: 0 3px 3px 0; }
+.list { max-height: 420px; overflow: auto; border: 1px solid var(--grid); border-radius: 8px; }
+.list .item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.list .item:last-child { border-bottom: 0; } .list .item .id { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -4px 20px rgba(0,0,0,.12); transition: height .2s; height: 240px; display: flex; flex-direction: column; }
+.console.collapsed { height: 36px; }
+.console-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.console-bar .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console pre { margin: 0; padding: 8px 12px; flex: 1; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.log { max-height: 460px; overflow: auto; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.toast { position: fixed; top: 60px; right: 16px; z-index: 40; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 10px 14px; max-width: 360px; display: none; }
+.toast.on { display: block; }
+.hidden { display: none !important; }
+.slot-model { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+details summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
+kbd { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.sr { position: absolute; left: -9999px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">nimctl <small id="version"></small></div>
+  <nav id="nav" aria-label="Sections"></nav>
+  <div class="topright">
+    <span class="busy" id="busy"><span class="spin"></span><span id="busy-text"></span></span>
+    <button class="btn small ghost" id="theme" title="Theme">◐</button>
+  </div>
+</header>
+<main>
+  <div id="notices"></div>
+  <section id="page-overview" class="page"></section>
+  <section id="page-models" class="page"></section>
+  <section id="page-pool" class="page"></section>
+  <section id="page-services" class="page"></section>
+  <section id="page-stats" class="page"></section>
+  <section id="page-settings" class="page"></section>
+</main>
+<div class="toast" id="toast"></div>
+<aside class="console collapsed" id="console" aria-label="Console">
+  <div class="console-bar">
+    <span class="title" id="console-title"></span>
+    <button class="btn small danger hidden" id="console-abort"></button>
+    <button class="btn small ghost" id="console-clear"></button>
+    <button class="btn small ghost" id="console-toggle">▲</button>
+  </div>
+  <pre id="console-out"></pre>
+</aside>
+<script>
+'use strict';
+const NIMCTL = { token: '__TOKEN__', lang: '__LANG__', port: '__PORT__' };
+const L = NIMCTL.lang === 'de' ? 'de' : 'en';
+const T = {
+de: {
+  overview:'Übersicht', models:'Modelle', pool:'Pool', services:'Dienste', stats:'Statistik', settings:'Einstellungen', console:'Konsole',
+  requests:'Anfragen', since:'seit %s', c429:'429 (Rate-Limit)', fallbacks:'Fallbacks', throttled:'Gebremst (Budget)', errors:'Fehler',
+  budget:'Budget', budget_sub:'%s von %s frei · %s wartend', budget_stale:'Proxy-Budget: keine frischen Daten', per_min:'/min',
+  key:'Key', key_ok:'gültig', key_none:'kein Key', key_bad:'ungültig/abgelaufen', key_off:'NVIDIA nicht erreichbar', key_unk:'nicht geprüft', checked:'geprüft %s', expires:'läuft in ~%s Tagen ab',
+  proxy:'Proxy', chat:'Chat', ide:'IDE', search:'Suche', web:'Web-UI', up:'läuft', down:'aus', foreign:'fremd (Port belegt)', by:'via %s', pid:'PID %s', port:'Port %s', enabled:'aktiviert', disabled:'nicht aktiviert',
+  open:'Öffnen', start:'Starten', stop:'Stoppen', restart:'Neustart', start_all:'Alle starten', stop_all:'Alle stoppen', restart_all:'Alle neu starten', install:'Installieren', disable:'Deaktivieren', enable:'Aktivieren',
+  auto:'Auto-Wahl', auto_all:'Alle Slots automatisch wählen', probe:'Prüfen', probe_all:'Gewählte Modelle prüfen', doctor:'Doctor', doctor_fix:'Doctor mit Reparatur', test:'Testen', bench:'Bench', bench_all:'Bench aller Slots',
+  slot:'Slot', model:'Modell', state:'Status', latency:'Latenz', tools:'Tools', probed:'geprüft', answers:'antwortet', unprobed:'nicht geprüft', notools:'keine Tool-Calls', tools_ok:'Tool-Calls ✓', none:'– keins –',
+  slot_code:'Claude Code', slot_fast:'Nebenaufgaben & Fallback', slot_chat:'Browser-Chat', slot_review:'großes Modell (nimctl code --model review)',
+  pick:'Wählen', set_slot:'→ %s', catalog:'Katalog', catalog_hint:'Suchen und direkt einem Slot zuweisen – das Modell wird vorher geprüft. Pool-Modelle stehen als anbieter:id dabei.', search_ph:'Suchbegriff, z. B. deepseek, nemotron, groq:',
+  candidates:'Kandidaten-Muster', candidates_hint:'Reguläre Ausdrücke gegen den Katalog, in Reihenfolge; das erste Muster mit einem antwortenden Modell gewinnt. Leer = Standard.', effective:'wirksam', save:'Speichern', saved:'gespeichert', reset:'Zurücksetzen',
+  test_title:'Prompt schicken', test_model:'Modell oder Slot', prompt:'Prompt', send:'Senden', bench_last:'Letzte Bench-Werte', ttft:'Zeit bis 1. Token', toks:'Tokens/s', no_data:'noch keine Daten',
+  pool_hint:'NVIDIA bleibt erste Wahl. Scheitert eine Anfrage dort (keine Antwort für %s s, 429, 5xx), übernimmt der Pool – Anbieter in dieser Reihenfolge.', pool_key:'API-Key', pool_add:'Key prüfen & übernehmen', pool_remove:'Entfernen', pool_auto:'Modelle neu wählen', pool_test:'Pool-Roundtrip', pool_key_url:'Key erzeugen', pool_none:'kein Key',
+  note_groq:'~30 Anfragen/min, ~1.000/Tag, keine Karte nötig', note_gemini:'10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen', note_cerebras:'~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell', note_openrouter:'20 Anfragen/min, 50/Tag (1.000 ab 10 $ Guthaben), nur :free-Modelle', note_mistral:'Experiment-Tier: ~1 Anfrage/s, 1 Mrd. Tokens/Monat; Daten dürfen zum Training genutzt werden',
+  logs:'Logs', live:'live', log_of:'Log: %s', accounts:'Chat-Konten', users:'Konten anzeigen', passwd:'Passwort setzen', email:'E-Mail', password:'Passwort', admin:'Admin', reset_accounts:'Alle Konten löschen', reset_confirm:'Wirklich alle Chat-Konten löschen? Chats bleiben, gehören aber niemandem mehr.',
+  workspace:'Projektordner der IDE', workspace_hint:'Ordner, den code-server öffnet und in dem das Shell-Werkzeug arbeitet', autocomplete:'Autocomplete (Continue)', ide_password:'IDE-Passwort anzeigen', ide_password_reset:'IDE-Passwort neu erzeugen', ide_config:'IDE-Konfiguration neu schreiben',
+  autostart:'Autostart (systemd --user)', autostart_on:'Autostart einrichten', autostart_off:'Autostart entfernen', watch_timer:'Watchdog-Timer einrichten', watch_now:'Watchdog jetzt laufen lassen', alias:'PATH/Aliase einrichten', completion:'Shell-Completion einrichten', install_all:'Fehlende Werkzeuge installieren', update_check:'Update prüfen', update:'Update einspielen',
+  range:'Zeitraum', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Anfragen pro Minute', req_sub:'aus dem Proxy-Log, alle 30 s abgetastet', events:'429, Fallbacks, gebremst', events_sub:'je Intervall', budget_hist:'Freies Budget', budget_hist_sub:'freie Slots pro Minute (NIMCTL_RPM)', status_classes:'Status-Klassen', paths:'Häufigste Pfade', model_latency:'Modell-Latenz (Probe)', bench_ttft:'Bench: Zeit bis zum ersten Token', bench_toks:'Bench: Tokens pro Sekunde', table:'Tabelle', chart:'Diagramm', time:'Zeit', value:'Wert', count:'Anzahl', free:'frei', waiting:'wartend',
+  s_key:'NVIDIA API-Key', s_key_hint:'Beginnt mit nvapi-, ~6 Monate gültig. Wird bei NVIDIA geprüft, bevor er gespeichert wird.', s_key_new:'Neuer Key', s_key_save:'Key prüfen & speichern',
+  s_proxy:'Proxy & Budget', s_net:'Ports & Netzwerk', s_probe:'Prüfung', s_ide:'IDE & Suche', s_ui:'Oberfläche', s_maint:'Wartung', s_danger:'Gefahrenzone',
+  s_rpm:'Anfragen pro Minute (Budget)', s_rpm_h:'Token-Bucket für den ganzen NVIDIA-Key; Anfragen darüber warten', s_rpm_wait:'Maximale Wartezeit (s)', s_rpm_wait_h:'danach antwortet der Proxy 429 mit Retry-After', s_stall:'Stillstand-Timeout (s)', s_stall_h:'schickt ein Modell so lange nichts, geht die Anfrage zum Fallback', s_maxout:'Max. Ausgabe-Tokens (Claude Code)', s_chat_via:'Chat über den Proxy', s_yes:'ja', s_no:'nein (direkt zu NVIDIA)',
+  s_port_proxy:'Proxy-Port', s_port_chat:'Chat-Port', s_port_ide:'IDE-Port', s_port_search:'Such-Port', s_port_web:'Web-UI-Port', s_bind:'Adresse der Dienste', s_bind_h:'127.0.0.1 = nur dieser Rechner; 0.0.0.0 macht alle Dienste im Netz erreichbar',
+  s_probe_to:'Probe-Timeout (s)', s_reprobe:'Neu prüfen nach (h)', s_keywarn:'Key-Warnung nach (Tagen)', s_ide_ctx:'Kontextlänge für Continue', s_ide_ext:'Zusätzliche Erweiterungen (Open VSX)', s_search_n:'Suchergebnisse je Anfrage', s_lang:'Sprache', s_lang_auto:'automatisch ($LANG)', s_theme:'Farbschema', theme_auto:'System', theme_light:'Hell', theme_dark:'Dunkel',
+  s_env:'aus der Umgebung – hier nicht änderbar', s_default:'Standard: %s', s_restart_needed:'Einstellungen gespeichert – wirksam nach Neustart der Dienste.', restart_now:'Jetzt neu starten',
+  config_changed:'Konfiguration geändert – der Proxy läuft noch mit der alten. Neustart?', key_warn:'Der NVIDIA-Key läuft in ~%s Tagen ab – neuen Key erzeugen.', key_expired:'Der NVIDIA-Key ist vermutlich abgelaufen (älter als 180 Tage).',
+  running:'läuft: %s', done_ok:'fertig (%s s)', done_fail:'beendet mit Code %s (%s s)', busy:'Es läuft bereits ein Befehl.', abort:'Abbrechen', clear:'Leeren', restart_after:'Dienste danach neu starten', offline:'Web-UI nicht erreichbar – läuft der Dienst? nimctl web', forbidden:'Zugriff verweigert (Token) – Seite neu laden.',
+  extra_models:'Zusätzliche Modelle im Proxy', help_slots:'code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell', version_hint:'nimctl %s · %s', ago_s:'vor %ss', ago_m:'vor %s min', ago_h:'vor %s h', ago_d:'vor %s d', never:'nie',
+  tool_present:'vorhanden', tool_missing:'fehlt', tools_row:'Werkzeuge', show:'Anzeigen', hide:'Verbergen', links:'Links', open_chat:'Chat öffnen', open_ide:'IDE öffnen', open_search:'Suche öffnen', proxy_url:'Proxy-URL', master_key:'Proxy-Master-Key', env_lines:'Export-Zeilen für andere Werkzeuge',
+},
+en: {
+  overview:'Overview', models:'Models', pool:'Pool', services:'Services', stats:'Statistics', settings:'Settings', console:'Console',
+  requests:'Requests', since:'since %s', c429:'429 (rate limit)', fallbacks:'Fallbacks', throttled:'Throttled (budget)', errors:'Errors',
+  budget:'Budget', budget_sub:'%s of %s free · %s waiting', budget_stale:'proxy budget: no fresh data', per_min:'/min',
+  key:'Key', key_ok:'valid', key_none:'no key', key_bad:'invalid/expired', key_off:'NVIDIA unreachable', key_unk:'not checked', checked:'checked %s', expires:'expires in ~%s days',
+  proxy:'Proxy', chat:'Chat', ide:'IDE', search:'Search', web:'Web UI', up:'up', down:'down', foreign:'foreign (port taken)', by:'via %s', pid:'PID %s', port:'port %s', enabled:'enabled', disabled:'not enabled',
+  open:'Open', start:'Start', stop:'Stop', restart:'Restart', start_all:'Start all', stop_all:'Stop all', restart_all:'Restart all', install:'Install', disable:'Disable', enable:'Enable',
+  auto:'Auto-select', auto_all:'Auto-select all slots', probe:'Probe', probe_all:'Probe the selected models', doctor:'Doctor', doctor_fix:'Doctor with repair', test:'Test', bench:'Bench', bench_all:'Bench all slots',
+  slot:'Slot', model:'Model', state:'State', latency:'Latency', tools:'Tools', probed:'probed', answers:'responds', unprobed:'not probed', notools:'no tool calls', tools_ok:'tool calls ✓', none:'– none –',
+  slot_code:'Claude Code', slot_fast:'side tasks & fallback', slot_chat:'browser chat', slot_review:'big model (nimctl code --model review)',
+  pick:'Pick', set_slot:'→ %s', catalog:'Catalog', catalog_hint:'Search and assign to a slot directly – the model is probed first. Pool models are listed as provider:id.', search_ph:'search, e.g. deepseek, nemotron, groq:',
+  candidates:'Candidate patterns', candidates_hint:'Regular expressions matched against the catalog, in order; the first pattern with a responding model wins. Empty = default.', effective:'effective', save:'Save', saved:'saved', reset:'Reset',
+  test_title:'Send a prompt', test_model:'Model or slot', prompt:'Prompt', send:'Send', bench_last:'Last bench results', ttft:'Time to first token', toks:'Tokens/s', no_data:'no data yet',
+  pool_hint:'NVIDIA stays first. When a request fails there (no answer for %s s, 429, 5xx) the pool takes over – providers in this order.', pool_key:'API key', pool_add:'Check key & add', pool_remove:'Remove', pool_auto:'Re-select models', pool_test:'Pool round trip', pool_key_url:'create a key', pool_none:'no key',
+  note_groq:'~30 requests/min, ~1,000/day, no card needed', note_gemini:'10–15 requests/min, 250–1,000/day; Google may train on free-tier data', note_cerebras:'~30 requests/min, 1M tokens/day, very fast', note_openrouter:'20 requests/min, 50/day (1,000 with $10 credit), :free models only', note_mistral:'experiment tier: ~1 request/s, 1B tokens/month; data may be used for training',
+  logs:'Logs', live:'live', log_of:'Log: %s', accounts:'Chat accounts', users:'Show accounts', passwd:'Set password', email:'Email', password:'Password', admin:'Admin', reset_accounts:'Delete all accounts', reset_confirm:'Really delete all chat accounts? Chats stay but belong to nobody.',
+  workspace:'IDE project folder', workspace_hint:'The folder code-server opens and the shell tool runs in', autocomplete:'Autocomplete (Continue)', ide_password:'Show IDE password', ide_password_reset:'Regenerate IDE password', ide_config:'Rewrite IDE configuration',
+  autostart:'Autostart (systemd --user)', autostart_on:'Enable autostart', autostart_off:'Remove autostart', watch_timer:'Set up watchdog timer', watch_now:'Run the watchdog now', alias:'Set up PATH/aliases', completion:'Set up shell completion', install_all:'Install missing tools', update_check:'Check for updates', update:'Update',
+  range:'Range', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Requests per minute', req_sub:'from the proxy log, sampled every 30 s', events:'429, fallbacks, throttled', events_sub:'per interval', budget_hist:'Free budget', budget_hist_sub:'free slots per minute (NIMCTL_RPM)', status_classes:'Status classes', paths:'Top paths', model_latency:'Model latency (probe)', bench_ttft:'Bench: time to first token', bench_toks:'Bench: tokens per second', table:'Table', chart:'Chart', time:'Time', value:'Value', count:'Count', free:'free', waiting:'waiting',
+  s_key:'NVIDIA API key', s_key_hint:'Starts with nvapi-, valid ~6 months. Checked at NVIDIA before it is saved.', s_key_new:'New key', s_key_save:'Check & save key',
+  s_proxy:'Proxy & budget', s_net:'Ports & network', s_probe:'Probing', s_ide:'IDE & search', s_ui:'Interface', s_maint:'Maintenance', s_danger:'Danger zone',
+  s_rpm:'Requests per minute (budget)', s_rpm_h:'token bucket for the whole NVIDIA key; requests beyond it wait', s_rpm_wait:'Maximum wait (s)', s_rpm_wait_h:'then the proxy answers 429 with Retry-After', s_stall:'Stall timeout (s)', s_stall_h:'a model that sends nothing for this long is given up and the request goes to the fallback', s_maxout:'Max output tokens (Claude Code)', s_chat_via:'Chat through the proxy', s_yes:'yes', s_no:'no (directly to NVIDIA)',
+  s_port_proxy:'Proxy port', s_port_chat:'Chat port', s_port_ide:'IDE port', s_port_search:'Search port', s_port_web:'Web UI port', s_bind:'Service address', s_bind_h:'127.0.0.1 = this machine only; 0.0.0.0 exposes every service on the network',
+  s_probe_to:'Probe timeout (s)', s_reprobe:'Re-probe after (h)', s_keywarn:'Key warning after (days)', s_ide_ctx:'Context length for Continue', s_ide_ext:'Extra extensions (Open VSX)', s_search_n:'Search results per query', s_lang:'Language', s_lang_auto:'automatic ($LANG)', s_theme:'Color scheme', theme_auto:'System', theme_light:'Light', theme_dark:'Dark',
+  s_env:'from the environment – not editable here', s_default:'default: %s', s_restart_needed:'Settings saved – they apply after the services restart.', restart_now:'Restart now',
+  config_changed:'Configuration changed – the proxy still runs the old one. Restart?', key_warn:'The NVIDIA key expires in ~%s days – create a new one.', key_expired:'The NVIDIA key has probably expired (older than 180 days).',
+  running:'running: %s', done_ok:'done (%s s)', done_fail:'exited with code %s (%s s)', busy:'A command is already running.', abort:'Abort', clear:'Clear', restart_after:'Restart services afterwards', offline:'Web UI unreachable – is the service running? nimctl web', forbidden:'Access denied (token) – reload the page.',
+  extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
+  tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
+}};
+const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
+const SLOTS = ['code', 'fast', 'chat', 'review'];
+const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
+const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
+
+// ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'dataset') Object.assign(e.dataset, v); else if (k === 'style') e.style.cssText = v; else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) { if (kid == null || kid === false) continue; e.append(kid.nodeType ? kid : document.createTextNode(String(kid))); }
+  return e;
+}
+const $ = (id) => document.getElementById(id);
+function clear(e) { while (e.firstChild) e.removeChild(e.firstChild); return e; }
+function ago(epoch) { if (!epoch) return t('never'); const d = Math.max(0, Math.floor(Date.now() / 1000 - epoch)); return d < 60 ? t('ago_s', d) : d < 3600 ? t('ago_m', Math.floor(d / 60)) : d < 86400 ? t('ago_h', Math.floor(d / 3600)) : t('ago_d', Math.floor(d / 86400)); }
+function hhmm(epoch) { return epoch ? new Date(epoch * 1000).toLocaleTimeString(L === 'de' ? 'de-DE' : 'en-GB', { hour: '2-digit', minute: '2-digit' }) : '–'; }
+function fmtN(n) { return (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString(L === 'de' ? 'de-DE' : 'en-US'); }
+function toast(msg, kind) { const e = $('toast'); e.textContent = msg; e.className = 'toast on' + (kind ? ' ' + kind : ''); clearTimeout(toast.tm); toast.tm = setTimeout(() => { e.className = 'toast'; }, 3500); }
+function pill(kind, text) { return h('span', { class: 'pill ' + (kind || '') }, h('span', { class: 'dot' }), text); }
+function btn(label, onclick, cls) { return h('button', { class: 'btn' + (cls ? ' ' + cls : ''), onclick }, label); }
+function field(label, input, help) { return h('label', { class: 'field' }, label, input, help ? h('span', { class: 'help' }, help) : null); }
+
+// ── API ───────────────────────────────────────────────────────────────────────────────────────────────────
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: { 'X-Nimctl-Token': NIMCTL.token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 403) { toast(t('forbidden'), 'crit'); throw new Error('forbidden'); }
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+let S = null, STATS = null, HIST = [], CANDS = null, page = location.hash.replace('#', '') || 'overview';
+let lastState = 0;
+async function refresh(force) {
+  try {
+    const [s, st] = await Promise.all([api('/api/state'), api('/api/stats')]);
+    S = s; STATS = st; lastState = Date.now(); $('version').textContent = s.version ? 'v' + s.version : '';
+    renderNotices(); renderBusy(); renderPage(force);
+  } catch (e) { if (e.message !== 'forbidden') toast(t('offline'), 'crit'); }
+}
+async function loadHistory() { try { HIST = await api('/api/history'); if (page === 'stats' || page === 'overview') renderPage(); } catch (e) { /* offline */ } }
+async function loadCandidates() { try { CANDS = await api('/api/candidates'); } catch (e) { CANDS = {}; } }
+
+// ── console: run a nimctl command and stream its output ──────────────────────────────────────────────────
+let running = false;
+async function run(args, opts = {}) {
+  if (running) { toast(t('busy'), 'warn'); return false; }
+  running = true; renderBusy(args);
+  const con = $('console'); con.classList.remove('collapsed'); $('console-toggle').textContent = '▼';
+  const out = $('console-out'); if (!opts.append) out.textContent = '';
+  $('console-title').textContent = t('running', 'nimctl ' + args.join(' ')); $('console-abort').classList.remove('hidden');
+  let ok = false;
+  try {
+    const r = await fetch('/api/run', { method: 'POST', headers: { 'X-Nimctl-Token': NIMCTL.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ args, stdin: opts.stdin || '', env: opts.env || {}, yes: opts.yes !== false }) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); toast(j.error === 'busy' ? t('busy') : (j.error || r.status), 'crit'); return false; }
+    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, i); buf = buf.slice(i + 2); let ev = 'message', data = null;
+        for (const line of block.split('\n')) { if (line.startsWith('event:')) ev = line.slice(6).trim(); else if (line.startsWith('data:')) data = JSON.parse(line.slice(5)); }
+        if (ev === 'message' && typeof data === 'string') { out.textContent += data + '\n'; out.scrollTop = out.scrollHeight; }
+        else if (ev === 'exit') { ok = data.rc === 0; $('console-title').textContent = 'nimctl ' + args.join(' ') + ' · ' + (ok ? t('done_ok', data.seconds) : t('done_fail', data.rc, data.seconds)); toast(ok ? t('done_ok', data.seconds) : t('done_fail', data.rc, data.seconds), ok ? 'good' : 'crit'); }
+      }
+    }
+  } catch (e) { toast(String(e), 'crit'); }
+  finally { running = false; $('console-abort').classList.add('hidden'); renderBusy(); refresh(true); loadHistory(); }
+  return ok;
+}
+function renderBusy(args) { const b = $('busy'); const a = args || (S && S.busy); b.classList.toggle('on', !!a); $('busy-text').textContent = a ? 'nimctl ' + a.join(' ') : ''; }
+
+// ── charts (SVG, palette roles, hover layer, table twin) ──────────────────────────────────────────────────
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs, ...kids) { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v); kids.forEach(k => k && e.append(k)); return e; }
+function niceMax(v) { if (!(v > 0)) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; const n = m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10; return n * p; }
+function chartCard(title, sub, build, tableBuild) { // a card with title, chart/table toggle and the hover tooltip
+  const body = h('div', { class: 'chart' }); const tip = h('div', { class: 'tip' }); body.append(tip);
+  const tbl = h('div', { class: 'hidden' }); let showTable = false;
+  const toggle = h('button', { class: 'btn small ghost', onclick: () => { showTable = !showTable; body.classList.toggle('hidden', showTable); tbl.classList.toggle('hidden', !showTable); toggle.textContent = showTable ? t('chart') : t('table'); if (showTable) { clear(tbl).append(tableBuild()); } } }, t('table'));
+  const card = h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('div', null, h('h2', null, title), sub ? h('div', { class: 'sub' }, sub) : null), toggle), body, tbl);
+  build(body, tip);
+  return card;
+}
+function showTip(tip, host, x, y, rows) { clear(tip); rows.forEach(r => tip.append(h('div', { class: 'k' }, h('span', { class: 'row', style: 'gap:6px' }, r.color ? h('span', { class: 'key', style: 'border-color:' + r.color }) : null, h('span', { class: 'muted' }, r.label)), h('b', null, r.value)))); tip.style.display = 'block'; const w = host.clientWidth; tip.style.left = Math.min(x + 12, w - tip.offsetWidth - 4) + 'px'; tip.style.top = Math.max(0, y - 10) + 'px'; }
+function lineChart(host, tip, { series, xs, fmtX, fmtY, height = 180 }) { // series: [{name, color, values}], shared xs (epoch)
+  clear(host); host.append(tip);
+  const W = Math.max(320, host.clientWidth || 600), padL = 44, padR = 12, padT = 10, padB = 24, ih = height, iw = W - padL - padR;
+  const n = xs.length; const ymax = niceMax(Math.max(1, ...series.flatMap(s => s.values))); const yTicks = 4;
+  const sx = i => padL + (n > 1 ? i / (n - 1) : .5) * iw, sy = v => padT + ih - (v / ymax) * ih;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${ih + padT + padB}`, role: 'img' });
+  for (let k = 0; k <= yTicks; k++) { const v = ymax * k / yTicks, y = sy(v); svg.append(svgEl('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: k === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 })); svg.append(svgEl('text', { x: padL - 6, y: y + 4, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 11 }, document.createTextNode(fmtY ? fmtY(v) : fmtN(v)))); }
+  const xt = Math.min(6, n); for (let k = 0; k < xt; k++) { const i = Math.round(k * (n - 1) / Math.max(1, xt - 1)); if (xs[i] == null) continue; svg.append(svgEl('text', { x: sx(i), y: padT + ih + 16, 'text-anchor': k === 0 ? 'start' : k === xt - 1 ? 'end' : 'middle', fill: 'var(--muted)', 'font-size': 11 }, document.createTextNode(fmtX(xs[i])))); }
+  if (n === 0) { svg.append(svgEl('text', { x: W / 2, y: padT + ih / 2, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 12 }, document.createTextNode(t('no_data')))); host.append(svg); return; }
+  series.forEach((s, si) => {
+    const d = s.values.map((v, i) => (i ? 'L' : 'M') + sx(i).toFixed(1) + ',' + sy(v).toFixed(1)).join(' ');
+    if (series.length === 1) svg.append(svgEl('path', { d: d + ` L${sx(n - 1).toFixed(1)},${sy(0)} L${sx(0).toFixed(1)},${sy(0)} Z`, fill: s.color, opacity: .1 }));
+    svg.append(svgEl('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    const last = n - 1; svg.append(svgEl('circle', { cx: sx(last), cy: sy(s.values[last]), r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }));
+  });
+  const cross = svgEl('line', { x1: 0, x2: 0, y1: padT, y2: padT + ih, stroke: 'var(--axis)', 'stroke-width': 1, opacity: 0 }); svg.append(cross);
+  const dots = series.map(s => { const c = svgEl('circle', { r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2, opacity: 0 }); svg.append(c); return c; });
+  const hit = svgEl('rect', { x: padL, y: padT, width: iw, height: ih, fill: 'transparent' }); svg.append(hit);
+  const move = (ev) => { const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) * W / r.width; const i = Math.max(0, Math.min(n - 1, Math.round((px - padL) / iw * (n - 1)))); cross.setAttribute('x1', sx(i)); cross.setAttribute('x2', sx(i)); cross.setAttribute('opacity', 1); dots.forEach((c, si) => { c.setAttribute('cx', sx(i)); c.setAttribute('cy', sy(series[si].values[i])); c.setAttribute('opacity', 1); }); showTip(tip, host, (ev.clientX - r.left), (ev.clientY - r.top), [{ label: t('time'), value: fmtX(xs[i], true) }, ...series.map(s => ({ label: s.name, value: fmtY ? fmtY(s.values[i]) : fmtN(s.values[i]), color: s.color }))]); };
+  hit.addEventListener('pointermove', move); hit.addEventListener('pointerleave', () => { cross.setAttribute('opacity', 0); dots.forEach(c => c.setAttribute('opacity', 0)); tip.style.display = 'none'; });
+  host.append(svg);
+  if (series.length > 1) host.append(h('div', { class: 'legend' }, series.map(s => h('span', null, h('i', { class: 'line', style: 'border-color:' + s.color }), s.name))));
+}
+function hbarChart(host, tip, { rows, fmt, color = 'var(--s1)', height }) { // rows: [{label, value, detail?, color?}] – one hue, values at the tip
+  clear(host); host.append(tip);
+  if (!rows.length) { host.append(h('div', { class: 'muted small', style: 'padding:12px 0' }, t('no_data'))); return; }
+  const W = Math.max(320, host.clientWidth || 600), labelW = Math.min(240, Math.round(W * .38)), rowH = 28, barH = 16, padR = 64;
+  const max = niceMax(Math.max(...rows.map(r => r.value || 0))); const iw = W - labelW - padR;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${rows.length * rowH + 4}`, role: 'img' });
+  rows.forEach((r, i) => {
+    const y = i * rowH + (rowH - barH) / 2; const w = Math.max(0, (r.value || 0) / max * iw);
+    const lab = svgEl('text', { x: labelW - 8, y: y + barH - 3, 'text-anchor': 'end', fill: 'var(--ink2)', 'font-size': 12 }, document.createTextNode(r.label.length > 34 ? r.label.slice(0, 33) + '…' : r.label));
+    lab.append(svgEl('title', null, document.createTextNode(r.label))); svg.append(lab);
+    svg.append(svgEl('line', { x1: labelW, x2: labelW, y1: y - 4, y2: y + barH + 4, stroke: 'var(--axis)', 'stroke-width': 1 }));
+    if (w > 0) svg.append(svgEl('path', { d: `M${labelW},${y} H${labelW + Math.max(0, w - 4)} a4,4 0 0 1 4,4 V${y + barH - 4} a4,4 0 0 1 -4,4 H${labelW} Z`, fill: r.color || color }));
+    svg.append(svgEl('text', { x: labelW + w + 6, y: y + barH - 3, fill: 'var(--ink)', 'font-size': 12, 'font-variant-numeric': 'tabular-nums' }, document.createTextNode(fmt ? fmt(r.value) : fmtN(r.value))));
+    const hit = svgEl('rect', { x: 0, y: i * rowH, width: W, height: rowH, fill: 'transparent' });
+    hit.addEventListener('pointermove', ev => { const b = svg.getBoundingClientRect(); showTip(tip, host, ev.clientX - b.left, ev.clientY - b.top, [{ label: r.label, value: fmt ? fmt(r.value) : fmtN(r.value), color: r.color || color }, ...(r.detail ? [{ label: '', value: r.detail }] : [])]); });
+    hit.addEventListener('pointerleave', () => { tip.style.display = 'none'; }); svg.append(hit);
+  });
+  host.append(svg);
+}
+function stackedBar(host, tip, { segments }) { // one horizontal part-to-whole bar with 2px surface gaps and a legend
+  clear(host); host.append(tip);
+  const total = segments.reduce((a, s) => a + (s.value || 0), 0);
+  const bar = h('div', { style: 'display:flex;height:22px;border-radius:6px;overflow:hidden;gap:2px;background:var(--surface-2)' });
+  segments.forEach(s => { if (!s.value) return; const seg = h('div', { style: `flex:${s.value} 0 0;background:${s.color};min-width:2px`, title: `${s.name}: ${fmtN(s.value)}` }); seg.addEventListener('pointermove', ev => { const b = host.getBoundingClientRect(); showTip(tip, host, ev.clientX - b.left, ev.clientY - b.top, [{ label: s.name, value: fmtN(s.value) + ' (' + (total ? Math.round(s.value / total * 100) : 0) + '%)', color: s.color }]); }); seg.addEventListener('pointerleave', () => { tip.style.display = 'none'; }); bar.append(seg); });
+  host.append(total ? bar : h('div', { class: 'muted small' }, t('no_data')));
+  host.append(h('div', { class: 'legend' }, segments.map(s => h('span', null, h('i', { style: 'background:' + s.color }), s.name + ' ', h('b', { class: 'tnum' }, fmtN(s.value))))));
+}
+function spark(values, color) { const W = 80, H = 24, n = values.length, max = Math.max(1, ...values); if (n < 2) return svgEl('svg', { width: W, height: H }); const d = values.map((v, i) => (i ? 'L' : 'M') + (i / (n - 1) * W).toFixed(1) + ',' + (H - 2 - v / max * (H - 4)).toFixed(1)).join(' '); return svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` }, svgEl('path', { d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' })); }
+function dataTable(cols, rows) { return h('table', null, h('thead', null, h('tr', null, cols.map(c => h('th', { class: c.num ? 'num' : '' }, c.label)))), h('tbody', null, rows.map(r => h('tr', null, cols.map(c => h('td', { class: c.num ? 'num' : '' }, r[c.key] == null ? '–' : String(r[c.key]))))))); }
+
+// history → bins
+function bins(range) { // range in hours → [{t, req, c429, fb, thr, err, free, budget, waiting}] per bin of binMin minutes, requests as deltas
+  const binMin = range <= 1 ? 1 : range <= 6 ? 5 : 15; const now = Math.floor(Date.now() / 1000); const from = now - range * 3600;
+  const rows = HIST.filter(r => r.t >= from - 60); const out = []; let prev = null;
+  const delta = (cur, pv, k) => (pv == null || cur[k] < pv[k]) ? (cur[k] || 0) : (cur[k] - pv[k]);
+  const first = rows.length ? Math.floor(rows[0].t / (binMin * 60)) * binMin * 60 : from;
+  for (let b = Math.max(from, first); b <= now; b += binMin * 60) out.push({ t: b, req: 0, c429: 0, fb: 0, thr: 0, err: 0, free: null, budget: null, waiting: null, n: 0 });
+  rows.forEach(r => { const idx = Math.floor((r.t - out[0]?.t) / (binMin * 60)); if (out[idx]) { const o = out[idx]; if (prev) { o.req += delta(r, prev, 'total'); o.c429 += delta(r, prev, 'c429'); o.fb += delta(r, prev, 'fallbacks'); o.thr += delta(r, prev, 'throttled'); o.err += delta(r, prev, 'errors'); } if (r.fresh) { o.free = r.free; o.budget = r.budget; o.waiting = r.waiting; } o.n++; } prev = r; });
+  out.forEach(o => { o.rpm = o.req / binMin; }); return { rows: out, binMin };
+}
+
+// ── notices ───────────────────────────────────────────────────────────────────────────────────────────────
+function renderNotices() {
+  const box = clear($('notices')); if (!S) return;
+  if (S.notices && S.notices.config_changed) box.append(h('div', { class: 'notice' }, h('span', { style: 'flex:1' }, t('config_changed')), btn(t('restart_now'), () => run(['restart']), 'small primary')));
+  const days = S.key && S.key.expires_in_days;
+  if (days != null && days <= 0) box.append(h('div', { class: 'notice crit' }, t('key_expired'))); else if (days != null && days <= 15) box.append(h('div', { class: 'notice' }, t('key_warn', days)));
+  if (settingsSaved) box.append(h('div', { class: 'notice good' }, h('span', { style: 'flex:1' }, t('s_restart_needed')), btn(t('restart_now'), () => { settingsSaved = false; run(['restart']); }, 'small primary')));
+}
+let settingsSaved = false;
+
+// ── pages ─────────────────────────────────────────────────────────────────────────────────────────────────
+const PAGES = ['overview', 'models', 'pool', 'services', 'stats', 'settings'];
+function show(p) { page = PAGES.includes(p) ? p : 'overview'; location.hash = page; document.querySelectorAll('.page').forEach(e => e.classList.toggle('on', e.id === 'page-' + page)); document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false')); renderPage(true); }
+function renderPage(force) { if (!S) return; const host = $('page-' + page); if (!force && host.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON' && document.activeElement.tagName !== 'BODY') return; ({ overview: renderOverview, models: renderModels, pool: renderPool, services: renderServices, stats: renderStats, settings: renderSettings })[page](host); }
+
+function keyPill() { const k = S.key || {}; const m = { ok: ['good', t('key_ok')], none: ['crit', t('key_none')], invalid: ['crit', t('key_bad')], offline: ['warn', t('key_off')] }[k.state] || ['', t('key_unk')]; return pill(m[0], m[1]); }
+function svcPill(s) { const v = S[s] || {}; if (v.up) return pill('good', t('up')); if (v.by === 'foreign') return pill('warn', t('foreign')); return pill('crit', t('down')); }
+function svcMeta(s) { const v = S[s] || {}; const parts = [t('port', v.port)]; if (v.up) { if (v.by) parts.push(t('by', v.by)); if (v.pid) parts.push(t('pid', v.pid)); } return parts.join(' · '); }
+function slotInfo(slot) { const sl = (S.slots || {})[slot] || {}; return sl; }
+function slotState(sl) { if (!sl.model) return pill('', t('none')); if (sl.state === 'ok') return pill('good', t('answers')); if (sl.state === 'unprobed') return pill('', t('unprobed')); return pill('crit', sl.error || 'error'); }
+
+function renderOverview(host) {
+  clear(host);
+  const req = STATS && STATS.requests || {}; const by = req.by_status || {}; const b = bins(1).rows; const sp = (k) => spark(bins(6).rows.slice(-24).map(r => r[k]), 'var(--s1)');
+  const started = S.notices && S.notices.proxy_started;
+  const tile = (label, value, sub, sparkEl) => h('div', { class: 'card tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), h('div', { class: 'sub' }, h('span', null, sub || ''), sparkEl));
+  host.append(h('div', { class: 'kpis' },
+    tile(t('requests'), fmtN(req.total || 0), started ? t('since', hhmm(started)) : '', sp('req')),
+    tile(t('c429'), fmtN(by['429'] || 0), '', sp('c429')),
+    tile(t('fallbacks'), fmtN(STATS && STATS.fallbacks || 0), '', sp('fb')),
+    tile(t('throttled'), fmtN(STATS && STATS.throttled || 0), '', sp('thr')),
+    tile(t('errors'), fmtN(STATS && STATS.errors || 0), '', sp('err'))));
+  // budget meter + key + quick actions
+  const rpm = S.rpm || {}; const fresh = rpm.updated && (S.now - rpm.updated) < 120; const ratio = fresh && rpm.budget ? rpm.free / rpm.budget : null;
+  const meterCls = ratio == null ? '' : ratio < .15 ? 'crit' : ratio < .4 ? 'warn' : '';
+  host.append(h('div', { class: 'grid' },
+    h('div', { class: 'card' }, h('h2', null, t('budget')), fresh ? [h('div', { class: 'meter ' + meterCls }, h('i', { style: 'width:' + Math.round((ratio || 0) * 100) + '%' })), h('div', { class: 'small muted', style: 'margin-top:6px' }, t('budget_sub', rpm.free, rpm.budget, rpm.waiting || 0) + (rpm.rejected ? ' · ' + rpm.rejected + ' ✗' : ''))] : h('div', { class: 'small muted' }, t('budget_stale'))),
+    h('div', { class: 'card' }, h('h2', null, t('key')), h('div', { class: 'row' }, keyPill(), h('span', { class: 'mono' }, S.config && S.config.nvidia_key || '')), h('div', { class: 'small muted', style: 'margin-top:6px' }, [S.key && S.key.checked ? t('checked', ago(S.key.checked)) : '', S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : ''].filter(Boolean).join(' · '))),
+    h('div', { class: 'card' }, h('h2', null, t('services')), h('div', { class: 'stack' }, ['proxy', 'chat', 'ide', 'search', 'web'].filter(s => s === 'proxy' || s === 'chat' || (S[s] && (S[s].enabled || S[s].up))).map(s => h('div', { class: 'row between' }, h('span', null, t(s)), h('span', { class: 'row' }, h('span', { class: 'small muted' }, svcMeta(s)), svcPill(s)))))),
+    h('div', { class: 'card' }, h('h2', null, t('tools_row')), h('div', { class: 'row' }, Object.entries(S.tools || {}).map(([k, v]) => pill(v ? 'good' : 'crit', k))))));
+  host.append(h('div', { class: 'row', style: 'margin:12px 0' }, btn(t('start_all'), () => run(['start']), 'primary'), btn(t('stop_all'), () => run(['stop'])), btn(t('restart_all'), () => run(['restart'])), btn(t('auto_all'), () => run(['auto'])), btn(t('probe_all'), () => run(['check'])), btn(t('doctor'), () => run(['doctor'])), btn(t('bench_all'), () => run(['bench']))));
+  // slots table
+  const maxMs = Math.max(1, ...SLOTS.map(s => slotInfo(s).ms || 0));
+  host.append(h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h2', null, t('models')), h('table', null, h('thead', null, h('tr', null, h('th', null, t('slot')), h('th', null, t('model')), h('th', null, t('state')), h('th', { class: 'num' }, t('latency')), h('th', null, ''), h('th', null, t('tools')), h('th', null, t('probed')))),
+    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', { class: 'slot-model' }, sl.model || t('none')), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
+    h('div', { class: 'small muted', style: 'margin-top:6px' }, t('help_slots'))));
+  // pool summary + requests chart
+  const pool = S.config && S.config.pool || {};
+  host.append(h('div', { class: 'grid wide' },
+    h('div', { class: 'card' }, h('h2', null, t('pool')), h('div', { class: 'row' }, PROVIDERS.map(([p, label]) => pool[p] && pool[p].key ? pill('good', label + ' (' + Object.keys(pool[p].models || {}).length + ')') : pill('', label)))),
+    chartCard(t('req_per_min'), t('req_sub'), (body, tip) => lineChart(body, tip, { series: [{ name: t('requests') + t('per_min'), color: 'var(--s1)', values: b.map(r => +r.rpm.toFixed(1)) }], xs: b.map(r => r.t), fmtX: (e) => hhmm(e), height: 140 }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'v', label: t('requests') + t('per_min'), num: true }], b.map(r => ({ time: hhmm(r.t), v: r.rpm.toFixed(1) }))))));
+}
+
+let catalogQuery = '';
+function renderModels(host) {
+  clear(host);
+  host.append(h('div', { class: 'grid' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
+    h('div', { class: 'slot-model', style: 'margin:6px 0' }, sl.model || t('none')),
+    h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
+    h('div', { class: 'row', style: 'margin-top:8px' }, btn(t('auto'), () => run(['auto', s]), 'small'), btn(t('probe'), () => sl.model && run(['find', sl.model]), 'small'), btn(t('bench'), () => run(['bench', s]), 'small'), btn(t('test'), () => { $('test-model').value = s; $('test-prompt').focus(); }, 'small'))); })));
+  // catalog
+  const list = h('div', { class: 'list' });
+  const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
+  const allIds = [...(S.catalog || []), ...Object.entries(S.pool_catalogs || {}).flatMap(([p, ids]) => S.config.pool[p] && S.config.pool[p].key ? ids.map(i => p + ':' + i) : [])];
+  const fill = () => { clear(list); const q = catalogQuery.toLowerCase(); const ids = allIds.filter(i => !q || i.toLowerCase().includes(q)).slice(0, 200);
+    if (!ids.length) list.append(h('div', { class: 'item muted' }, t('no_data')));
+    ids.forEach(id => { const pr = probeMap[id]; list.append(h('div', { class: 'item' }, pr ? (pr.result === 'ok' ? pill('good', (pr.ms != null ? pr.ms + ' ms' : t('answers')) + (pr.tools === 'ok' ? ' · ' + t('tools_ok') : pr.tools === 'no' ? ' · ' + t('notools') : '')) : pill('crit', pr.result)) : pill('', t('unprobed')), h('span', { class: 'id mono', title: id }, id), btn(t('probe'), () => run(['find', id]), 'small ghost'), SLOTS.map(s => btn(t('set_slot', s), () => run(['pick', s, id]), 'small')))); }); };
+  const search = h('input', { type: 'text', placeholder: t('search_ph'), value: catalogQuery, oninput: (e) => { catalogQuery = e.target.value; fill(); } });
+  fill();
+  host.append(h('div', { class: 'card', style: 'margin:12px 0' }, h('h2', null, t('catalog')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('catalog_hint')), search, h('div', { style: 'margin-top:8px' }, list)));
+  // test box + bench
+  const testModel = h('input', { type: 'text', id: 'test-model', value: 'code', placeholder: 'code | fast | chat | review | <id>' }); const testPrompt = h('textarea', { id: 'test-prompt', placeholder: t('prompt') });
+  const benchRows = (S.bench || []).map(b => ({ id: b.id, ttft: b.ttft_ms, toks: b.tok_s, at: b.at }));
+  host.append(h('div', { class: 'grid wide' },
+    h('div', { class: 'card' }, h('h2', null, t('test_title')), h('div', { class: 'stack' }, field(t('test_model'), testModel), field(t('prompt'), testPrompt), h('div', { class: 'row' }, btn(t('send'), () => run(['test', testModel.value.trim() || 'code', testPrompt.value.trim() || '']), 'primary')))),
+    h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, t('bench_last')), btn(t('bench_all'), () => run(['bench']), 'small')), benchRows.length ? h('table', null, h('thead', null, h('tr', null, h('th', null, t('model')), h('th', { class: 'num' }, t('ttft')), h('th', { class: 'num' }, t('toks')), h('th', null, ''))), h('tbody', null, benchRows.map(r => h('tr', null, h('td', { class: 'mono' }, r.id), h('td', { class: 'num' }, r.ttft != null ? fmtN(r.ttft) + ' ms' : '–'), h('td', { class: 'num' }, r.toks != null ? fmtN(r.toks) : '–'), h('td', { class: 'small muted' }, ago(r.at)))))) : h('div', { class: 'muted small' }, t('no_data')))));
+  // candidates
+  const cands = h('div', { class: 'card', style: 'margin-top:12px' }, h('h2', null, t('candidates')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('candidates_hint')));
+  const inputs = {}; const grid = h('div', { class: 'grid' });
+  const addField = (key, label) => { const eff = CANDS && CANDS[key] || ''; const cur = S.candidates && S.candidates[key] || ''; inputs[key] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(label, inputs[key], t('effective') + ': ' + eff)); };
+  SLOTS.forEach(s => addField(s, s));
+  PROVIDERS.forEach(([p, label]) => { if (S.config.pool[p] && S.config.pool[p].key) SLOTS.forEach(s => addField(p + '.' + s, label + ' · ' + s)); });
+  cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto']))));
+  host.append(cands);
+  if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderModels(host); });
+}
+
+function renderPool(host) {
+  clear(host);
+  const pool = S.config && S.config.pool || {}; const stall = (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT;
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint', stall)));
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('pool_auto'), () => run(['pool', 'auto']))));
+  host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => { const c = pool[p] || {}; const keyIn = h('input', { type: 'password', placeholder: t('pool_key'), autocomplete: 'off' });
+    const probeMap = {}; (S.probes || []).forEach(x => { probeMap[x.id] = x; });
+    return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, label), c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))), h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
+      c.key ? h('table', { style: 'margin-top:8px' }, h('tbody', null, SLOTS.map(s => { const m = (c.models || {})[s]; const pr = m && probeMap[p + ':' + m]; return h('tr', null, h('td', null, s), h('td', { class: 'mono' }, m || t('none')), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_auto'), () => run(['pool', 'auto', p]), 'small') : null, c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
+}
+
+let logName = 'proxy', logLive = false, logSource = null;
+function renderServices(host) {
+  clear(host);
+  const svc = (s, extra) => h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, t(s)), svcPill(s)), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, svcMeta(s) + (S[s] && 'enabled' in S[s] ? ' · ' + (S[s].enabled ? t('enabled') : t('disabled')) : '')), h('div', { class: 'row' }, extra));
+  const url = (s) => S[s] && S[s].url;
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('start_all'), () => run(['start']), 'primary'), btn(t('stop_all'), () => run(['stop'])), btn(t('restart_all'), () => run(['restart'])), btn(t('doctor'), () => run(['doctor'])), btn(t('doctor_fix'), () => run(['doctor', '--fix']))));
+  host.append(h('div', { class: 'grid' },
+    svc('proxy', [btn(t('probe_all'), () => run(['proxy']), 'small'), h('a', { class: 'btn small', href: url('proxy') + '/v1/models', target: '_blank', rel: 'noreferrer' }, url('proxy') || '')]),
+    svc('chat', [h('a', { class: 'btn small', href: url('chat'), target: '_blank', rel: 'noreferrer' }, t('open_chat'))]),
+    svc('ide', [btn(t('install'), () => run(['ide', 'install']), 'small'), btn(t('start'), () => run(['ide', 'start']), 'small'), btn(t('stop'), () => run(['ide', 'stop']), 'small'), btn(t('disable'), () => run(['ide', 'disable']), 'small'), h('a', { class: 'btn small', href: url('ide'), target: '_blank', rel: 'noreferrer' }, t('open_ide'))]),
+    svc('search', [btn(t('install'), () => run(['search', 'install']), 'small'), btn(t('start'), () => run(['search', 'start']), 'small'), btn(t('stop'), () => run(['search', 'stop']), 'small'), btn(t('disable'), () => run(['search', 'disable']), 'small'), btn(t('test'), () => run(['search', 'test']), 'small'), h('a', { class: 'btn small', href: url('search'), target: '_blank', rel: 'noreferrer' }, t('open_search'))]),
+    svc('web', [btn(t('disable'), () => run(['web', 'disable']), 'small')])));
+  // IDE details
+  const ws = h('input', { type: 'text', value: S.workspace || '', placeholder: '/home/…/project' });
+  host.append(h('div', { class: 'grid wide', style: 'margin-top:12px' },
+    h('div', { class: 'card' }, h('h2', null, t('ide')), h('div', { class: 'stack' }, field(t('workspace'), ws, t('workspace_hint')), h('div', { class: 'row' }, btn(t('save'), async () => { try { await api('/api/workspace', { dir: ws.value.trim() }); toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary small')),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.config.ide_autocomplete, onchange: (e) => run(['ide', 'autocomplete', e.target.checked ? 'on' : 'off']) }), t('autocomplete')),
+      h('div', { class: 'row' }, btn(t('ide_password'), () => run(['ide', 'password']), 'small'), btn(t('ide_password_reset'), () => run(['ide', 'password', '--reset']), 'small'), btn(t('ide_config'), () => run(['ide', 'config', '--force']), 'small')))),
+    (() => { const email = h('input', { type: 'text', placeholder: t('email') }); const pw = h('input', { type: 'password', placeholder: t('password'), autocomplete: 'new-password' }); const adm = h('input', { type: 'checkbox' });
+      return h('div', { class: 'card' }, h('h2', null, t('accounts')), h('div', { class: 'stack' }, h('div', { class: 'row' }, btn(t('users'), () => run(['chat', 'users']), 'small')), field(t('email'), email), field(t('password'), pw), h('label', { class: 'check' }, adm, t('admin')), h('div', { class: 'row' }, btn(t('passwd'), () => { const a = ['chat', 'passwd']; if (email.value.trim()) a.push(email.value.trim()); if (adm.checked) a.push('--admin'); const p = pw.value; pw.value = ''; run(a, { env: { NIMCTL_CHAT_PASSWORD: p } }); }, 'primary small'), btn(t('reset_accounts'), () => { if (confirm(t('reset_confirm'))) run(['chat', 'reset']); }, 'small danger')))); })(),
+    h('div', { class: 'card' }, h('h2', null, t('autostart')), h('div', { class: 'row', style: 'margin-bottom:8px' }, ['proxy', 'chat', 'ide', 'search', 'web', 'watch'].map(u => pill(S.systemd && S.systemd[u] ? 'good' : '', 'nimctl-' + u))), h('div', { class: 'row' }, btn(t('autostart_on'), () => run(['install', 'systemd']), 'small'), btn(t('autostart_off'), () => run(['install', 'nosystemd']), 'small'), btn(t('watch_timer'), () => run(['install', 'watch_timer']), 'small'), btn(t('watch_now'), () => run(['watch']), 'small')))));
+  // logs
+  const sel = h('select', { onchange: (e) => { logName = e.target.value; loadLog(); } }, ['proxy', 'chat', 'ide', 'search', 'web', 'watch', 'searxng-install', 'code-server-install'].map(n => h('option', { value: n, selected: n === logName }, n + (S.logs && S.logs[n] ? ' (' + Math.round(S.logs[n] / 1024) + ' kB)' : ''))));
+  const live = h('input', { type: 'checkbox', checked: logLive, onchange: (e) => { logLive = e.target.checked; loadLog(); } });
+  const box = h('div', { class: 'log', id: 'logbox' });
+  host.append(h('div', { class: 'card', style: 'margin-top:12px' }, h('div', { class: 'row between' }, h('h2', null, t('logs')), h('div', { class: 'row' }, sel, h('label', { class: 'check' }, live, t('live')))), box));
+  loadLog();
+}
+async function loadLog() {
+  const box = $('logbox'); if (!box) return;
+  if (logSource) { logSource.close(); logSource = null; }
+  if (logLive) { box.textContent = ''; logSource = new EventSource('/api/log/stream?name=' + encodeURIComponent(logName) + '&token=' + encodeURIComponent(NIMCTL.token)); logSource.onmessage = (e) => { box.textContent += JSON.parse(e.data) + '\n'; box.scrollTop = box.scrollHeight; }; logSource.addEventListener('truncated', () => { box.textContent = ''; }); logSource.onerror = () => { }; return; }
+  try { const j = await api('/api/log?name=' + encodeURIComponent(logName) + '&n=300'); box.textContent = j.lines.join('\n') || t('no_data'); box.scrollTop = box.scrollHeight; } catch (e) { box.textContent = String(e); }
+}
+
+let range = 6;
+function renderStats(host) {
+  clear(host);
+  const seg = h('div', { class: 'seg' }, [[1, 'h1'], [6, 'h6'], [24, 'h24']].map(([r, k]) => h('button', { 'aria-pressed': String(range === r), onclick: () => { range = r; renderStats(host); } }, t(k))));
+  host.append(h('div', { class: 'filters' }, h('span', { class: 'muted small' }, t('range')), seg));
+  const { rows, binMin } = bins(range); const xs = rows.map(r => r.t); const fx = (e) => hhmm(e);
+  const req = STATS && STATS.requests || {}; const by = req.by_status || {};
+  host.append(h('div', { class: 'grid wide' },
+    chartCard(t('req_per_min'), t('req_sub'), (b, tip) => lineChart(b, tip, { series: [{ name: t('requests') + t('per_min'), color: 'var(--s1)', values: rows.map(r => +r.rpm.toFixed(2)) }], xs, fmtX: fx }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'v', label: t('requests') + t('per_min'), num: true }], rows.map(r => ({ time: hhmm(r.t), v: r.rpm.toFixed(2) })))),
+    chartCard(t('events'), t('events_sub') + ' (' + binMin + ' min)', (b, tip) => lineChart(b, tip, { series: [{ name: '429', color: 'var(--s2)', values: rows.map(r => r.c429) }, { name: t('fallbacks'), color: 'var(--s3)', values: rows.map(r => r.fb) }, { name: t('throttled'), color: 'var(--s4)', values: rows.map(r => r.thr) }], xs, fmtX: fx }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'a', label: '429', num: true }, { key: 'b', label: t('fallbacks'), num: true }, { key: 'c', label: t('throttled'), num: true }], rows.map(r => ({ time: hhmm(r.t), a: r.c429, b: r.fb, c: r.thr })))),
+    chartCard(t('budget_hist'), t('budget_hist_sub'), (b, tip) => { const rr = rows.filter(r => r.free != null); lineChart(b, tip, { series: [{ name: t('free'), color: 'var(--s1)', values: rr.map(r => r.free) }, { name: t('budget'), color: 'var(--s3)', values: rr.map(r => r.budget) }], xs: rr.map(r => r.t), fmtX: fx }); }, () => dataTable([{ key: 'time', label: t('time') }, { key: 'f', label: t('free'), num: true }, { key: 'b', label: t('budget'), num: true }, { key: 'w', label: t('waiting'), num: true }], rows.filter(r => r.free != null).map(r => ({ time: hhmm(r.t), f: r.free, b: r.budget, w: r.waiting })))),
+    chartCard(t('status_classes'), req.total != null ? fmtN(req.total) + ' ' + t('requests') : '', (b, tip) => stackedBar(b, tip, { segments: [{ name: '2xx', value: by['2xx'] || 0, color: 'var(--s1)' }, { name: '4xx', value: by['4xx'] || 0, color: 'var(--s4)' }, { name: '429', value: by['429'] || 0, color: 'var(--s2)' }, { name: '5xx', value: by['5xx'] || 0, color: 'var(--s5)' }] }), () => dataTable([{ key: 'k', label: t('state') }, { key: 'v', label: t('count'), num: true }], ['2xx', '4xx', '429', '5xx'].map(k => ({ k, v: by[k] || 0 })))),
+    chartCard(t('paths'), '', (b, tip) => hbarChart(b, tip, { rows: (STATS && STATS.paths || []).slice(0, 8).map(p => ({ label: p.path, value: p.count })) }), () => dataTable([{ key: 'path', label: t('paths') }, { key: 'count', label: t('count'), num: true }], STATS && STATS.paths || [])),
+    chartCard(t('model_latency'), '', (b, tip) => hbarChart(b, tip, { rows: (S.probes || []).filter(p => p.result === 'ok' && p.ms != null).sort((a, c) => a.ms - c.ms).slice(0, 14).map(p => ({ label: p.id, value: p.ms, detail: (p.tools === 'ok' ? t('tools_ok') : p.tools === 'no' ? t('notools') : '') + ' · ' + ago(p.probed) })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ms', label: 'ms', num: true }, { key: 'tools', label: t('tools') }], (S.probes || []).filter(p => p.result === 'ok'))),
+    chartCard(t('bench_ttft'), '', (b, tip) => hbarChart(b, tip, { rows: (S.bench || []).filter(x => x.ttft_ms != null).sort((a, c) => a.ttft_ms - c.ttft_ms).map(x => ({ label: x.id, value: x.ttft_ms })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ttft_ms', label: 'ms', num: true }], S.bench || [])),
+    chartCard(t('bench_toks'), '', (b, tip) => hbarChart(b, tip, { rows: (S.bench || []).filter(x => x.tok_s != null).sort((a, c) => c.tok_s - a.tok_s).map(x => ({ label: x.id, value: x.tok_s })), fmt: v => fmtN(v) }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'tok_s', label: t('toks'), num: true }], S.bench || []))));
+}
+
+function renderSettings(host) {
+  clear(host);
+  const set = S.settings || {}; const env = new Set(S.env_overrides || []); const inputs = {};
+  const sf = (key, label, help, kind) => { const ov = env.has(key); let input; if (kind === 'select') { input = h('select', { disabled: ov }, kind === 'select' && key === 'NIMCTL_CHAT_VIA_PROXY' ? [h('option', { value: '', selected: !set[key] }, t('s_default', t('s_yes'))), h('option', { value: '1', selected: set[key] === '1' }, t('s_yes')), h('option', { value: '0', selected: set[key] === '0' }, t('s_no'))] : [h('option', { value: '', selected: !set[key] }, t('s_lang_auto')), h('option', { value: 'de', selected: set[key] === 'de' }, 'Deutsch'), h('option', { value: 'en', selected: set[key] === 'en' }, 'English')]); } else input = h('input', { type: 'text', value: set[key] || '', placeholder: DEFAULTS[key] || '', disabled: ov }); inputs[key] = input; return field(label, input, (ov ? t('s_env') : (DEFAULTS[key] ? t('s_default', DEFAULTS[key]) : '')) + (help ? ' · ' + help : '')); };
+  const group = (title, kids) => h('div', { class: 'card' }, h('h2', null, title), h('div', { class: 'stack' }, kids));
+  const saveBtn = btn(t('save'), async () => { const v = {}; Object.entries(inputs).forEach(([k, i]) => { if (!i.disabled) v[k] = i.value; }); try { await api('/api/settings', { settings: v }); settingsSaved = true; toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary');
+  // key
+  const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
+  host.append(h('div', { class: 'grid wide' },
+    h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
+    group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
+    group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n'))]),
+    group(t('s_ui'), [sf('NIMCTL_LANG', t('s_lang'), '', 'select'), field(t('s_theme'), h('select', { onchange: (e) => setTheme(e.target.value) }, [['', 'theme_auto'], ['light', 'theme_light'], ['dark', 'theme_dark']].map(([v, k]) => h('option', { value: v, selected: (localStorage.getItem('theme') || '') === v }, t(k)))))])));
+  host.append(h('div', { class: 'row', style: 'margin:12px 0' }, saveBtn));
+  host.append(h('div', { class: 'grid wide' },
+    group(t('s_maint'), [h('div', { class: 'row' }, btn(t('update_check'), () => run(['update', '--check']), 'small'), btn(t('update'), () => run(['update']), 'small'), btn(t('install_all'), () => run(['install', 'all']), 'small'), btn(t('alias'), () => run(['install', 'alias']), 'small'), btn(t('completion'), () => run(['install', 'completion']), 'small')), h('div', { class: 'small muted' }, t('extra_models') + ': ' + ((S.config.extra_models || []).join(', ') || '–'))]),
+    group(t('links'), [h('div', { class: 'small' }, t('proxy_url') + ': ', h('span', { class: 'mono' }, S.proxy && S.proxy.url + '/v1')), h('div', { class: 'small' }, t('version_hint', S.version || '?', S.home || ''))])));
+}
+
+// ── theme, nav, init ──────────────────────────────────────────────────────────────────────────────────────
+function setTheme(v) { if (v) { document.documentElement.setAttribute('data-theme', v); localStorage.setItem('theme', v); } else { document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('theme'); } if (page === 'stats' || page === 'overview') renderPage(true); }
+(function init() {
+  try { const th = localStorage.getItem('theme'); if (th) document.documentElement.setAttribute('data-theme', th); } catch (e) { /* storage blocked */ }
+  $('theme').addEventListener('click', () => { const cur = document.documentElement.getAttribute('data-theme'); setTheme(cur === 'dark' ? 'light' : 'dark'); });
+  const nav = $('nav'); PAGES.forEach(p => nav.append(h('button', { dataset: { page: p }, onclick: () => show(p) }, t(p))));
+  $('console-toggle').addEventListener('click', () => { const c = $('console'); c.classList.toggle('collapsed'); $('console-toggle').textContent = c.classList.contains('collapsed') ? '▲' : '▼'; });
+  $('console-clear').textContent = t('clear'); $('console-clear').addEventListener('click', () => { $('console-out').textContent = ''; });
+  $('console-abort').textContent = t('abort'); $('console-abort').addEventListener('click', () => api('/api/abort', {}).catch(() => { }));
+  $('console-title').textContent = t('console');
+  window.addEventListener('hashchange', () => { const p = location.hash.replace('#', ''); if (p !== page) show(p); });
+  window.addEventListener('resize', () => { clearTimeout(init.rt); init.rt = setTimeout(() => renderPage(true), 150); });
+  show(page); refresh(true); loadHistory(); loadCandidates();
+  setInterval(() => refresh(false), 5000); setInterval(loadHistory, 30000);
+})();
+</script>
+</body>
+</html>

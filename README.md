@@ -25,13 +25,14 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.6.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.7.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
   Chat     ✓ up     :3000  systemd
   IDE      ✓ up     :8080  nimctl · pid 41377
   Search   ✓ up     :8888  nimctl · pid 41402
+  Web UI   ✓ up     :4040  nimctl · pid 41410
   Tools    ✓ litellm  ✓ open-webui  ✓ claude  ✓ uv  ✓ code-server
   Pool     ✓ Groq (4)  ✓ Cerebras (3)
   Today    since 09:14 · 212 requests · 3× 429 · 9 fallbacks
@@ -52,7 +53,7 @@ Models
 ────────────────────────────────────────────────────────────────────────────────────
   Services s Start  x Stop  r Restart
   Models   a Auto  p Probe  1-4 pick slot  f Find  t Test  b Bench
-  Use      c Claude Code  w Chat  e Env  g Stats  m Pool  n Accounts  o Search  v IDE
+  Use      c Claude Code  w Chat  e Env  g Stats  m Pool  n Accounts  o Search  v IDE  z Web UI
   System   k Key  d Doctor  i Install  l Logs  u Update  ? Help  q Quit
   ›
 ```
@@ -90,7 +91,7 @@ customer data (requests go to NVIDIA's US infrastructure, see [FAQ](#faq)).
 ## Contents
 
 [Why nimctl](#why-nimctl) · [Quick start](#quick-start) · [Commands](#commands) · [Model slots](#the-four-model-slots) ·
-[Claude Code](#claude-code) · [Chat accounts](#chat-accounts) · [How it works](#how-it-works) · [Provider pool](#provider-pool) · [Configuration](#configuration) ·
+[Claude Code](#claude-code) · [Chat accounts](#chat-accounts) · [How it works](#how-it-works) · [Provider pool](#provider-pool) · [Web UI](#web-ui) · [Configuration](#configuration) ·
 [Requirements](#requirements-and-compatibility) · [Uninstall](#uninstall) · [What to expect](#claude-code-on-open-models--what-to-expect) ·
 [Troubleshooting](#troubleshooting) · [FAQ](#faq) · [Development](#development) · [Deutsch](#deutsch--kurzfassung) · [License](#license)
 
@@ -148,7 +149,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl status [--json]` | Dashboard once, non-interactive; JSON for scripts; exit code reflects the state |
 | `nimctl check` | Probe the configured models with a real request (tool calls for `code`/`review`) |
 | `nimctl auto [slot…]` | Re-select models automatically, all slots or e.g. `nimctl auto code` |
-| `nimctl pick <slot> [text]` | Set a slot manually from a list; the pick is probed before it is saved |
+| `nimctl pick <slot> [text\|id]` | Set a slot manually from a list, or directly with an exact id (also a pool model's `provider:id`); the pick is probed before it is saved |
 | `nimctl find <text>` | Probe every catalog entry matching `<text>` – shows what really answers, and whether it makes tool calls |
 | `nimctl test [model\|slot] [prompt]` | Send a prompt, see reply, tokens and time |
 | `nimctl bench [--last] [model\|slot…]` | Time to first token, tokens/s and tool calling per model (streamed request) |
@@ -160,13 +161,14 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl ide [folder]` | Start the browser IDE if needed and open it (the folder, else the git project in the current directory, else the last one); `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
 | `nimctl search ["query"]` | Local web search (SearXNG) for the chat and the IDE: start it, or search from the terminal; `install`, `start`, `stop`, `disable`, `test` |
 | `nimctl pool [add <provider> [key]\|remove <provider>\|auto [provider]\|test\|models <provider>]` | Fallback providers with free quotas (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral): the proxy hands a request to them when NVIDIA fails it |
+| `nimctl web` | Web UI in the browser (dashboard, models, pool, services, statistics, settings): start it and open it; `start`, `stop`, `disable`, `url`, `candidates` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
 | `nimctl key [nvapi-…]` | Check or set the API key |
 | `nimctl doctor [--fix]` | Diagnose tools, key, network, ports, permissions, models, proxy – repair with `--fix` or on request |
-| `nimctl logs [proxy\|chat\|watch\|ide] [-f]` | Show or follow a log |
-| `nimctl install [all\|alias\|systemd\|completion]` | Tools, PATH, autostart, shell completion, watchdog timer |
+| `nimctl logs [proxy\|chat\|watch\|ide\|web] [-f]` | Show or follow a log |
+| `nimctl install [all\|alias\|systemd\|nosystemd\|completion\|watch_timer]` | Tools, PATH, autostart on/off, shell completion, watchdog timer |
 | `nimctl update [--check]` | Self-update from this repository with version compare, changelog excerpt and checksum |
 | `nimctl models` | Print the catalog, one id per line |
 | `nimctl completion bash\|zsh` | Shell completion script |
@@ -301,6 +303,7 @@ nimctl chat reset                  # wipe all accounts; the next signup becomes 
  nimctl chat ──► Open WebUI 127.0.0.1:3000 ───────────────────────────────────────(OpenAI API)──► integrate.api.nvidia.com
                                           (NIMCTL_CHAT_VIA_PROXY=0: directly to NVIDIA instead)
  inside the proxy: nim-<slot> = NVIDIA first ──(no byte for 90 s, 429, 5xx)──► pool-<slot> = Groq · Gemini · Cerebras · OpenRouter · Mistral
+ nimctl web  ──► browser 127.0.0.1:4040 ──► web/server.py (Python stdlib) ──► nimctl commands and the files below
 ```
 
 Everything lives in `~/.nimctl` (mode 700):
@@ -308,6 +311,7 @@ Everything lives in `~/.nimctl` (mode 700):
 ```
 config          API key, chosen models, extra models added via --model, proxy master key, IDE password, pool keys and models (chmod 600)
 state           key state (ok/invalid/offline/none), time of the last check, date the key was entered
+settings        NIMCTL_* values chosen in the web UI, read at start (a variable set in the environment wins)
 litellm.yaml    generated proxy config – do not edit, use the dashboard
 probes          last probe result per model (ok/error, latency, time, tool calling); pool models as <provider>:<id>
 bench           bench results
@@ -319,7 +323,8 @@ ide-data/       code-server user data, settings and extensions (Continue's own c
 mcp/shell.py    shell tool for Continue's agent mode (MCP server, returns command output)
 ide-workspace   the project folder the IDE opens and the shell tool runs in
 searxng/        SearXNG source, venv and settings.yml (nimctl search)
-logs/           litellm.log, open-webui.log, code-server.log, watch.log
+web/            web UI: index.html, server.py, token, history.json (nimctl web)
+logs/           litellm.log, open-webui.log, code-server.log, searxng.log, web.log, watch.log
 run/            pid files and start times
 webui-data/     chat history, uploaded documents, users
 .lock           internal write lock for the probe and bench files
@@ -379,6 +384,29 @@ right after the NVIDIA key; unattended setups take keys from `GROQ_API_KEY`, `GE
 `OPENROUTER_API_KEY` and `MISTRAL_API_KEY`. Candidate patterns per provider and slot: `NIMCTL_CAND_<PROVIDER>_<SLOT>`
 or a line like `groq.code: gpt-oss-120b llama-3.3-70b` in `~/.nimctl/candidates`.
 
+## Web UI
+
+`nimctl web` opens http://localhost:4040: the dashboard in the browser, with everything the CLI can do and the one
+thing a terminal cannot show – charts. Six pages: **Overview** (key, services, tools, budget meter, the four slots
+with latency bars, request rate), **Models** (slot cards with auto/probe/bench/test, the catalog with one-click
+assignment to a slot – the model is probed first –, the candidate-pattern editor, a prompt box, bench results),
+**Pool** (one card per provider: key, chosen models, add/remove/re-select), **Services** (start/stop/restart/install/
+disable per service, IDE project folder and autocomplete, chat accounts, systemd autostart and the watchdog timer, a
+live log viewer), **Statistics** (requests per minute, 429/fallback/throttle events, free budget over time, status
+classes, top paths, model latency and bench charts – each with a table view and a hover readout, 1/6/24 h) and
+**Settings** (the NVIDIA key, budget and stall timeout, ports and bind address, probing, IDE and search, language and
+theme, update and maintenance). Every action runs through nimctl itself; its output streams into a console drawer.
+
+How it works: nimctl writes `~/.nimctl/web/index.html` and `server.py` (both embedded in the script; Python standard
+library only, no packages) and starts the server on `127.0.0.1:4040` (`NIMCTL_WEB_PORT`). The page carries a
+per-installation token (`~/.nimctl/web/token`, mode 600); every API call must present it together with a `Host`
+header naming this machine, so another site open in your browser can neither read your state nor run commands. Keys
+and passwords reach nimctl through stdin or its environment, never a command line. Values changed under Settings
+land in `~/.nimctl/settings` (`NIMCTL_*` names nimctl reads at start – a variable set in the environment still wins)
+and apply after a restart; the page says so and offers the button. The server samples the proxy statistics every
+30 s into `web/history.json` (24 hours) for the charts. `nimctl web disable` takes the service out of
+start/stop/restart and systemd; the wizard offers the web UI after the IDE and the search.
+
 ## Configuration
 
 All optional, via environment variables:
@@ -393,6 +421,7 @@ All optional, via environment variables:
 | `NIMCTL_IDE_CONTEXT` | `32768` | Context length Continue assumes for the models |
 | `NIMCTL_SEARCH_PORT` | `8888` | SearXNG port (`nimctl search`) |
 | `NIMCTL_SEARCH_RESULTS` | `5` | Web search results Open WebUI feeds to the model per query |
+| `NIMCTL_WEB_PORT` | `4040` | Web UI port (`nimctl web`) |
 | `NIMCTL_BIND` | `127.0.0.1` | Address the services listen on |
 | `NIMCTL_PROBE_TIMEOUT` | `45` | Seconds a model may take to answer a probe |
 | `NIMCTL_REPROBE_HOURS` | `6` | Dashboard re-probes slots whose last probe is older |
@@ -426,7 +455,7 @@ and `nimctl-chat`; the dashboard and `nimctl restart` keep them under systemd. T
 | | |
 |---|---|
 | Shell | bash ≥ 4.4 (the script refuses older versions with a clear message) |
-| Tools | `curl`, `jq`, `awk`; optional: `ss`/`lsof` (port owner), `flock`, `notify-send`, `systemctl` |
+| Tools | `curl`, `jq`, `awk`; `python3` for the web UI and `nimctl chat passwd`; optional: `ss`/`lsof` (port owner), `flock`, `notify-send`, `systemctl` |
 | Installed by the wizard | `uv`, `litellm[proxy]`, `open-webui` (Python 3.11 via uv), `@anthropic-ai/claude-code` (needs `npm`), optionally `code-server` + Continue |
 | Tested | Ubuntu 24.04 (CI runs the full suite on every push and pull request) |
 | Expected to work | Debian, Fedora, Arch, Alpine, WSL2 (package managers `apt`, `dnf`, `pacman`, `apk`; browser via `wslview`/`explorer.exe`) |
@@ -493,7 +522,7 @@ bash tests/run.sh                              # offline: mock API + fake servic
 
 The test suite simulates a valid/invalid key, a listed-but-dead model, a 40-second model, a cold model, an overloaded
 model, models without tool calling, streaming, config injection, stale pid files, foreign listeners, headless setup,
-two pool providers with their own keys and catalogs, self-update and the installer. See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout and how a release is cut
+two pool providers with their own keys and catalogs, the web UI's server and API, self-update and the installer. See [CONTRIBUTING.md](CONTRIBUTING.md) for the module layout and how a release is cut
 (the *Release* workflow publishes `nimctl` and `SHA256SUMS` under [Releases](https://github.com/phish3144/nimctl/releases)).
 
 ---
@@ -511,7 +540,8 @@ curl -fsSL https://raw.githubusercontent.com/phish3144/nimctl/main/install.sh | 
 ```
 
 Danach: `nimctl` (Dashboard, eine Taste pro Aktion, `?` erklärt alles), `nimctl code` (Claude Code im Projektordner),
-`nimctl ide` (VS Code im Browser mit Continue auf denselben Modellen), `nimctl chat` (Browser-Chat), `nimctl chat passwd` (Chat-Admin-Passwort zurücksetzen), `nimctl bench` (Modelle
+`nimctl ide` (VS Code im Browser mit Continue auf denselben Modellen), `nimctl web` (Web-Oberfläche mit Einstellungen
+und Statistik), `nimctl chat` (Browser-Chat), `nimctl chat passwd` (Chat-Admin-Passwort zurücksetzen), `nimctl bench` (Modelle
 vergleichen), `nimctl stats` (was der Proxy tut), `nimctl pool add groq <key>` (kostenlose Ausweich-Anbieter, die
 übernehmen, wenn NVIDIA hängt oder 429 liefert). Bei Problemen: `nimctl doctor`. Die Oberfläche ist auf Deutsch,
 wenn `$LANG` deutsch ist, sonst `NIMCTL_LANG=de nimctl` oder `nimctl --lang=de`.

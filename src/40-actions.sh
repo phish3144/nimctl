@@ -16,7 +16,7 @@ T_de+=(
   [key_rej]="nicht akzeptiert (%s) – alter Key bleibt" [checking]="prüfe … " [key_same]="gleicher Key – nichts geändert"
   [key_ok]="gültig" [key_none]="kein Key → k" [key_bad]="ungültig/abgelaufen → k" [key_off]="NVIDIA nicht erreichbar" [key_unk]="nicht geprüft" [checked]="geprüft"
   [key_expires]="läuft in ~%d Tagen ab" [key_expire_soon]="Key läuft in ~%d Tagen ab – neuen Key unter %s erzeugen" [key_expired]="Key ist vermutlich abgelaufen (älter als 180 Tage)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  5) Web-UI  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
   [env_hint]="# Für andere Werkzeuge (Aider, Continue, Zed, OpenAI-SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# Hinweis: Proxy läuft nicht – nimctl start"
   [inst_title]="Installation" [inst_missing]="fehlt" [inst_menu]="1) alles Fehlende installieren  2) PATH/Aliase  3) Autostart (systemd) an  4) Autostart aus  5) Shell-Completion%s  (Enter = zurück)"
   [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_npm]="npm fehlt – Node.js installieren: %s" [inst_working]="installiere %s … (2–5 Min.)"
@@ -40,7 +40,7 @@ T_en+=(
   [key_rej]="rejected (%s) – old key kept" [checking]="checking … " [key_same]="same key – nothing changed"
   [key_ok]="valid" [key_none]="no key → k" [key_bad]="invalid/expired → k" [key_off]="NVIDIA unreachable" [key_unk]="not checked" [checked]="checked"
   [key_expires]="expires in ~%d days" [key_expire_soon]="key expires in ~%d days – create a new one at %s" [key_expired]="key has probably expired (older than 180 days)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  5) Web UI  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
   [env_hint]="# For other tools (Aider, Continue, Zed, OpenAI SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# note: proxy is not running – nimctl start"
   [inst_title]="Installation" [inst_missing]="missing" [inst_menu]="1) install everything missing  2) PATH/aliases  3) autostart (systemd) on  4) autostart off  5) shell completion%s  (Enter = back)"
   [inst_alias]="Commands available: nimctl, nimctl code" [inst_npm]="npm missing – install Node.js: %s" [inst_working]="installing %s … (2–5 min)"
@@ -107,13 +107,15 @@ act_pick() { # act_pick <slot> [search] – choose a slot's model from a list; p
   local slot="$1" f="${2:-}" list n choice sel id
   sect "$(tf pick_slot "$slot")"
   if [[ -z "$f" ]]; then prompt "$(t pick_hint)" || return 1; f="$REPLY"; fi
-  if [[ -z "$f" ]]; then list=$(cut -f1 "$PROBES" | sort -u); else list=$(models_cached | grep -iF -- "$f"); fi
+  if [[ -z "$f" ]]; then list=$(cut -f1 "$PROBES" | sort -u)
+  elif [[ -n "$(pool_of "$f")" ]]; then list="$f"                                                        # a pool model by its namespaced id
+  else list=$(models_cached | grep -iF -- "$f"); grep -qxF -- "$f" <<<"$list" && list="$f"; fi          # an exact id needs no list
   [[ -z "$list" ]] && { bad "$(t nohit)"; return 1; }; n=$(echo "$list" | wc -l); ((n > 30)) && { bad "$(tf toomany "$n" 30)"; return 1; }
   local i=1 res note
   while read -r id; do probe_get "$id"; note=""
     case "$PROBE_RES" in ok) res="$OK"; note="${D}${PROBE_MS} ms · $(age_of "$PROBE_T")${R}"; [[ "$PROBE_TOOLS" == ok ]] && note+=" $OK${D}tools${R}"; [[ "$PROBE_TOOLS" == no ]] && note+=" $WA${D}$(t tools_no)${R}";; "") res="$GR";; *) note="${D}– $PROBE_RES${R}"; res="$NO";; esac
     printf "  %s %2d) %-48s %b\n" "$res" "$i" "$(trunc "$id" 48)" "$note"; ((i++)); done <<<"$list"
-  prompt "$(t number)" || return 1; choice="$REPLY"; [[ -z "$choice" ]] && { info "$(t unchanged)"; return 1; }
+  if [[ "$n" == 1 && "$list" == "$f" ]]; then choice=1; else prompt "$(t number)" || return 1; choice="$REPLY"; fi; [[ -z "$choice" ]] && { info "$(t unchanged)"; return 1; }
   [[ "$choice" =~ ^[0-9]{1,4}$ ]] && ((choice >= 1 && choice <= n)) || { bad "$(t invalid): $choice"; return 1; }
   sel=$(echo "$list" | sed -n "${choice}p"); probe_get "$sel"
   if [[ "$PROBE_RES" != ok ]]; then probe_many "$sel"; probe_get "$sel"; fi
@@ -190,7 +192,7 @@ act_env() { # prints export lines for other tools; eval "$(nimctl env)"
 
 # ── Chat & logs ───────────────────────────────────────────────────────────────
 act_chat_open() { svc_running chat || start_chat || return 1; ok "$(tf browser "$CHAT_PORT")"; open_url "http://localhost:$CHAT_PORT" || info "→ http://localhost:$CHAT_PORT"; }
-log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; *) return 1;; esac; }
+log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; web|5) echo "$LOG_DIR/web.log";; *) return 1;; esac; }
 act_logs() { # act_logs [proxy|chat|watch|ide] [-f|f]
   local which="${1:-}" follow="${2:-}" f
   [[ "$which" == -f ]] && { follow=-f; which="${2:-}"; }

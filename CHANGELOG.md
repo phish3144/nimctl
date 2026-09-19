@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.7.0] – 2026-09-19
+
+### Added
+- **Web UI**: `nimctl web` serves a local cockpit on http://localhost:4040 – overview (key, services, tools, budget
+  meter, slots, request rate), models (slot cards with auto/probe/bench/test, catalog with one-click assignment,
+  candidate-pattern editor, prompt box, bench results), pool (one card per provider), services (per-service actions,
+  IDE folder and autocomplete, chat accounts, systemd autostart, watchdog timer, live log viewer), statistics
+  (requests per minute, 429/fallback/throttle events, free budget over time, status classes, top paths, model latency
+  and bench – each chart with a table view and a hover readout, 1/6/24 h) and settings (NVIDIA key, budget and stall
+  timeout, ports and bind address, probing, IDE and search, language, theme, update and maintenance). The backend
+  `~/.nimctl/web/server.py` uses the Python standard library only and is embedded in the script together with the
+  page; every API call needs the per-installation token and a `Host` header naming this machine; commands stream
+  their output as server-sent events; keys and passwords go in through stdin or the environment. New service `web`
+  (dashboard row, key `z`, `status --json`, doctor, systemd unit, wizard question), `NIMCTL_WEB_PORT` (4040).
+- `~/.nimctl/settings`: `NIMCTL_*` values chosen in the web UI, read at start; a variable set in the environment wins.
+- `nimctl pick <slot> <exact id>` sets the slot directly, also to a pool model's `provider:id`;
+  `nimctl install nosystemd` removes the autostart units; `nimctl logs web`.
+
 ## [1.6.0] – 2026-09-18
 
 ### Added

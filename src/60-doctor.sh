@@ -24,6 +24,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   [[ "$perm" == 700 ]] && ok "$(tf doc_perm_ok "$NIM_DIR")" || { warn "$(tf doc_perm "$NIM_DIR" "$perm")"; doc_issue perm; }
   local s svcs=(proxy chat); [[ "$IDE_ENABLED" == 1 ]] && { svcs+=(ide); has code-server || { bad "code-server $(t inst_missing)"; doc_issue "tool:code-server"; }; }
   [[ "$SEARCH_ENABLED" == 1 ]] && { svcs+=(search); [[ -x "$SEARX_DIR/venv/bin/python" ]] || { bad "SearXNG $(t inst_missing)"; doc_issue "tool:searxng"; }; }
+  [[ "$WEB_ENABLED" == 1 ]] && { svcs+=(web); has python3 || { bad "python3 $(t inst_missing)"; doc_issue "tool:python3"; }; }
   for s in "${svcs[@]}"; do
     if svc_state "$s"; then case "$SVC_BY" in foreign) warn "$(tf doc_svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")"; doc_issue "port:$s";; *) ok "$s :$(svc_port "$s") ($(t "by_$SVC_BY"))";; esac
     else info "$s :$(svc_port "$s") $(t down)"; fi

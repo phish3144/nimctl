@@ -15,7 +15,7 @@ T_de+=(
   [h_code]="Claude Code über den Proxy starten (--model <Slot|ID>, --think, .nimctl-Profil im Projekt)"
   [h_chat]="Chat starten und im Browser öffnen; Konten: nimctl chat users | passwd [E-Mail] | reset"
   [h_env]="Export-Zeilen für andere Werkzeuge ausgeben: eval \"\$(nimctl env)\"" [h_key]="API-Key prüfen oder setzen: nimctl key [nvapi-…]"
-  [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch|ide] [-f]"
+  [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch|ide|web] [-f]"
   [h_install]="Werkzeuge, PATH, Autostart, Completion" [h_update]="Selbst-Update von GitHub (--check zeigt nur an)" [h_models]="Katalog ausgeben (eine ID je Zeile)"
   [h_version]="Version" [h_help]="diese Hilfe" [h_quit]="Dashboard verlassen (Dienste laufen weiter)"
 )
@@ -33,11 +33,11 @@ T_en+=(
   [h_code]="launch Claude Code through the proxy (--model <slot|id>, --think, .nimctl profile in the project)"
   [h_chat]="start the chat and open it in the browser; accounts: nimctl chat users | passwd [email] | reset"
   [h_env]="print export lines for other tools: eval \"\$(nimctl env)\"" [h_key]="check or set the API key: nimctl key [nvapi-…]"
-  [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch|ide] [-f]"
+  [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch|ide|web] [-f]"
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )
-COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide search pool env key doctor logs install update models version help)
+COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide search pool web env key doctor logs install update models version help)
 usage() {
   local c w=10 extra=()
   printf '%s\n\n' "$(t usage)"
@@ -56,6 +56,7 @@ status_json() {
   svc_state chat && { [[ "$SVC_BY" != foreign ]] && up_c=true; }; by_c="${SVC_BY:-}"; pid_c="${SVC_PID:-}"
   local up_i=false by_i pid_i; svc_state ide && { [[ "$SVC_BY" != foreign ]] && up_i=true; }; by_i="${SVC_BY:-}"; pid_i="${SVC_PID:-}"
   local up_s=false by_s pid_s; svc_state search && { [[ "$SVC_BY" != foreign ]] && up_s=true; }; by_s="${SVC_BY:-}"; pid_s="${SVC_PID:-}"
+  local up_w=false by_w pid_w; svc_state web && { [[ "$SVC_BY" != foreign ]] && up_w=true; }; by_w="${SVC_BY:-}"; pid_w="${SVC_PID:-}"
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); probe_get "$m"
     sj=$(jq -n --argjson acc "$sj" --arg s "$s" --arg m "$m" --arg res "$PROBE_RES" --arg ms "$PROBE_MS" --arg t "$PROBE_T" --arg tools "$PROBE_TOOLS" \
       '$acc + {($s): {model: (if $m=="" then null else $m end), state: (if $res=="" then "unprobed" elif $res=="ok" then "ok" else "error" end), error: (if $res=="ok" or $res=="" then null else $res end), ms: ($ms|tonumber? // null), probed: ($t|tonumber? // null), tools: (if $tools=="" then null else $tools end)}}')
@@ -65,11 +66,13 @@ status_json() {
     --argjson up_c "$up_c" --arg by_c "$by_c" --arg pid_c "$pid_c" --arg cp "$CHAT_PORT" --argjson slots "$sj" --argjson tools "$tj" --arg mk "$MASTER_KEY" \
     --argjson up_i "$up_i" --arg by_i "$by_i" --arg pid_i "$pid_i" --arg ip "$IDE_PORT" --arg ie "$IDE_ENABLED" \
     --argjson up_s "$up_s" --arg by_s "$by_s" --arg pid_s "$pid_s" --arg sp "$SEARCH_PORT" --arg se "$SEARCH_ENABLED" --argjson pool "$(pool_json)" \
+    --argjson up_w "$up_w" --arg by_w "$by_w" --arg pid_w "$pid_w" --arg wp "$WEB_PORT" --arg we "$WEB_ENABLED" \
     '{version:$v, key:{state:$ks, checked:($kt|tonumber? // null), expires_in_days:($kd|tonumber? // null)},
       proxy:{up:$up_p, by:(if $by_p=="" then null else $by_p end), pid:($pid_p|tonumber? // null), port:($pp|tonumber), url:("http://127.0.0.1:"+$pp)},
       chat:{up:$up_c, by:(if $by_c=="" then null else $by_c end), pid:($pid_c|tonumber? // null), port:($cp|tonumber), url:("http://localhost:"+$cp)},
       ide:{enabled:($ie=="1"), up:$up_i, by:(if $by_i=="" then null else $by_i end), pid:($pid_i|tonumber? // null), port:($ip|tonumber), url:("http://localhost:"+$ip)},
       search:{enabled:($se=="1"), up:$up_s, by:(if $by_s=="" then null else $by_s end), pid:($pid_s|tonumber? // null), port:($sp|tonumber), url:("http://localhost:"+$sp)},
+      web:{enabled:($we=="1"), up:$up_w, by:(if $by_w=="" then null else $by_w end), pid:($pid_w|tonumber? // null), port:($wp|tonumber), url:("http://localhost:"+$wp)},
       pool:$pool, slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
@@ -104,7 +107,7 @@ main() {
     doctor)   doctor "${1:-}";;
     proxy)    svc_running proxy || { bad "$(t proxy_down)"; exit 2; }; act_proxy;;
     logs)     act_logs "$@";;
-    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 64; };; esac;;
+    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; nosystemd|noautostart) uninst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 64; };; esac;;
     update)   self_update "${1:-}";;
     _fg)      fg_service "${1:-}";;
     *)        if declare -F "cmd_$cmd" >/dev/null; then "cmd_$cmd" "$@"; else bad "$(t unknown): $cmd"; printf '\n'; usage; exit 64; fi;;

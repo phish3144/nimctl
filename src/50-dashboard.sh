@@ -37,6 +37,7 @@ render_dashboard() {
   printf "  %-8s %s%s\n" "$(t chat)" "$(svc_row chat)" "$([[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && printf ' %s(%s)%s' "$D" "$(t chat_via_proxy)" "$R")"
   { [[ "$IDE_ENABLED" == 1 ]] || has code-server; } && printf "  %-8s %s\n" "$(t ide)" "$(svc_row ide)"
   { [[ "$SEARCH_ENABLED" == 1 ]] || [[ -x "$SEARX_DIR/venv/bin/python" ]]; } && printf "  %-8s %s\n" "$(t svc_search)" "$(svc_row search)"
+  { [[ "$WEB_ENABLED" == 1 ]] || [[ -f "$WEB_DIR/server.py" ]]; } && printf "  %-8s %s\n" "$(t svc_web)" "$(svc_row web)"
   local tl="" x; for x in litellm open-webui claude uv code-server; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
   printf "  %-8s %s\n" "$(t tools)" "$tl"
   printf "  %-8s %s\n" "$(t k_m)" "$(pool_line)"

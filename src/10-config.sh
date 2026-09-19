@@ -15,26 +15,26 @@ gen_secret() { if has openssl; then openssl rand -hex 24; else od -An -N24 -tx1 
 load_conf() {
   mkdir -p "$NIM_DIR" "$LOG_DIR" "$PID_DIR"; chmod 700 "$NIM_DIR" 2>/dev/null; touch "$PROBES"
   NVIDIA_API_KEY="${NVIDIA_API_KEY:-${NIMCTL_API_KEY:-}}"
-  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0; SEARCH_ENABLED=0
+  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0; SEARCH_ENABLED=0; WEB_ENABLED=0
   KEY_STATE="unknown"; KEY_TIME=0; KEY_SET_AT=0
   local envkey="$NVIDIA_API_KEY" p pk pool_keys=(); declare -A envpool=()
   for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; envpool[$p]="${!pk:-}"; printf -v "$pk" '%s' ""; printf -v "POOL_${p^^}" '%s' ""; pool_keys+=("$pk" "POOL_${p^^}"); done
-  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE SEARCH_ENABLED "${pool_keys[@]}"
+  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE SEARCH_ENABLED WEB_ENABLED "${pool_keys[@]}"
   [[ -n "$envkey" ]] && NVIDIA_API_KEY="$envkey"           # an explicit environment key wins over the file
   for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; [[ -n "${envpool[$p]}" ]] && printf -v "$pk" '%s' "${envpool[$p]}"; [[ "${!pk}" =~ $RE_POOL_KEY ]] || printf -v "$pk" '%s' ""; pool_sanitize "$p"; done
   read_kv "$STATE" KEY_STATE KEY_TIME KEY_SET_AT
   [[ "$NVIDIA_API_KEY" =~ $RE_KEY ]] || NVIDIA_API_KEY=""
   local s v; for s in "${SLOTS[@]}"; do v="MODEL_${s^^}"; valid_model "${!v}" || printf -v "$v" '%s' ""; done
   [[ "$KEY_TIME" =~ ^[0-9]+$ ]] || KEY_TIME=0; [[ "$KEY_SET_AT" =~ ^[0-9]+$ ]] || KEY_SET_AT=0
-  [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$SEARCH_ENABLED" == 1 ]] || SEARCH_ENABLED=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
+  [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$SEARCH_ENABLED" == 1 ]] || SEARCH_ENABLED=0; [[ "$WEB_ENABLED" == 1 ]] || WEB_ENABLED=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
   [[ "$MASTER_KEY" =~ ^[A-Za-z0-9_-]{16,}$ ]] || { MASTER_KEY="sk-nimctl-$(gen_secret)"; [[ -f "$CONF" ]] && save_conf; }
   export NVIDIA_API_KEY; write_hdr
 }
 save_conf() {
   local e="" m; for m in $EXTRA_MODELS; do valid_model "$m" && e+="$m "; done; EXTRA_MODELS="${e% }"
   local p pv
-  { printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\nSEARCH_ENABLED=%s\n' \
-      "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" "$SEARCH_ENABLED"
+  { printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\nSEARCH_ENABLED=%s\nWEB_ENABLED=%s\n' \
+      "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" "$SEARCH_ENABLED" "$WEB_ENABLED"
     for p in "${POOL_PROVIDERS[@]}"; do pv="POOL_${p^^}"; printf '%s_API_KEY=%s\nPOOL_%s=%s\n' "${p^^}" "$(pool_key "$p")" "${p^^}" "${!pv}"; done   # pool keys and models (src/22-pool.sh)
   } >"$CONF.tmp"
   chmod 600 "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
