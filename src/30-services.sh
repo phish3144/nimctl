@@ -1,6 +1,6 @@
 # ── Services: LiteLLM proxy and Open WebUI ───────────────────────────────────
 T_de+=(
-  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Suche" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Suche" [svc_web]="Web-UI" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
   [svc_already]="%s läuft bereits" [svc_missing]="%s fehlt → nimctl install" [svc_nokey]="kein API-Key → nimctl key" [svc_nomodel]="kein Modell gewählt → nimctl auto"
   [svc_up]="%s läuft  http://localhost:%s" [svc_fail]="%s startet nicht → nimctl logs %s" [svc_died]="%s ist direkt nach dem Start beendet worden → nimctl logs %s"
   [svc_stopped]="%s gestoppt" [svc_foreign]="Port %s ist belegt von %s – nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
@@ -11,7 +11,7 @@ T_de+=(
   [unit_failed]="systemd-Unit %s ist im Zustand failed → journalctl --user -u %s"
 )
 T_en+=(
-  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Search" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Search" [svc_web]="Web UI" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
   [svc_already]="%s already running" [svc_missing]="%s missing → nimctl install" [svc_nokey]="no API key → nimctl key" [svc_nomodel]="no model selected → nimctl auto"
   [svc_up]="%s up  http://localhost:%s" [svc_fail]="%s failed to start → nimctl logs %s" [svc_died]="%s exited right after starting → nimctl logs %s"
   [svc_stopped]="%s stopped" [svc_foreign]="port %s is taken by %s – not started by nimctl" [svc_wasdown]="%s was not running"
@@ -21,10 +21,10 @@ T_en+=(
   [inst_sysd]="autostart enabled (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="autostart removed" [inst_fail]="%s failed" [no_systemd]="systemd not available – autostart only on Linux with systemd"
   [unit_failed]="systemd unit %s is in state failed → journalctl --user -u %s"
 )
-svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; ide) echo code-server;; search) echo searxng;; esac; }
-svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; ide) echo "$IDE_PORT";; search) echo "$SEARCH_PORT";; esac; }
-svc_envvar() { case "$1" in proxy) echo NIMCTL_PROXY_PORT;; chat) echo NIMCTL_CHAT_PORT;; ide) echo NIMCTL_IDE_PORT;; search) echo NIMCTL_SEARCH_PORT;; esac; }
-svc_label(){ case "$1" in search) t svc_search;; *) t "$1";; esac; }   # "search" is the find prompt's key
+svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; ide) echo code-server;; search) echo searxng;; web) echo web/server.py;; esac; }
+svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; ide) echo "$IDE_PORT";; search) echo "$SEARCH_PORT";; web) echo "$WEB_PORT";; esac; }
+svc_envvar() { case "$1" in proxy) echo NIMCTL_PROXY_PORT;; chat) echo NIMCTL_CHAT_PORT;; ide) echo NIMCTL_IDE_PORT;; search) echo NIMCTL_SEARCH_PORT;; web) echo NIMCTL_WEB_PORT;; esac; }
+svc_label(){ case "$1" in search) t svc_search;; web) t svc_web;; *) t "$1";; esac; }   # "search" is the find prompt's key
 proc_is() { # proc_is <pid> <name> → the process exists and its command line mentions <name>
   [[ "${1:-}" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null || return 1
   local cmd; if [[ -r "/proc/$1/cmdline" ]]; then cmd=$(tr '\0' ' ' <"/proc/$1/cmdline"); else cmd=$(ps -p "$1" -o args= 2>/dev/null); fi
@@ -106,6 +106,15 @@ start_search() { # SearXNG from its own venv, installed and configured by the se
   echo $! >"$PID_DIR/search.pid"; date +%s >"$PID_DIR/search.started"
   _start_result search $! 60
 }
+start_web() { # the web UI's stdlib-only Python server; page and server are written by the web module (src/55-web.sh)
+  if svc_state web; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign web; return 1; }; info "$(tf svc_already "$(t svc_web)")"; return 0; fi
+  declare -F web_write_files >/dev/null || return 1
+  has python3 || { bad "$(tf web_no_python "$(pkg_hint python3)")"; return 1; }
+  web_write_files || return 1
+  ( web_env; nohup python3 "$WEB_DIR/server.py" >"$LOG_DIR/web.log" 2>&1 & echo $! >"$PID_DIR/web.pid" )
+  date +%s >"$PID_DIR/web.started"
+  _start_result web "$(cat "$PID_DIR/web.pid")" 20
+}
 stop_svc() {
   local s="$1"
   if ! svc_state "$s"; then info "$(tf svc_wasdown "$(svc_label "$s")")"; rm -f "$PID_DIR/$s.pid"; return 0; fi
@@ -116,13 +125,13 @@ stop_svc() {
     *)       warn "$(tf svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")";;
   esac
 }
-start_all() { local rc=0; start_proxy || rc=1; [[ "$SEARCH_ENABLED" == 1 ]] && { start_search || rc=1; }; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; return 0; }
+start_all() { local rc=0; start_proxy || rc=1; [[ "$SEARCH_ENABLED" == 1 ]] && { start_search || rc=1; }; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; [[ "$WEB_ENABLED" == 1 ]] && { start_web || rc=1; }; return $rc; }
+stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; [[ "$WEB_ENABLED" == 1 || -f "$PID_DIR/web.pid" ]] && stop_svc web; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
 }
-restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; return 0; }
+restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; [[ "$WEB_ENABLED" == 1 ]] && restart_svc web; return 0; }
 restart_if_running() { # after a config change; explicit yes only, because a Claude Code session may be attached
   svc_running proxy || svc_running chat || return 0
   (( INTERACTIVE )) || { info "$(t restart_hint)"; return 0; }
@@ -142,6 +151,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
            exec code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry;;
     search) local py; py=$(search_python) || { echo "nimctl: SearXNG missing – run nimctl search install" >&2; exit 1; }
            search_write_settings || exit 1; date +%s >"$PID_DIR/search.started"; SEARXNG_SETTINGS_PATH="$SEARX_DIR/settings.yml" exec "$py" -m searx.webapp;;
+    web)   has python3 || { echo "nimctl: python3 missing" >&2; exit 1; }; web_write_files || exit 1; web_env; date +%s >"$PID_DIR/web.started"; exec python3 "$WEB_DIR/server.py";;
     *) exit 64;;
   esac
 }
@@ -149,12 +159,12 @@ unit_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; }
 inst_systemd() {
   has systemctl || { bad "$(t no_systemd)"; return 1; }
   local d n self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
-  local units=(proxy chat); [[ "$SEARCH_ENABLED" == 1 ]] && units+=(search); [[ "$IDE_ENABLED" == 1 ]] && units+=(ide)
+  local units=(proxy chat); [[ "$SEARCH_ENABLED" == 1 ]] && units+=(search); [[ "$IDE_ENABLED" == 1 ]] && units+=(ide); [[ "$WEB_ENABLED" == 1 ]] && units+=(web)
   for n in "${units[@]}"; do printf '[Unit]\nDescription=nimctl %s\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\nRestartSec=10\nEnvironment=NIMCTL_HOME=%s\n\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" "$NIM_DIR" >"$d/nimctl-$n.service"; done
   for n in "${units[@]}"; do stop_svc "$n" >/dev/null; done   # hand the ports over to the units
   systemctl --user daemon-reload && systemctl --user enable --now "${units[@]/#/nimctl-}" && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
 }
 uninst_systemd() {
-  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-search nimctl-watch.timer 2>/dev/null
-  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide,search}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
+  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-search nimctl-web nimctl-watch.timer 2>/dev/null
+  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide,search,web}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
 }

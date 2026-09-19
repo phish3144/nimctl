@@ -4,7 +4,7 @@
 set -u
 exec </dev/null                          # no test may block on the runner's stdin; tests pipe their own input
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$HERE")
-TMP=$(mktemp -d); trap 'kill $MOCK $MOCK_GROQ $MOCK_CEREBRAS $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP|$IPT)" 2>/dev/null; pkill -f "[f]ake_searxng.py $SP" 2>/dev/null; rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'kill $MOCK $MOCK_GROQ $MOCK_CEREBRAS $UPD 2>/dev/null; pkill -f "[f]ake_server.py ($PP|$CP|$IPT)" 2>/dev/null; pkill -f "[f]ake_searxng.py $SP" 2>/dev/null; pkill -f "$TMP/home/web/server.py" 2>/dev/null; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/update"
 cat >"$TMP/fake_server.py" <<'X'
 import json, sys
@@ -62,9 +62,9 @@ X
 chmod +x "$TMP/home/searxng/venv/bin/python"
 chmod +x "$TMP/bin/"*
 # Ports are derived from the runner's pid so several suites can run at the same time (parallel CI jobs, worktrees).
-PP=$(( 20000 + ($$ % 2000) * 8 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 )); IPT=$(( PP + 4 )); SP=$(( PP + 5 )); GP=$(( PP + 6 )); CB=$(( PP + 7 ))   # proxy, chat, mock API, update server, IDE, search, mock Groq, mock Cerebras
+PP=$(( 20000 + ($$ % 2000) * 10 )); CP=$(( PP + 1 )); MP=$(( PP + 2 )); UP=$(( PP + 3 )); IPT=$(( PP + 4 )); SP=$(( PP + 5 )); GP=$(( PP + 6 )); CB=$(( PP + 7 )); WP=$(( PP + 8 ))   # proxy, chat, mock API, update server, IDE, search, mock Groq, mock Cerebras, web UI
 export PATH="$TMP/bin:$PATH" NIMCTL_HOME="$TMP/home" NIMCTL_API_BASE="http://127.0.0.1:$MP/v1" NIMCTL_PROXY_PORT=$PP NIMCTL_CHAT_PORT=$CP NIMCTL_IDE_PORT=$IPT NIMCTL_SEARCH_PORT=$SP NIMCTL_SEARXNG_REPO="file://$TMP/searxng-repo"
-export NIMCTL_POOL_BASE_GROQ="http://127.0.0.1:$GP/v1" NIMCTL_POOL_BASE_CEREBRAS="http://127.0.0.1:$CB/v1"
+export NIMCTL_POOL_BASE_GROQ="http://127.0.0.1:$GP/v1" NIMCTL_POOL_BASE_CEREBRAS="http://127.0.0.1:$CB/v1" NIMCTL_WEB_PORT=$WP
 export TERM=dumb NIMCTL_PROBE_TIMEOUT=3 NIMCTL_LANG=de HOME="$TMP" NIMCTL_INTERACTIVE=1 LC_ALL=C.UTF-8 NIMCTL_UPDATE_URL="http://127.0.0.1:$UP"
 unset NVIDIA_API_KEY NIMCTL_API_KEY NIMCTL_YES NO_COLOR DISPLAY WAYLAND_DISPLAY GROQ_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY OPENROUTER_API_KEY MISTRAL_API_KEY
 python3 "$HERE/mock_api.py" "$MP" & MOCK=$!

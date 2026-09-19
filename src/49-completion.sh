@@ -16,10 +16,11 @@ _nimctl() {
     pick|auto) COMPREPLY=(\$(compgen -W "\$slots" -- "\$cur"));;
     test|bench) COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     code) [[ "\$prev" == --model || "\$prev" == -m ]] && COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
-    logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide" -- "\$cur"));;
+    logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide web" -- "\$cur"));;
+    web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
-    install) COMPREPLY=(\$(compgen -W "all alias systemd completion" -- "\$cur"));;
+    install) COMPREPLY=(\$(compgen -W "all alias systemd nosystemd completion watch_timer" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;
     doctor) COMPREPLY=(\$(compgen -W "--fix" -- "\$cur"));;
     status) COMPREPLY=(\$(compgen -W "--json" -- "\$cur"));;

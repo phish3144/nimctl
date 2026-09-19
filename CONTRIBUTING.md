@@ -6,6 +6,8 @@ Thanks for helping! Keep it small and testable.
 
 ```
 src/*.sh        the sources, concatenated in filename order by build.sh
+src/web/        the web UI: server.py (Python stdlib backend) and index.html; build.sh embeds each file as a
+                function web_asset_<name> (quoted heredoc), src/55-web.sh writes them to ~/.nimctl/web at start
 nimctl          the built, self-contained script (committed – install.sh and `nimctl update` fetch it)
 SHA256SUMS      checksum of the built script (committed, verified by `nimctl update`)
 tests/run.sh    test runner: mock NVIDIA API, fake litellm/open-webui/claude/uv, then tests/cases/*.sh in order

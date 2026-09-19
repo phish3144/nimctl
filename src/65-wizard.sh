@@ -8,7 +8,7 @@ T_de+=(
   [wz_models]="Modelle" [wz_models_hint]="Ich teste alle Kandidaten parallel mit echten Anfragen (max. %ss je Modell) und prüfe, ob das Code-Modell Tool-Calls kann."
   [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten?" [wz_done]="Fertig!"
   [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle und ersetzt tote automatisch)?"
-  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?" [wz_search_q]="Websuche für den Chat einrichten (SearXNG, ~60 MB)?"
+  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?" [wz_search_q]="Websuche für den Chat einrichten (SearXNG, ~60 MB)?" [wz_web_q]="Web-Oberfläche einrichten (Dashboard, Einstellungen und Statistik im Browser)?"
   [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen\n           nimctl help   alle Befehle"
   [wz_chat_hint]="Chat: Das erste Konto, das sich unter http://localhost:%s registriert, wird Admin. Passwort vergessen? nimctl chat passwd"
 )
@@ -21,7 +21,7 @@ T_en+=(
   [wz_models]="Models" [wz_models_hint]="I probe all candidates in parallel with real requests (max %ss per model) and check that the code model can make tool calls."
   [wz_start]="Services" [wz_start_q]="Start proxy and chat now?" [wz_done]="Done!"
   [wz_watch_q]="Set up the watchdog timer (probes the models hourly and replaces dead ones automatically)?"
-  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?" [wz_search_q]="Set up web search for the chat (SearXNG, ~60 MB)?"
+  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?" [wz_search_q]="Set up web search for the chat (SearXNG, ~60 MB)?" [wz_web_q]="Set up the web UI (dashboard, settings and statistics in the browser)?"
   [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser\n              nimctl help   all commands"
   [wz_chat_hint]="Chat: the first account registered at http://localhost:%s becomes admin. Forgot the password? nimctl chat passwd"
 )
@@ -49,6 +49,7 @@ wizard() { # wizard [--yes]
   if ((missing)); then ask "$(t wz_tools_q)" y && inst_all; else ok "$(t wz_tools_ok)"; fi
   if declare -F inst_codeserver >/dev/null && [[ "$IDE_ENABLED" != 1 ]]; then ask "$(t wz_ide_q)" y && inst_codeserver; fi
   if declare -F inst_searxng >/dev/null && [[ "$SEARCH_ENABLED" != 1 ]]; then ask "$(t wz_search_q)" y && inst_searxng; fi
+  if declare -F web_enable >/dev/null && [[ "$WEB_ENABLED" != 1 ]] && has python3; then ask "$(t wz_web_q)" y && web_enable; fi
   inst_alias
   sect "$(tf wz_step 3 5 "$(t wz_models)")"; info "$(tf wz_models_hint "$PROBE_TIMEOUT")"
   auto_select code fast chat review
@@ -56,5 +57,5 @@ wizard() { # wizard [--yes]
   if ask "$(t wz_start_q)" y; then start_all; fi
   if has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]] && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
   sect "$(tf wz_step 5 5 "$(t wz_done)")"; local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; slot_line "$s" "$n"; done
-  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; printf '\n'
+  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; [[ "$WEB_ENABLED" == 1 ]] && info "$(tf web_url "$WEB_PORT")"; printf '\n'
 }

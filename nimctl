@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.6.0"
+VERSION="1.7.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -14,11 +14,24 @@ fi
 # ══════ 05-core.sh ══════
 # ── Paths & constants ─────────────────────────────────────────────────────────
 NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
+# $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
+# read, values are limited to plain characters, and a variable already present in the environment wins.
+SETTINGS_FILE="$NIM_DIR/settings"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+load_settings() {
+  [[ -f "$SETTINGS_FILE" ]] || return 0
+  local line k v
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^(NIMCTL_[A-Z_]+)=([A-Za-z0-9._:/,+\ -]*)$ ]] || continue; k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    [[ " $SETTINGS_KEYS " == *" $k "* && -z "${!k+x}" ]] && export "$k=$v"
+  done <"$SETTINGS_FILE"
+}
+load_settings
 CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"
-LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"; SEARX_DIR="$NIM_DIR/searxng"
+LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"; SEARX_DIR="$NIM_DIR/searxng"; WEB_DIR="$NIM_DIR/web"
 MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; LOCK_FILE="$NIM_DIR/.lock"
 API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
-PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"; IDE_PORT="${NIMCTL_IDE_PORT:-8080}"; SEARCH_PORT="${NIMCTL_SEARCH_PORT:-8888}"
+PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"; IDE_PORT="${NIMCTL_IDE_PORT:-8080}"; SEARCH_PORT="${NIMCTL_SEARCH_PORT:-8888}"; WEB_PORT="${NIMCTL_WEB_PORT:-4040}"
 BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here only (LiteLLM would default to 0.0.0.0)
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this
@@ -181,26 +194,26 @@ gen_secret() { if has openssl; then openssl rand -hex 24; else od -An -N24 -tx1 
 load_conf() {
   mkdir -p "$NIM_DIR" "$LOG_DIR" "$PID_DIR"; chmod 700 "$NIM_DIR" 2>/dev/null; touch "$PROBES"
   NVIDIA_API_KEY="${NVIDIA_API_KEY:-${NIMCTL_API_KEY:-}}"
-  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0; SEARCH_ENABLED=0
+  MODEL_CODE=""; MODEL_FAST=""; MODEL_CHAT=""; MODEL_REVIEW=""; MASTER_KEY=""; EXTRA_MODELS=""; IDE_ENABLED=0; IDE_PASSWORD=""; IDE_AUTOCOMPLETE=0; SEARCH_ENABLED=0; WEB_ENABLED=0
   KEY_STATE="unknown"; KEY_TIME=0; KEY_SET_AT=0
   local envkey="$NVIDIA_API_KEY" p pk pool_keys=(); declare -A envpool=()
   for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; envpool[$p]="${!pk:-}"; printf -v "$pk" '%s' ""; printf -v "POOL_${p^^}" '%s' ""; pool_keys+=("$pk" "POOL_${p^^}"); done
-  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE SEARCH_ENABLED "${pool_keys[@]}"
+  read_kv "$CONF" NVIDIA_API_KEY MODEL_CODE MODEL_FAST MODEL_CHAT MODEL_REVIEW MASTER_KEY EXTRA_MODELS IDE_ENABLED IDE_PASSWORD IDE_AUTOCOMPLETE SEARCH_ENABLED WEB_ENABLED "${pool_keys[@]}"
   [[ -n "$envkey" ]] && NVIDIA_API_KEY="$envkey"           # an explicit environment key wins over the file
   for p in "${POOL_PROVIDERS[@]}"; do pk="${p^^}_API_KEY"; [[ -n "${envpool[$p]}" ]] && printf -v "$pk" '%s' "${envpool[$p]}"; [[ "${!pk}" =~ $RE_POOL_KEY ]] || printf -v "$pk" '%s' ""; pool_sanitize "$p"; done
   read_kv "$STATE" KEY_STATE KEY_TIME KEY_SET_AT
   [[ "$NVIDIA_API_KEY" =~ $RE_KEY ]] || NVIDIA_API_KEY=""
   local s v; for s in "${SLOTS[@]}"; do v="MODEL_${s^^}"; valid_model "${!v}" || printf -v "$v" '%s' ""; done
   [[ "$KEY_TIME" =~ ^[0-9]+$ ]] || KEY_TIME=0; [[ "$KEY_SET_AT" =~ ^[0-9]+$ ]] || KEY_SET_AT=0
-  [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$SEARCH_ENABLED" == 1 ]] || SEARCH_ENABLED=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
+  [[ "$IDE_ENABLED" == 1 ]] || IDE_ENABLED=0; [[ "$IDE_AUTOCOMPLETE" == 1 ]] || IDE_AUTOCOMPLETE=0; [[ "$SEARCH_ENABLED" == 1 ]] || SEARCH_ENABLED=0; [[ "$WEB_ENABLED" == 1 ]] || WEB_ENABLED=0; [[ "$IDE_PASSWORD" =~ ^[A-Za-z0-9_-]*$ ]] || IDE_PASSWORD=""
   [[ "$MASTER_KEY" =~ ^[A-Za-z0-9_-]{16,}$ ]] || { MASTER_KEY="sk-nimctl-$(gen_secret)"; [[ -f "$CONF" ]] && save_conf; }
   export NVIDIA_API_KEY; write_hdr
 }
 save_conf() {
   local e="" m; for m in $EXTRA_MODELS; do valid_model "$m" && e+="$m "; done; EXTRA_MODELS="${e% }"
   local p pv
-  { printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\nSEARCH_ENABLED=%s\n' \
-      "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" "$SEARCH_ENABLED"
+  { printf 'NVIDIA_API_KEY=%s\nMODEL_CODE=%s\nMODEL_FAST=%s\nMODEL_CHAT=%s\nMODEL_REVIEW=%s\nMASTER_KEY=%s\nEXTRA_MODELS=%s\nIDE_ENABLED=%s\nIDE_PASSWORD=%s\nIDE_AUTOCOMPLETE=%s\nSEARCH_ENABLED=%s\nWEB_ENABLED=%s\n' \
+      "$NVIDIA_API_KEY" "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW" "$MASTER_KEY" "$EXTRA_MODELS" "$IDE_ENABLED" "$IDE_PASSWORD" "$IDE_AUTOCOMPLETE" "$SEARCH_ENABLED" "$WEB_ENABLED"
     for p in "${POOL_PROVIDERS[@]}"; do pv="POOL_${p^^}"; printf '%s_API_KEY=%s\nPOOL_%s=%s\n' "${p^^}" "$(pool_key "$p")" "${p^^}" "${!pv}"; done   # pool keys and models (src/22-pool.sh)
   } >"$CONF.tmp"
   chmod 600 "$CONF.tmp"; mv "$CONF.tmp" "$CONF"
@@ -834,7 +847,7 @@ throttle_line() { # one dashboard line from rpm.json, only while the proxy is fr
 # ══════ 30-services.sh ══════
 # ── Services: LiteLLM proxy and Open WebUI ───────────────────────────────────
 T_de+=(
-  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Suche" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Suche" [svc_web]="Web-UI" [up]="läuft" [down]="aus" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="fremd"
   [svc_already]="%s läuft bereits" [svc_missing]="%s fehlt → nimctl install" [svc_nokey]="kein API-Key → nimctl key" [svc_nomodel]="kein Modell gewählt → nimctl auto"
   [svc_up]="%s läuft  http://localhost:%s" [svc_fail]="%s startet nicht → nimctl logs %s" [svc_died]="%s ist direkt nach dem Start beendet worden → nimctl logs %s"
   [svc_stopped]="%s gestoppt" [svc_foreign]="Port %s ist belegt von %s – nicht von nimctl gestartet" [svc_wasdown]="%s lief nicht"
@@ -845,7 +858,7 @@ T_de+=(
   [unit_failed]="systemd-Unit %s ist im Zustand failed → journalctl --user -u %s"
 )
 T_en+=(
-  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Search" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
+  [proxy]="Proxy" [chat]="Chat" [ide]="IDE" [svc_search]="Search" [svc_web]="Web UI" [up]="up" [down]="down" [by_systemd]="systemd" [by_nimctl]="nimctl" [by_foreign]="foreign"
   [svc_already]="%s already running" [svc_missing]="%s missing → nimctl install" [svc_nokey]="no API key → nimctl key" [svc_nomodel]="no model selected → nimctl auto"
   [svc_up]="%s up  http://localhost:%s" [svc_fail]="%s failed to start → nimctl logs %s" [svc_died]="%s exited right after starting → nimctl logs %s"
   [svc_stopped]="%s stopped" [svc_foreign]="port %s is taken by %s – not started by nimctl" [svc_wasdown]="%s was not running"
@@ -855,10 +868,10 @@ T_en+=(
   [inst_sysd]="autostart enabled (systemd --user: nimctl-proxy, nimctl-chat)" [inst_sysd_off]="autostart removed" [inst_fail]="%s failed" [no_systemd]="systemd not available – autostart only on Linux with systemd"
   [unit_failed]="systemd unit %s is in state failed → journalctl --user -u %s"
 )
-svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; ide) echo code-server;; search) echo searxng;; esac; }
-svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; ide) echo "$IDE_PORT";; search) echo "$SEARCH_PORT";; esac; }
-svc_envvar() { case "$1" in proxy) echo NIMCTL_PROXY_PORT;; chat) echo NIMCTL_CHAT_PORT;; ide) echo NIMCTL_IDE_PORT;; search) echo NIMCTL_SEARCH_PORT;; esac; }
-svc_label(){ case "$1" in search) t svc_search;; *) t "$1";; esac; }   # "search" is the find prompt's key
+svc_bin()  { case "$1" in proxy) echo litellm;; chat) echo open-webui;; ide) echo code-server;; search) echo searxng;; web) echo web/server.py;; esac; }
+svc_port() { case "$1" in proxy) echo "$PROXY_PORT";; chat) echo "$CHAT_PORT";; ide) echo "$IDE_PORT";; search) echo "$SEARCH_PORT";; web) echo "$WEB_PORT";; esac; }
+svc_envvar() { case "$1" in proxy) echo NIMCTL_PROXY_PORT;; chat) echo NIMCTL_CHAT_PORT;; ide) echo NIMCTL_IDE_PORT;; search) echo NIMCTL_SEARCH_PORT;; web) echo NIMCTL_WEB_PORT;; esac; }
+svc_label(){ case "$1" in search) t svc_search;; web) t svc_web;; *) t "$1";; esac; }   # "search" is the find prompt's key
 proc_is() { # proc_is <pid> <name> → the process exists and its command line mentions <name>
   [[ "${1:-}" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null || return 1
   local cmd; if [[ -r "/proc/$1/cmdline" ]]; then cmd=$(tr '\0' ' ' <"/proc/$1/cmdline"); else cmd=$(ps -p "$1" -o args= 2>/dev/null); fi
@@ -940,6 +953,15 @@ start_search() { # SearXNG from its own venv, installed and configured by the se
   echo $! >"$PID_DIR/search.pid"; date +%s >"$PID_DIR/search.started"
   _start_result search $! 60
 }
+start_web() { # the web UI's stdlib-only Python server; page and server are written by the web module (src/55-web.sh)
+  if svc_state web; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign web; return 1; }; info "$(tf svc_already "$(t svc_web)")"; return 0; fi
+  declare -F web_write_files >/dev/null || return 1
+  has python3 || { bad "$(tf web_no_python "$(pkg_hint python3)")"; return 1; }
+  web_write_files || return 1
+  ( web_env; nohup python3 "$WEB_DIR/server.py" >"$LOG_DIR/web.log" 2>&1 & echo $! >"$PID_DIR/web.pid" )
+  date +%s >"$PID_DIR/web.started"
+  _start_result web "$(cat "$PID_DIR/web.pid")" 20
+}
 stop_svc() {
   local s="$1"
   if ! svc_state "$s"; then info "$(tf svc_wasdown "$(svc_label "$s")")"; rm -f "$PID_DIR/$s.pid"; return 0; fi
@@ -950,13 +972,13 @@ stop_svc() {
     *)       warn "$(tf svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")";;
   esac
 }
-start_all() { local rc=0; start_proxy || rc=1; [[ "$SEARCH_ENABLED" == 1 ]] && { start_search || rc=1; }; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; return $rc; }
-stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; return 0; }
+start_all() { local rc=0; start_proxy || rc=1; [[ "$SEARCH_ENABLED" == 1 ]] && { start_search || rc=1; }; start_chat || rc=1; [[ "$IDE_ENABLED" == 1 ]] && { start_ide || rc=1; }; [[ "$WEB_ENABLED" == 1 ]] && { start_web || rc=1; }; return $rc; }
+stop_all()  { stop_svc proxy; stop_svc chat; [[ "$IDE_ENABLED" == 1 || -f "$PID_DIR/ide.pid" ]] && stop_svc ide; [[ "$SEARCH_ENABLED" == 1 || -f "$PID_DIR/search.pid" ]] && stop_svc search; [[ "$WEB_ENABLED" == 1 || -f "$PID_DIR/web.pid" ]] && stop_svc web; return 0; }
 restart_svc() { # keeps a systemd-managed service under systemd
   if svc_state "$1" && [[ "$SVC_BY" == systemd ]]; then write_litellm_yaml; systemctl --user restart "nimctl-$1" && ok "$(tf svc_up "$(svc_label "$1")" "$(svc_port "$1")")"; return; fi
   stop_svc "$1"; "start_$1"
 }
-restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; return 0; }
+restart_all() { restart_svc proxy; [[ "$SEARCH_ENABLED" == 1 ]] && restart_svc search; restart_svc chat; [[ "$IDE_ENABLED" == 1 ]] && restart_svc ide; [[ "$WEB_ENABLED" == 1 ]] && restart_svc web; return 0; }
 restart_if_running() { # after a config change; explicit yes only, because a Claude Code session may be attached
   svc_running proxy || svc_running chat || return 0
   (( INTERACTIVE )) || { info "$(t restart_hint)"; return 0; }
@@ -976,6 +998,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
            exec code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry;;
     search) local py; py=$(search_python) || { echo "nimctl: SearXNG missing – run nimctl search install" >&2; exit 1; }
            search_write_settings || exit 1; date +%s >"$PID_DIR/search.started"; SEARXNG_SETTINGS_PATH="$SEARX_DIR/settings.yml" exec "$py" -m searx.webapp;;
+    web)   has python3 || { echo "nimctl: python3 missing" >&2; exit 1; }; web_write_files || exit 1; web_env; date +%s >"$PID_DIR/web.started"; exec python3 "$WEB_DIR/server.py";;
     *) exit 64;;
   esac
 }
@@ -983,14 +1006,14 @@ unit_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; }
 inst_systemd() {
   has systemctl || { bad "$(t no_systemd)"; return 1; }
   local d n self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
-  local units=(proxy chat); [[ "$SEARCH_ENABLED" == 1 ]] && units+=(search); [[ "$IDE_ENABLED" == 1 ]] && units+=(ide)
+  local units=(proxy chat); [[ "$SEARCH_ENABLED" == 1 ]] && units+=(search); [[ "$IDE_ENABLED" == 1 ]] && units+=(ide); [[ "$WEB_ENABLED" == 1 ]] && units+=(web)
   for n in "${units[@]}"; do printf '[Unit]\nDescription=nimctl %s\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nExecStart=%s _fg %s\nRestart=on-failure\nRestartSec=10\nEnvironment=NIMCTL_HOME=%s\n\n[Install]\nWantedBy=default.target\n' "$n" "$self" "$n" "$NIM_DIR" >"$d/nimctl-$n.service"; done
   for n in "${units[@]}"; do stop_svc "$n" >/dev/null; done   # hand the ports over to the units
   systemctl --user daemon-reload && systemctl --user enable --now "${units[@]/#/nimctl-}" && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
 }
 uninst_systemd() {
-  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-search nimctl-watch.timer 2>/dev/null
-  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide,search}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
+  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-search nimctl-web nimctl-watch.timer 2>/dev/null
+  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide,search,web}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
 }
 
 # ══════ 40-actions.sh ══════
@@ -1012,7 +1035,7 @@ T_de+=(
   [key_rej]="nicht akzeptiert (%s) – alter Key bleibt" [checking]="prüfe … " [key_same]="gleicher Key – nichts geändert"
   [key_ok]="gültig" [key_none]="kein Key → k" [key_bad]="ungültig/abgelaufen → k" [key_off]="NVIDIA nicht erreichbar" [key_unk]="nicht geprüft" [checked]="geprüft"
   [key_expires]="läuft in ~%d Tagen ab" [key_expire_soon]="Key läuft in ~%d Tagen ab – neuen Key unter %s erzeugen" [key_expired]="Key ist vermutlich abgelaufen (älter als 180 Tage)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  5) Web-UI  (Enter = zurück)" [logs_follow]="f folgt live (Ctrl+C beendet nur die Anzeige)" [logs_none]="noch kein Log: %s"
   [env_hint]="# Für andere Werkzeuge (Aider, Continue, Zed, OpenAI-SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# Hinweis: Proxy läuft nicht – nimctl start"
   [inst_title]="Installation" [inst_missing]="fehlt" [inst_menu]="1) alles Fehlende installieren  2) PATH/Aliase  3) Autostart (systemd) an  4) Autostart aus  5) Shell-Completion%s  (Enter = zurück)"
   [inst_alias]="Befehle verfügbar: nimctl, nimctl code" [inst_npm]="npm fehlt – Node.js installieren: %s" [inst_working]="installiere %s … (2–5 Min.)"
@@ -1036,7 +1059,7 @@ T_en+=(
   [key_rej]="rejected (%s) – old key kept" [checking]="checking … " [key_same]="same key – nothing changed"
   [key_ok]="valid" [key_none]="no key → k" [key_bad]="invalid/expired → k" [key_off]="NVIDIA unreachable" [key_unk]="not checked" [checked]="checked"
   [key_expires]="expires in ~%d days" [key_expire_soon]="key expires in ~%d days – create a new one at %s" [key_expired]="key has probably expired (older than 180 days)"
-  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
+  [logs_which]="1) LiteLLM  2) Open WebUI  3) Watchdog  4) IDE  5) Web UI  (Enter = back)" [logs_follow]="f follows live (Ctrl+C only leaves the view)" [logs_none]="no log yet: %s"
   [env_hint]="# For other tools (Aider, Continue, Zed, OpenAI SDK …): eval \"\$(nimctl env)\"" [env_proxy_down]="# note: proxy is not running – nimctl start"
   [inst_title]="Installation" [inst_missing]="missing" [inst_menu]="1) install everything missing  2) PATH/aliases  3) autostart (systemd) on  4) autostart off  5) shell completion%s  (Enter = back)"
   [inst_alias]="Commands available: nimctl, nimctl code" [inst_npm]="npm missing – install Node.js: %s" [inst_working]="installing %s … (2–5 min)"
@@ -1103,13 +1126,15 @@ act_pick() { # act_pick <slot> [search] – choose a slot's model from a list; p
   local slot="$1" f="${2:-}" list n choice sel id
   sect "$(tf pick_slot "$slot")"
   if [[ -z "$f" ]]; then prompt "$(t pick_hint)" || return 1; f="$REPLY"; fi
-  if [[ -z "$f" ]]; then list=$(cut -f1 "$PROBES" | sort -u); else list=$(models_cached | grep -iF -- "$f"); fi
+  if [[ -z "$f" ]]; then list=$(cut -f1 "$PROBES" | sort -u)
+  elif [[ -n "$(pool_of "$f")" ]]; then list="$f"                                                        # a pool model by its namespaced id
+  else list=$(models_cached | grep -iF -- "$f"); grep -qxF -- "$f" <<<"$list" && list="$f"; fi          # an exact id needs no list
   [[ -z "$list" ]] && { bad "$(t nohit)"; return 1; }; n=$(echo "$list" | wc -l); ((n > 30)) && { bad "$(tf toomany "$n" 30)"; return 1; }
   local i=1 res note
   while read -r id; do probe_get "$id"; note=""
     case "$PROBE_RES" in ok) res="$OK"; note="${D}${PROBE_MS} ms · $(age_of "$PROBE_T")${R}"; [[ "$PROBE_TOOLS" == ok ]] && note+=" $OK${D}tools${R}"; [[ "$PROBE_TOOLS" == no ]] && note+=" $WA${D}$(t tools_no)${R}";; "") res="$GR";; *) note="${D}– $PROBE_RES${R}"; res="$NO";; esac
     printf "  %s %2d) %-48s %b\n" "$res" "$i" "$(trunc "$id" 48)" "$note"; ((i++)); done <<<"$list"
-  prompt "$(t number)" || return 1; choice="$REPLY"; [[ -z "$choice" ]] && { info "$(t unchanged)"; return 1; }
+  if [[ "$n" == 1 && "$list" == "$f" ]]; then choice=1; else prompt "$(t number)" || return 1; choice="$REPLY"; fi; [[ -z "$choice" ]] && { info "$(t unchanged)"; return 1; }
   [[ "$choice" =~ ^[0-9]{1,4}$ ]] && ((choice >= 1 && choice <= n)) || { bad "$(t invalid): $choice"; return 1; }
   sel=$(echo "$list" | sed -n "${choice}p"); probe_get "$sel"
   if [[ "$PROBE_RES" != ok ]]; then probe_many "$sel"; probe_get "$sel"; fi
@@ -1186,7 +1211,7 @@ act_env() { # prints export lines for other tools; eval "$(nimctl env)"
 
 # ── Chat & logs ───────────────────────────────────────────────────────────────
 act_chat_open() { svc_running chat || start_chat || return 1; ok "$(tf browser "$CHAT_PORT")"; open_url "http://localhost:$CHAT_PORT" || info "→ http://localhost:$CHAT_PORT"; }
-log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; *) return 1;; esac; }
+log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; web|5) echo "$LOG_DIR/web.log";; *) return 1;; esac; }
 act_logs() { # act_logs [proxy|chat|watch|ide] [-f|f]
   local which="${1:-}" follow="${2:-}" f
   [[ "$which" == -f ]] && { follow=-f; which="${2:-}"; }
@@ -1771,10 +1796,11 @@ _nimctl() {
     pick|auto) COMPREPLY=(\$(compgen -W "\$slots" -- "\$cur"));;
     test|bench) COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     code) [[ "\$prev" == --model || "\$prev" == -m ]] && COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
-    logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide" -- "\$cur"));;
+    logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide web" -- "\$cur"));;
+    web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
-    install) COMPREPLY=(\$(compgen -W "all alias systemd completion" -- "\$cur"));;
+    install) COMPREPLY=(\$(compgen -W "all alias systemd nosystemd completion watch_timer" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;
     doctor) COMPREPLY=(\$(compgen -W "--fix" -- "\$cur"));;
     status) COMPREPLY=(\$(compgen -W "--json" -- "\$cur"));;
@@ -1838,6 +1864,7 @@ render_dashboard() {
   printf "  %-8s %s%s\n" "$(t chat)" "$(svc_row chat)" "$([[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && printf ' %s(%s)%s' "$D" "$(t chat_via_proxy)" "$R")"
   { [[ "$IDE_ENABLED" == 1 ]] || has code-server; } && printf "  %-8s %s\n" "$(t ide)" "$(svc_row ide)"
   { [[ "$SEARCH_ENABLED" == 1 ]] || [[ -x "$SEARX_DIR/venv/bin/python" ]]; } && printf "  %-8s %s\n" "$(t svc_search)" "$(svc_row search)"
+  { [[ "$WEB_ENABLED" == 1 ]] || [[ -f "$WEB_DIR/server.py" ]]; } && printf "  %-8s %s\n" "$(t svc_web)" "$(svc_row web)"
   local tl="" x; for x in litellm open-webui claude uv code-server; do has "$x" && tl+="$OK $x  " || tl+="$NO $x  "; done
   printf "  %-8s %s\n" "$(t tools)" "$tl"
   printf "  %-8s %s\n" "$(t k_m)" "$(pool_line)"
@@ -2171,6 +2198,68 @@ cmd_search() { # cmd_search ["query"|start|stop|disable|install|test]
 }
 dash_register o cmd_search k_o use
 
+# ══════ 55-web.sh ══════
+# ── Web UI: the cockpit in the browser ──────────────────────────────────────────────────────────────────────
+# `nimctl web` serves http://127.0.0.1:4040 from $WEB_DIR: index.html (the page) and server.py (a stdlib-only Python
+# backend). Both live in src/web/, are embedded into this script by build.sh and rewritten on every start. The page
+# shows what the dashboard shows, plus charts from a 24-hour sample history, and can change everything the CLI can: it
+# runs nimctl commands (output streamed live) and writes $NIM_DIR/settings, the NIMCTL_* values nimctl reads at start
+# (an explicit environment variable still wins). Every API call needs the per-installation token the page carries and
+# a Host header naming this machine, so no other site open in the browser can reach it.
+T_de+=(
+  [k_z]="Web-UI" [h_web]="Web-Oberfläche im Browser (Dashboard, Einstellungen, Statistik): nimctl web [open|start|stop|disable|url|candidates]"
+  [web_url]="Web-UI: http://localhost:%s" [web_enabled]="Web-UI aktiviert – nimctl start startet sie mit" [web_disabled]="Web-UI deaktiviert – wieder an: nimctl web"
+  [web_no_python]="python3 fehlt – für die Web-UI nötig: %s" [web_local]="nur von diesem Rechner erreichbar; Token in %s"
+)
+T_en+=(
+  [k_z]="Web UI" [h_web]="web UI in the browser (dashboard, settings, statistics): nimctl web [open|start|stop|disable|url|candidates]"
+  [web_url]="web UI: http://localhost:%s" [web_enabled]="web UI enabled – nimctl start starts it too" [web_disabled]="web UI disabled – back on: nimctl web"
+  [web_no_python]="python3 missing – needed for the web UI: %s" [web_local]="reachable from this machine only; token in %s"
+)
+web_token() { # one secret per installation; the page carries it, every API call must present it
+  local f="$WEB_DIR/token"; [[ -s "$f" ]] || { mkdir -p "$WEB_DIR"; gen_secret >"$f.tmp"; chmod 600 "$f.tmp"; mv "$f.tmp" "$f"; }; cat "$f"
+}
+web_write_files() { # server.py and index.html from the embedded assets (build.sh), rewritten on every start
+  mkdir -p "$WEB_DIR"; chmod 700 "$WEB_DIR"
+  web_asset_server_py >"$WEB_DIR/server.py.tmp" && mv "$WEB_DIR/server.py.tmp" "$WEB_DIR/server.py" || return 1
+  web_asset_index_html >"$WEB_DIR/index.html.tmp" && mv "$WEB_DIR/index.html.tmp" "$WEB_DIR/index.html" || return 1
+  web_token >/dev/null
+}
+web_env() { # what server.py needs: where nimctl and its data are, the port, the language, the settings the UI may write
+  local bin; bin=$(realpath_ "$0")
+  export NIMCTL_HOME="$NIM_DIR" NIMCTL_WEB_BIN="$bin" NIMCTL_WEB_PORT="$WEB_PORT" NIMCTL_BIND="$BIND" NIMCTL_LANG="$L" NIMCTL_WEB_KEYS="$SETTINGS_KEYS"
+}
+web_enable() { [[ "$WEB_ENABLED" == 1 ]] || { WEB_ENABLED=1; save_conf; }; ok "$(t web_enabled)"; }
+web_ensure() { # python present, files written, server up – and only then enabled for start/stop/restart and systemd
+  has python3 || { bad "$(tf web_no_python "$(pkg_hint python3)")"; return 1; }
+  svc_running web || start_web || return 1
+  [[ "$WEB_ENABLED" == 1 ]] || web_enable
+}
+web_open() { web_ensure || return 1; ok "$(tf web_url "$WEB_PORT")"; info "$(tf web_local "$WEB_DIR/token")"; open_url "http://localhost:$WEB_PORT" || info "→ http://localhost:$WEB_PORT"; }
+web_disable() { # stop it, take it out of start/stop/restart and systemd; the files stay
+  if has systemctl && [[ -f "$(unit_dir)/nimctl-web.service" ]]; then systemctl --user disable --now nimctl-web 2>/dev/null; rm -f "$(unit_dir)/nimctl-web.service"; systemctl --user daemon-reload 2>/dev/null; fi
+  stop_svc web; WEB_ENABLED=0; save_conf; ok "$(t web_disabled)"
+}
+web_candidates_json() { # the effective candidate patterns per slot and per pool provider, for the UI's editor
+  local j="{}" s p v
+  for s in "${SLOTS[@]}"; do v=$(candidates "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$s" --arg v "${v% }" '$a + {($k): $v}'); done
+  for p in "${POOL_PROVIDERS[@]}"; do for s in "${SLOTS[@]}"; do v=$(pool_candidates "$p" "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$p.$s" --arg v "${v% }" '$a + {($k): $v}'); done; done
+  printf '%s\n' "$j"
+}
+cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]
+  local sub="${1:-open}"
+  case "$sub" in
+    open)       web_open;;
+    start)      web_ensure || return 1; ok "$(tf web_url "$WEB_PORT")";;
+    stop)       stop_svc web;;
+    disable)    web_disable;;
+    url)        printf 'http://localhost:%s\n' "$WEB_PORT";;
+    candidates) web_candidates_json;;
+    *)          bad "$(t invalid): $sub"; return 64;;
+  esac
+}
+dash_register z cmd_web k_z use
+
 # ══════ 60-doctor.sh ══════
 # ── Doctor ────────────────────────────────────────────────────────────────────
 T_de+=(
@@ -2198,6 +2287,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
   [[ "$perm" == 700 ]] && ok "$(tf doc_perm_ok "$NIM_DIR")" || { warn "$(tf doc_perm "$NIM_DIR" "$perm")"; doc_issue perm; }
   local s svcs=(proxy chat); [[ "$IDE_ENABLED" == 1 ]] && { svcs+=(ide); has code-server || { bad "code-server $(t inst_missing)"; doc_issue "tool:code-server"; }; }
   [[ "$SEARCH_ENABLED" == 1 ]] && { svcs+=(search); [[ -x "$SEARX_DIR/venv/bin/python" ]] || { bad "SearXNG $(t inst_missing)"; doc_issue "tool:searxng"; }; }
+  [[ "$WEB_ENABLED" == 1 ]] && { svcs+=(web); has python3 || { bad "python3 $(t inst_missing)"; doc_issue "tool:python3"; }; }
   for s in "${svcs[@]}"; do
     if svc_state "$s"; then case "$SVC_BY" in foreign) warn "$(tf doc_svc_foreign "$(svc_port "$s")" "${SVC_PID:-?}")"; doc_issue "port:$s";; *) ok "$s :$(svc_port "$s") ($(t "by_$SVC_BY"))";; esac
     else info "$s :$(svc_port "$s") $(t down)"; fi
@@ -2245,7 +2335,7 @@ T_de+=(
   [wz_models]="Modelle" [wz_models_hint]="Ich teste alle Kandidaten parallel mit echten Anfragen (max. %ss je Modell) und prüfe, ob das Code-Modell Tool-Calls kann."
   [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten?" [wz_done]="Fertig!"
   [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle und ersetzt tote automatisch)?"
-  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?" [wz_search_q]="Websuche für den Chat einrichten (SearXNG, ~60 MB)?"
+  [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?" [wz_search_q]="Websuche für den Chat einrichten (SearXNG, ~60 MB)?" [wz_web_q]="Web-Oberfläche einrichten (Dashboard, Einstellungen und Statistik im Browser)?"
   [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen\n           nimctl help   alle Befehle"
   [wz_chat_hint]="Chat: Das erste Konto, das sich unter http://localhost:%s registriert, wird Admin. Passwort vergessen? nimctl chat passwd"
 )
@@ -2258,7 +2348,7 @@ T_en+=(
   [wz_models]="Models" [wz_models_hint]="I probe all candidates in parallel with real requests (max %ss per model) and check that the code model can make tool calls."
   [wz_start]="Services" [wz_start_q]="Start proxy and chat now?" [wz_done]="Done!"
   [wz_watch_q]="Set up the watchdog timer (probes the models hourly and replaces dead ones automatically)?"
-  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?" [wz_search_q]="Set up web search for the chat (SearXNG, ~60 MB)?"
+  [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?" [wz_search_q]="Set up web search for the chat (SearXNG, ~60 MB)?" [wz_web_q]="Set up the web UI (dashboard, settings and statistics in the browser)?"
   [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser\n              nimctl help   all commands"
   [wz_chat_hint]="Chat: the first account registered at http://localhost:%s becomes admin. Forgot the password? nimctl chat passwd"
 )
@@ -2286,6 +2376,7 @@ wizard() { # wizard [--yes]
   if ((missing)); then ask "$(t wz_tools_q)" y && inst_all; else ok "$(t wz_tools_ok)"; fi
   if declare -F inst_codeserver >/dev/null && [[ "$IDE_ENABLED" != 1 ]]; then ask "$(t wz_ide_q)" y && inst_codeserver; fi
   if declare -F inst_searxng >/dev/null && [[ "$SEARCH_ENABLED" != 1 ]]; then ask "$(t wz_search_q)" y && inst_searxng; fi
+  if declare -F web_enable >/dev/null && [[ "$WEB_ENABLED" != 1 ]] && has python3; then ask "$(t wz_web_q)" y && web_enable; fi
   inst_alias
   sect "$(tf wz_step 3 5 "$(t wz_models)")"; info "$(tf wz_models_hint "$PROBE_TIMEOUT")"
   auto_select code fast chat review
@@ -2293,7 +2384,7 @@ wizard() { # wizard [--yes]
   if ask "$(t wz_start_q)" y; then start_all; fi
   if has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]] && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
   sect "$(tf wz_step 5 5 "$(t wz_done)")"; local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; slot_line "$s" "$n"; done
-  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; printf '\n'
+  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; [[ "$WEB_ENABLED" == 1 ]] && info "$(tf web_url "$WEB_PORT")"; printf '\n'
 }
 
 # ══════ 70-update.sh ══════
@@ -2352,7 +2443,7 @@ T_de+=(
   [h_code]="Claude Code über den Proxy starten (--model <Slot|ID>, --think, .nimctl-Profil im Projekt)"
   [h_chat]="Chat starten und im Browser öffnen; Konten: nimctl chat users | passwd [E-Mail] | reset"
   [h_env]="Export-Zeilen für andere Werkzeuge ausgeben: eval \"\$(nimctl env)\"" [h_key]="API-Key prüfen oder setzen: nimctl key [nvapi-…]"
-  [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch|ide] [-f]"
+  [h_doctor]="diagnostizieren und reparieren (--fix ohne Rückfrage)" [h_logs]="Log anzeigen: nimctl logs [proxy|chat|watch|ide|web] [-f]"
   [h_install]="Werkzeuge, PATH, Autostart, Completion" [h_update]="Selbst-Update von GitHub (--check zeigt nur an)" [h_models]="Katalog ausgeben (eine ID je Zeile)"
   [h_version]="Version" [h_help]="diese Hilfe" [h_quit]="Dashboard verlassen (Dienste laufen weiter)"
 )
@@ -2370,11 +2461,11 @@ T_en+=(
   [h_code]="launch Claude Code through the proxy (--model <slot|id>, --think, .nimctl profile in the project)"
   [h_chat]="start the chat and open it in the browser; accounts: nimctl chat users | passwd [email] | reset"
   [h_env]="print export lines for other tools: eval \"\$(nimctl env)\"" [h_key]="check or set the API key: nimctl key [nvapi-…]"
-  [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch|ide] [-f]"
+  [h_doctor]="diagnose and repair (--fix without asking)" [h_logs]="show a log: nimctl logs [proxy|chat|watch|ide|web] [-f]"
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )
-COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide search pool env key doctor logs install update models version help)
+COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide search pool web env key doctor logs install update models version help)
 usage() {
   local c w=10 extra=()
   printf '%s\n\n' "$(t usage)"
@@ -2393,6 +2484,7 @@ status_json() {
   svc_state chat && { [[ "$SVC_BY" != foreign ]] && up_c=true; }; by_c="${SVC_BY:-}"; pid_c="${SVC_PID:-}"
   local up_i=false by_i pid_i; svc_state ide && { [[ "$SVC_BY" != foreign ]] && up_i=true; }; by_i="${SVC_BY:-}"; pid_i="${SVC_PID:-}"
   local up_s=false by_s pid_s; svc_state search && { [[ "$SVC_BY" != foreign ]] && up_s=true; }; by_s="${SVC_BY:-}"; pid_s="${SVC_PID:-}"
+  local up_w=false by_w pid_w; svc_state web && { [[ "$SVC_BY" != foreign ]] && up_w=true; }; by_w="${SVC_BY:-}"; pid_w="${SVC_PID:-}"
   for s in "${SLOTS[@]}"; do m=$(slot_model "$s"); probe_get "$m"
     sj=$(jq -n --argjson acc "$sj" --arg s "$s" --arg m "$m" --arg res "$PROBE_RES" --arg ms "$PROBE_MS" --arg t "$PROBE_T" --arg tools "$PROBE_TOOLS" \
       '$acc + {($s): {model: (if $m=="" then null else $m end), state: (if $res=="" then "unprobed" elif $res=="ok" then "ok" else "error" end), error: (if $res=="ok" or $res=="" then null else $res end), ms: ($ms|tonumber? // null), probed: ($t|tonumber? // null), tools: (if $tools=="" then null else $tools end)}}')
@@ -2402,11 +2494,13 @@ status_json() {
     --argjson up_c "$up_c" --arg by_c "$by_c" --arg pid_c "$pid_c" --arg cp "$CHAT_PORT" --argjson slots "$sj" --argjson tools "$tj" --arg mk "$MASTER_KEY" \
     --argjson up_i "$up_i" --arg by_i "$by_i" --arg pid_i "$pid_i" --arg ip "$IDE_PORT" --arg ie "$IDE_ENABLED" \
     --argjson up_s "$up_s" --arg by_s "$by_s" --arg pid_s "$pid_s" --arg sp "$SEARCH_PORT" --arg se "$SEARCH_ENABLED" --argjson pool "$(pool_json)" \
+    --argjson up_w "$up_w" --arg by_w "$by_w" --arg pid_w "$pid_w" --arg wp "$WEB_PORT" --arg we "$WEB_ENABLED" \
     '{version:$v, key:{state:$ks, checked:($kt|tonumber? // null), expires_in_days:($kd|tonumber? // null)},
       proxy:{up:$up_p, by:(if $by_p=="" then null else $by_p end), pid:($pid_p|tonumber? // null), port:($pp|tonumber), url:("http://127.0.0.1:"+$pp)},
       chat:{up:$up_c, by:(if $by_c=="" then null else $by_c end), pid:($pid_c|tonumber? // null), port:($cp|tonumber), url:("http://localhost:"+$cp)},
       ide:{enabled:($ie=="1"), up:$up_i, by:(if $by_i=="" then null else $by_i end), pid:($pid_i|tonumber? // null), port:($ip|tonumber), url:("http://localhost:"+$ip)},
       search:{enabled:($se=="1"), up:$up_s, by:(if $by_s=="" then null else $by_s end), pid:($pid_s|tonumber? // null), port:($sp|tonumber), url:("http://localhost:"+$sp)},
+      web:{enabled:($we=="1"), up:$up_w, by:(if $by_w=="" then null else $by_w end), pid:($pid_w|tonumber? // null), port:($wp|tonumber), url:("http://localhost:"+$wp)},
       pool:$pool, slots:$slots, tools:$tools}'
 }
 status_once() { NO_CLEAR=1 LAST_OUT="" render_dashboard; printf '\n'; status_code; }
@@ -2441,11 +2535,1146 @@ main() {
     doctor)   doctor "${1:-}";;
     proxy)    svc_running proxy || { bad "$(t proxy_down)"; exit 2; }; act_proxy;;
     logs)     act_logs "$@";;
-    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 64; };; esac;;
+    install)  case "${1:-}" in all) inst_all; inst_alias;; alias|path) inst_alias;; systemd|autostart) inst_systemd;; nosystemd|noautostart) uninst_systemd;; "") act_install;; *) declare -F "inst_$1" >/dev/null && "inst_$1" || { bad "$(t invalid): $1"; exit 64; };; esac;;
     update)   self_update "${1:-}";;
     _fg)      fg_service "${1:-}";;
     *)        if declare -F "cmd_$cmd" >/dev/null; then "cmd_$cmd" "$@"; else bad "$(t unknown): $cmd"; printf '\n'; usage; exit 64; fi;;
   esac
+}
+
+# ══════ src/web/index.html (embedded) ══════
+web_asset_index_html() { cat <<'ASSET_EOF_index_html'
+<!doctype html>
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%274%27 fill=%27%232a78d6%27/%3E%3Ctext x=%278%27 y=%2712%27 font-size=%2710%27 text-anchor=%27middle%27 fill=%27white%27 font-family=%27sans-serif%27 font-weight=%27700%27%3En%3C/text%3E%3C/svg%3E">
+<title>nimctl</title>
+<style>
+/* nimctl web UI – written to ~/.nimctl/web/index.html by nimctl (src/55-web.sh, embedded by build.sh). Vanilla HTML/JS,
+   nothing loaded from the network. Colors follow one role palette in light and dark; series colors are used for marks
+   only, text always wears the ink tokens. */
+:root {
+  color-scheme: light;
+  --bg:#f9f9f7; --surface:#fcfcfb; --surface-2:#f0efec; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781; --grid:#e1e0d9; --axis:#c3c2b7;
+  --border:rgba(11,11,11,.10); --accent:#2a78d6; --accent-ink:#ffffff; --track:#cde2fb;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300;
+  --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b; --good-text:#006300; --crit-text:#b32b2b;
+  --shadow:0 1px 2px rgba(11,11,11,.06), 0 4px 16px rgba(11,11,11,.04);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark;
+  --bg:#0d0d0d; --surface:#1a1a19; --surface-2:#242422; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835;
+  --border:rgba(255,255,255,.10); --accent:#3987e5; --accent-ink:#ffffff; --track:#184f95;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --good-text:#0ca30c; --crit-text:#e66767;
+  --shadow:0 1px 2px rgba(0,0,0,.4); } }
+:root[data-theme="dark"] { color-scheme: dark;
+  --bg:#0d0d0d; --surface:#1a1a19; --surface-2:#242422; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781; --grid:#2c2c2a; --axis:#383835;
+  --border:rgba(255,255,255,.10); --accent:#3987e5; --accent-ink:#ffffff; --track:#184f95;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --good-text:#0ca30c; --crit-text:#e66767;
+  --shadow:0 1px 2px rgba(0,0,0,.4); }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: inherit; }
+.top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.brand { font-weight: 650; font-size: 16px; letter-spacing: .01em; display: flex; align-items: center; gap: 8px; }
+.brand small { color: var(--muted); font-weight: 400; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav button { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--ink2); cursor: pointer; }
+nav button:hover { background: var(--surface-2); color: var(--ink); }
+nav button[aria-current="page"] { background: var(--accent); color: var(--accent-ink); }
+.topright { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.busy { display: none; align-items: center; gap: 6px; color: var(--ink2); font-size: 13px; }
+.busy.on { display: inline-flex; }
+.spin { width: 12px; height: 12px; border: 2px solid var(--grid); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+main { max-width: 1240px; margin: 0 auto; padding: 16px; padding-bottom: 260px; }
+.page { display: none; } .page.on { display: block; }
+h1 { font-size: 20px; margin: 4px 0 12px; font-weight: 650; }
+h2 { font-size: 15px; margin: 0 0 8px; font-weight: 650; }
+h3 { font-size: 13px; margin: 12px 0 6px; font-weight: 600; color: var(--ink2); text-transform: uppercase; letter-spacing: .04em; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); align-items: start; }
+.grid.wide { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
+.kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin-bottom: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; box-shadow: var(--shadow); min-width: 0; }
+.card.span2 { grid-column: span 2; } @media (max-width: 720px) { .card.span2 { grid-column: span 1; } }
+.tile .label { color: var(--ink2); font-size: 13px; }
+.tile .value { font-size: 28px; font-weight: 600; line-height: 1.2; margin: 4px 0 2px; }
+.tile .sub { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row.between { justify-content: space-between; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--surface-2); color: var(--ink2); white-space: nowrap; }
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.good .dot { background: var(--good); } .pill.warn .dot { background: var(--warn); } .pill.crit .dot { background: var(--crit); }
+.pill.good { color: var(--good-text); } .pill.crit { color: var(--crit-text); }
+.muted { color: var(--muted); } .small { font-size: 12px; } .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.tnum { font-variant-numeric: tabular-nums; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; color: var(--ink); white-space: nowrap; }
+.btn:hover { background: var(--surface-2); } .btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; } .btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--crit-text); border-color: var(--crit); } .btn.small { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+.btn.ghost { border-color: transparent; background: none; color: var(--ink2); }
+input[type=text], input[type=password], input[type=number], select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink); }
+input:disabled { opacity: .6; } textarea { min-height: 70px; resize: vertical; }
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--ink2); }
+label.field .help { font-size: 12px; color: var(--muted); }
+label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+th { color: var(--ink2); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+.notice { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); border-left: 3px solid var(--warn); margin-bottom: 12px; }
+.notice.crit { border-left-color: var(--crit); } .notice.good { border-left-color: var(--good); }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 6px 10px; font-size: 12px; min-width: 120px; display: none; z-index: 5; }
+.chart .tip .k { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.chart .tip .k b { font-variant-numeric: tabular-nums; }
+.chart .tip .key { width: 12px; height: 0; border-top: 2px solid var(--muted); }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--ink2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.legend i.line { height: 0; border-top: 2px solid; border-radius: 0; }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.chart-head .sub { color: var(--muted); font-size: 12px; }
+.filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.filters .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.filters .seg button { border: 0; background: var(--surface); padding: 5px 10px; cursor: pointer; color: var(--ink2); }
+.filters .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.meter { height: 10px; border-radius: 5px; background: var(--track); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); border-radius: 5px; }
+.meter.warn i { background: var(--warn); } .meter.crit i { background: var(--crit); }
+.bar-track { height: 6px; background: var(--grid); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.bar-track i { display: block; height: 100%; background: var(--s1); border-radius: 0 3px 3px 0; }
+.list { max-height: 420px; overflow: auto; border: 1px solid var(--grid); border-radius: 8px; }
+.list .item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.list .item:last-child { border-bottom: 0; } .list .item .id { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -4px 20px rgba(0,0,0,.12); transition: height .2s; height: 240px; display: flex; flex-direction: column; }
+.console.collapsed { height: 36px; }
+.console-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.console-bar .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console pre { margin: 0; padding: 8px 12px; flex: 1; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; }
+.log { max-height: 460px; overflow: auto; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.toast { position: fixed; top: 60px; right: 16px; z-index: 40; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 10px 14px; max-width: 360px; display: none; }
+.toast.on { display: block; }
+.hidden { display: none !important; }
+.slot-model { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+details summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
+kbd { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.sr { position: absolute; left: -9999px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">nimctl <small id="version"></small></div>
+  <nav id="nav" aria-label="Sections"></nav>
+  <div class="topright">
+    <span class="busy" id="busy"><span class="spin"></span><span id="busy-text"></span></span>
+    <button class="btn small ghost" id="theme" title="Theme">◐</button>
+  </div>
+</header>
+<main>
+  <div id="notices"></div>
+  <section id="page-overview" class="page"></section>
+  <section id="page-models" class="page"></section>
+  <section id="page-pool" class="page"></section>
+  <section id="page-services" class="page"></section>
+  <section id="page-stats" class="page"></section>
+  <section id="page-settings" class="page"></section>
+</main>
+<div class="toast" id="toast"></div>
+<aside class="console collapsed" id="console" aria-label="Console">
+  <div class="console-bar">
+    <span class="title" id="console-title"></span>
+    <button class="btn small danger hidden" id="console-abort"></button>
+    <button class="btn small ghost" id="console-clear"></button>
+    <button class="btn small ghost" id="console-toggle">▲</button>
+  </div>
+  <pre id="console-out"></pre>
+</aside>
+<script>
+'use strict';
+const NIMCTL = { token: '__TOKEN__', lang: '__LANG__', port: '__PORT__' };
+const L = NIMCTL.lang === 'de' ? 'de' : 'en';
+const T = {
+de: {
+  overview:'Übersicht', models:'Modelle', pool:'Pool', services:'Dienste', stats:'Statistik', settings:'Einstellungen', console:'Konsole',
+  requests:'Anfragen', since:'seit %s', c429:'429 (Rate-Limit)', fallbacks:'Fallbacks', throttled:'Gebremst (Budget)', errors:'Fehler',
+  budget:'Budget', budget_sub:'%s von %s frei · %s wartend', budget_stale:'Proxy-Budget: keine frischen Daten', per_min:'/min',
+  key:'Key', key_ok:'gültig', key_none:'kein Key', key_bad:'ungültig/abgelaufen', key_off:'NVIDIA nicht erreichbar', key_unk:'nicht geprüft', checked:'geprüft %s', expires:'läuft in ~%s Tagen ab',
+  proxy:'Proxy', chat:'Chat', ide:'IDE', search:'Suche', web:'Web-UI', up:'läuft', down:'aus', foreign:'fremd (Port belegt)', by:'via %s', pid:'PID %s', port:'Port %s', enabled:'aktiviert', disabled:'nicht aktiviert',
+  open:'Öffnen', start:'Starten', stop:'Stoppen', restart:'Neustart', start_all:'Alle starten', stop_all:'Alle stoppen', restart_all:'Alle neu starten', install:'Installieren', disable:'Deaktivieren', enable:'Aktivieren',
+  auto:'Auto-Wahl', auto_all:'Alle Slots automatisch wählen', probe:'Prüfen', probe_all:'Gewählte Modelle prüfen', doctor:'Doctor', doctor_fix:'Doctor mit Reparatur', test:'Testen', bench:'Bench', bench_all:'Bench aller Slots',
+  slot:'Slot', model:'Modell', state:'Status', latency:'Latenz', tools:'Tools', probed:'geprüft', answers:'antwortet', unprobed:'nicht geprüft', notools:'keine Tool-Calls', tools_ok:'Tool-Calls ✓', none:'– keins –',
+  slot_code:'Claude Code', slot_fast:'Nebenaufgaben & Fallback', slot_chat:'Browser-Chat', slot_review:'großes Modell (nimctl code --model review)',
+  pick:'Wählen', set_slot:'→ %s', catalog:'Katalog', catalog_hint:'Suchen und direkt einem Slot zuweisen – das Modell wird vorher geprüft. Pool-Modelle stehen als anbieter:id dabei.', search_ph:'Suchbegriff, z. B. deepseek, nemotron, groq:',
+  candidates:'Kandidaten-Muster', candidates_hint:'Reguläre Ausdrücke gegen den Katalog, in Reihenfolge; das erste Muster mit einem antwortenden Modell gewinnt. Leer = Standard.', effective:'wirksam', save:'Speichern', saved:'gespeichert', reset:'Zurücksetzen',
+  test_title:'Prompt schicken', test_model:'Modell oder Slot', prompt:'Prompt', send:'Senden', bench_last:'Letzte Bench-Werte', ttft:'Zeit bis 1. Token', toks:'Tokens/s', no_data:'noch keine Daten',
+  pool_hint:'NVIDIA bleibt erste Wahl. Scheitert eine Anfrage dort (keine Antwort für %s s, 429, 5xx), übernimmt der Pool – Anbieter in dieser Reihenfolge.', pool_key:'API-Key', pool_add:'Key prüfen & übernehmen', pool_remove:'Entfernen', pool_auto:'Modelle neu wählen', pool_test:'Pool-Roundtrip', pool_key_url:'Key erzeugen', pool_none:'kein Key',
+  note_groq:'~30 Anfragen/min, ~1.000/Tag, keine Karte nötig', note_gemini:'10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen', note_cerebras:'~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell', note_openrouter:'20 Anfragen/min, 50/Tag (1.000 ab 10 $ Guthaben), nur :free-Modelle', note_mistral:'Experiment-Tier: ~1 Anfrage/s, 1 Mrd. Tokens/Monat; Daten dürfen zum Training genutzt werden',
+  logs:'Logs', live:'live', log_of:'Log: %s', accounts:'Chat-Konten', users:'Konten anzeigen', passwd:'Passwort setzen', email:'E-Mail', password:'Passwort', admin:'Admin', reset_accounts:'Alle Konten löschen', reset_confirm:'Wirklich alle Chat-Konten löschen? Chats bleiben, gehören aber niemandem mehr.',
+  workspace:'Projektordner der IDE', workspace_hint:'Ordner, den code-server öffnet und in dem das Shell-Werkzeug arbeitet', autocomplete:'Autocomplete (Continue)', ide_password:'IDE-Passwort anzeigen', ide_password_reset:'IDE-Passwort neu erzeugen', ide_config:'IDE-Konfiguration neu schreiben',
+  autostart:'Autostart (systemd --user)', autostart_on:'Autostart einrichten', autostart_off:'Autostart entfernen', watch_timer:'Watchdog-Timer einrichten', watch_now:'Watchdog jetzt laufen lassen', alias:'PATH/Aliase einrichten', completion:'Shell-Completion einrichten', install_all:'Fehlende Werkzeuge installieren', update_check:'Update prüfen', update:'Update einspielen',
+  range:'Zeitraum', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Anfragen pro Minute', req_sub:'aus dem Proxy-Log, alle 30 s abgetastet', events:'429, Fallbacks, gebremst', events_sub:'je Intervall', budget_hist:'Freies Budget', budget_hist_sub:'freie Slots pro Minute (NIMCTL_RPM)', status_classes:'Status-Klassen', paths:'Häufigste Pfade', model_latency:'Modell-Latenz (Probe)', bench_ttft:'Bench: Zeit bis zum ersten Token', bench_toks:'Bench: Tokens pro Sekunde', table:'Tabelle', chart:'Diagramm', time:'Zeit', value:'Wert', count:'Anzahl', free:'frei', waiting:'wartend',
+  s_key:'NVIDIA API-Key', s_key_hint:'Beginnt mit nvapi-, ~6 Monate gültig. Wird bei NVIDIA geprüft, bevor er gespeichert wird.', s_key_new:'Neuer Key', s_key_save:'Key prüfen & speichern',
+  s_proxy:'Proxy & Budget', s_net:'Ports & Netzwerk', s_probe:'Prüfung', s_ide:'IDE & Suche', s_ui:'Oberfläche', s_maint:'Wartung', s_danger:'Gefahrenzone',
+  s_rpm:'Anfragen pro Minute (Budget)', s_rpm_h:'Token-Bucket für den ganzen NVIDIA-Key; Anfragen darüber warten', s_rpm_wait:'Maximale Wartezeit (s)', s_rpm_wait_h:'danach antwortet der Proxy 429 mit Retry-After', s_stall:'Stillstand-Timeout (s)', s_stall_h:'schickt ein Modell so lange nichts, geht die Anfrage zum Fallback', s_maxout:'Max. Ausgabe-Tokens (Claude Code)', s_chat_via:'Chat über den Proxy', s_yes:'ja', s_no:'nein (direkt zu NVIDIA)',
+  s_port_proxy:'Proxy-Port', s_port_chat:'Chat-Port', s_port_ide:'IDE-Port', s_port_search:'Such-Port', s_port_web:'Web-UI-Port', s_bind:'Adresse der Dienste', s_bind_h:'127.0.0.1 = nur dieser Rechner; 0.0.0.0 macht alle Dienste im Netz erreichbar',
+  s_probe_to:'Probe-Timeout (s)', s_reprobe:'Neu prüfen nach (h)', s_keywarn:'Key-Warnung nach (Tagen)', s_ide_ctx:'Kontextlänge für Continue', s_ide_ext:'Zusätzliche Erweiterungen (Open VSX)', s_search_n:'Suchergebnisse je Anfrage', s_lang:'Sprache', s_lang_auto:'automatisch ($LANG)', s_theme:'Farbschema', theme_auto:'System', theme_light:'Hell', theme_dark:'Dunkel',
+  s_env:'aus der Umgebung – hier nicht änderbar', s_default:'Standard: %s', s_restart_needed:'Einstellungen gespeichert – wirksam nach Neustart der Dienste.', restart_now:'Jetzt neu starten',
+  config_changed:'Konfiguration geändert – der Proxy läuft noch mit der alten. Neustart?', key_warn:'Der NVIDIA-Key läuft in ~%s Tagen ab – neuen Key erzeugen.', key_expired:'Der NVIDIA-Key ist vermutlich abgelaufen (älter als 180 Tage).',
+  running:'läuft: %s', done_ok:'fertig (%s s)', done_fail:'beendet mit Code %s (%s s)', busy:'Es läuft bereits ein Befehl.', abort:'Abbrechen', clear:'Leeren', restart_after:'Dienste danach neu starten', offline:'Web-UI nicht erreichbar – läuft der Dienst? nimctl web', forbidden:'Zugriff verweigert (Token) – Seite neu laden.',
+  extra_models:'Zusätzliche Modelle im Proxy', help_slots:'code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell', version_hint:'nimctl %s · %s', ago_s:'vor %ss', ago_m:'vor %s min', ago_h:'vor %s h', ago_d:'vor %s d', never:'nie',
+  tool_present:'vorhanden', tool_missing:'fehlt', tools_row:'Werkzeuge', show:'Anzeigen', hide:'Verbergen', links:'Links', open_chat:'Chat öffnen', open_ide:'IDE öffnen', open_search:'Suche öffnen', proxy_url:'Proxy-URL', master_key:'Proxy-Master-Key', env_lines:'Export-Zeilen für andere Werkzeuge',
+},
+en: {
+  overview:'Overview', models:'Models', pool:'Pool', services:'Services', stats:'Statistics', settings:'Settings', console:'Console',
+  requests:'Requests', since:'since %s', c429:'429 (rate limit)', fallbacks:'Fallbacks', throttled:'Throttled (budget)', errors:'Errors',
+  budget:'Budget', budget_sub:'%s of %s free · %s waiting', budget_stale:'proxy budget: no fresh data', per_min:'/min',
+  key:'Key', key_ok:'valid', key_none:'no key', key_bad:'invalid/expired', key_off:'NVIDIA unreachable', key_unk:'not checked', checked:'checked %s', expires:'expires in ~%s days',
+  proxy:'Proxy', chat:'Chat', ide:'IDE', search:'Search', web:'Web UI', up:'up', down:'down', foreign:'foreign (port taken)', by:'via %s', pid:'PID %s', port:'port %s', enabled:'enabled', disabled:'not enabled',
+  open:'Open', start:'Start', stop:'Stop', restart:'Restart', start_all:'Start all', stop_all:'Stop all', restart_all:'Restart all', install:'Install', disable:'Disable', enable:'Enable',
+  auto:'Auto-select', auto_all:'Auto-select all slots', probe:'Probe', probe_all:'Probe the selected models', doctor:'Doctor', doctor_fix:'Doctor with repair', test:'Test', bench:'Bench', bench_all:'Bench all slots',
+  slot:'Slot', model:'Model', state:'State', latency:'Latency', tools:'Tools', probed:'probed', answers:'responds', unprobed:'not probed', notools:'no tool calls', tools_ok:'tool calls ✓', none:'– none –',
+  slot_code:'Claude Code', slot_fast:'side tasks & fallback', slot_chat:'browser chat', slot_review:'big model (nimctl code --model review)',
+  pick:'Pick', set_slot:'→ %s', catalog:'Catalog', catalog_hint:'Search and assign to a slot directly – the model is probed first. Pool models are listed as provider:id.', search_ph:'search, e.g. deepseek, nemotron, groq:',
+  candidates:'Candidate patterns', candidates_hint:'Regular expressions matched against the catalog, in order; the first pattern with a responding model wins. Empty = default.', effective:'effective', save:'Save', saved:'saved', reset:'Reset',
+  test_title:'Send a prompt', test_model:'Model or slot', prompt:'Prompt', send:'Send', bench_last:'Last bench results', ttft:'Time to first token', toks:'Tokens/s', no_data:'no data yet',
+  pool_hint:'NVIDIA stays first. When a request fails there (no answer for %s s, 429, 5xx) the pool takes over – providers in this order.', pool_key:'API key', pool_add:'Check key & add', pool_remove:'Remove', pool_auto:'Re-select models', pool_test:'Pool round trip', pool_key_url:'create a key', pool_none:'no key',
+  note_groq:'~30 requests/min, ~1,000/day, no card needed', note_gemini:'10–15 requests/min, 250–1,000/day; Google may train on free-tier data', note_cerebras:'~30 requests/min, 1M tokens/day, very fast', note_openrouter:'20 requests/min, 50/day (1,000 with $10 credit), :free models only', note_mistral:'experiment tier: ~1 request/s, 1B tokens/month; data may be used for training',
+  logs:'Logs', live:'live', log_of:'Log: %s', accounts:'Chat accounts', users:'Show accounts', passwd:'Set password', email:'Email', password:'Password', admin:'Admin', reset_accounts:'Delete all accounts', reset_confirm:'Really delete all chat accounts? Chats stay but belong to nobody.',
+  workspace:'IDE project folder', workspace_hint:'The folder code-server opens and the shell tool runs in', autocomplete:'Autocomplete (Continue)', ide_password:'Show IDE password', ide_password_reset:'Regenerate IDE password', ide_config:'Rewrite IDE configuration',
+  autostart:'Autostart (systemd --user)', autostart_on:'Enable autostart', autostart_off:'Remove autostart', watch_timer:'Set up watchdog timer', watch_now:'Run the watchdog now', alias:'Set up PATH/aliases', completion:'Set up shell completion', install_all:'Install missing tools', update_check:'Check for updates', update:'Update',
+  range:'Range', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Requests per minute', req_sub:'from the proxy log, sampled every 30 s', events:'429, fallbacks, throttled', events_sub:'per interval', budget_hist:'Free budget', budget_hist_sub:'free slots per minute (NIMCTL_RPM)', status_classes:'Status classes', paths:'Top paths', model_latency:'Model latency (probe)', bench_ttft:'Bench: time to first token', bench_toks:'Bench: tokens per second', table:'Table', chart:'Chart', time:'Time', value:'Value', count:'Count', free:'free', waiting:'waiting',
+  s_key:'NVIDIA API key', s_key_hint:'Starts with nvapi-, valid ~6 months. Checked at NVIDIA before it is saved.', s_key_new:'New key', s_key_save:'Check & save key',
+  s_proxy:'Proxy & budget', s_net:'Ports & network', s_probe:'Probing', s_ide:'IDE & search', s_ui:'Interface', s_maint:'Maintenance', s_danger:'Danger zone',
+  s_rpm:'Requests per minute (budget)', s_rpm_h:'token bucket for the whole NVIDIA key; requests beyond it wait', s_rpm_wait:'Maximum wait (s)', s_rpm_wait_h:'then the proxy answers 429 with Retry-After', s_stall:'Stall timeout (s)', s_stall_h:'a model that sends nothing for this long is given up and the request goes to the fallback', s_maxout:'Max output tokens (Claude Code)', s_chat_via:'Chat through the proxy', s_yes:'yes', s_no:'no (directly to NVIDIA)',
+  s_port_proxy:'Proxy port', s_port_chat:'Chat port', s_port_ide:'IDE port', s_port_search:'Search port', s_port_web:'Web UI port', s_bind:'Service address', s_bind_h:'127.0.0.1 = this machine only; 0.0.0.0 exposes every service on the network',
+  s_probe_to:'Probe timeout (s)', s_reprobe:'Re-probe after (h)', s_keywarn:'Key warning after (days)', s_ide_ctx:'Context length for Continue', s_ide_ext:'Extra extensions (Open VSX)', s_search_n:'Search results per query', s_lang:'Language', s_lang_auto:'automatic ($LANG)', s_theme:'Color scheme', theme_auto:'System', theme_light:'Light', theme_dark:'Dark',
+  s_env:'from the environment – not editable here', s_default:'default: %s', s_restart_needed:'Settings saved – they apply after the services restart.', restart_now:'Restart now',
+  config_changed:'Configuration changed – the proxy still runs the old one. Restart?', key_warn:'The NVIDIA key expires in ~%s days – create a new one.', key_expired:'The NVIDIA key has probably expired (older than 180 days).',
+  running:'running: %s', done_ok:'done (%s s)', done_fail:'exited with code %s (%s s)', busy:'A command is already running.', abort:'Abort', clear:'Clear', restart_after:'Restart services afterwards', offline:'Web UI unreachable – is the service running? nimctl web', forbidden:'Access denied (token) – reload the page.',
+  extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
+  tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
+}};
+const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
+const SLOTS = ['code', 'fast', 'chat', 'review'];
+const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
+const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
+
+// ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'dataset') Object.assign(e.dataset, v); else if (k === 'style') e.style.cssText = v; else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) { if (kid == null || kid === false) continue; e.append(kid.nodeType ? kid : document.createTextNode(String(kid))); }
+  return e;
+}
+const $ = (id) => document.getElementById(id);
+function clear(e) { while (e.firstChild) e.removeChild(e.firstChild); return e; }
+function ago(epoch) { if (!epoch) return t('never'); const d = Math.max(0, Math.floor(Date.now() / 1000 - epoch)); return d < 60 ? t('ago_s', d) : d < 3600 ? t('ago_m', Math.floor(d / 60)) : d < 86400 ? t('ago_h', Math.floor(d / 3600)) : t('ago_d', Math.floor(d / 86400)); }
+function hhmm(epoch) { return epoch ? new Date(epoch * 1000).toLocaleTimeString(L === 'de' ? 'de-DE' : 'en-GB', { hour: '2-digit', minute: '2-digit' }) : '–'; }
+function fmtN(n) { return (n == null || isNaN(n)) ? '–' : Number(n).toLocaleString(L === 'de' ? 'de-DE' : 'en-US'); }
+function toast(msg, kind) { const e = $('toast'); e.textContent = msg; e.className = 'toast on' + (kind ? ' ' + kind : ''); clearTimeout(toast.tm); toast.tm = setTimeout(() => { e.className = 'toast'; }, 3500); }
+function pill(kind, text) { return h('span', { class: 'pill ' + (kind || '') }, h('span', { class: 'dot' }), text); }
+function btn(label, onclick, cls) { return h('button', { class: 'btn' + (cls ? ' ' + cls : ''), onclick }, label); }
+function field(label, input, help) { return h('label', { class: 'field' }, label, input, help ? h('span', { class: 'help' }, help) : null); }
+
+// ── API ───────────────────────────────────────────────────────────────────────────────────────────────────
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: { 'X-Nimctl-Token': NIMCTL.token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 403) { toast(t('forbidden'), 'crit'); throw new Error('forbidden'); }
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+let S = null, STATS = null, HIST = [], CANDS = null, page = location.hash.replace('#', '') || 'overview';
+let lastState = 0;
+async function refresh(force) {
+  try {
+    const [s, st] = await Promise.all([api('/api/state'), api('/api/stats')]);
+    S = s; STATS = st; lastState = Date.now(); $('version').textContent = s.version ? 'v' + s.version : '';
+    renderNotices(); renderBusy(); renderPage(force);
+  } catch (e) { if (e.message !== 'forbidden') toast(t('offline'), 'crit'); }
+}
+async function loadHistory() { try { HIST = await api('/api/history'); if (page === 'stats' || page === 'overview') renderPage(); } catch (e) { /* offline */ } }
+async function loadCandidates() { try { CANDS = await api('/api/candidates'); } catch (e) { CANDS = {}; } }
+
+// ── console: run a nimctl command and stream its output ──────────────────────────────────────────────────
+let running = false;
+async function run(args, opts = {}) {
+  if (running) { toast(t('busy'), 'warn'); return false; }
+  running = true; renderBusy(args);
+  const con = $('console'); con.classList.remove('collapsed'); $('console-toggle').textContent = '▼';
+  const out = $('console-out'); if (!opts.append) out.textContent = '';
+  $('console-title').textContent = t('running', 'nimctl ' + args.join(' ')); $('console-abort').classList.remove('hidden');
+  let ok = false;
+  try {
+    const r = await fetch('/api/run', { method: 'POST', headers: { 'X-Nimctl-Token': NIMCTL.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ args, stdin: opts.stdin || '', env: opts.env || {}, yes: opts.yes !== false }) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); toast(j.error === 'busy' ? t('busy') : (j.error || r.status), 'crit'); return false; }
+    const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, i); buf = buf.slice(i + 2); let ev = 'message', data = null;
+        for (const line of block.split('\n')) { if (line.startsWith('event:')) ev = line.slice(6).trim(); else if (line.startsWith('data:')) data = JSON.parse(line.slice(5)); }
+        if (ev === 'message' && typeof data === 'string') { out.textContent += data + '\n'; out.scrollTop = out.scrollHeight; }
+        else if (ev === 'exit') { ok = data.rc === 0; $('console-title').textContent = 'nimctl ' + args.join(' ') + ' · ' + (ok ? t('done_ok', data.seconds) : t('done_fail', data.rc, data.seconds)); toast(ok ? t('done_ok', data.seconds) : t('done_fail', data.rc, data.seconds), ok ? 'good' : 'crit'); }
+      }
+    }
+  } catch (e) { toast(String(e), 'crit'); }
+  finally { running = false; $('console-abort').classList.add('hidden'); renderBusy(); refresh(true); loadHistory(); }
+  return ok;
+}
+function renderBusy(args) { const b = $('busy'); const a = args || (S && S.busy); b.classList.toggle('on', !!a); $('busy-text').textContent = a ? 'nimctl ' + a.join(' ') : ''; }
+
+// ── charts (SVG, palette roles, hover layer, table twin) ──────────────────────────────────────────────────
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs, ...kids) { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v); kids.forEach(k => k && e.append(k)); return e; }
+function niceMax(v) { if (!(v > 0)) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; const n = m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10; return n * p; }
+function chartCard(title, sub, build, tableBuild) { // a card with title, chart/table toggle and the hover tooltip
+  const body = h('div', { class: 'chart' }); const tip = h('div', { class: 'tip' }); body.append(tip);
+  const tbl = h('div', { class: 'hidden' }); let showTable = false;
+  const toggle = h('button', { class: 'btn small ghost', onclick: () => { showTable = !showTable; body.classList.toggle('hidden', showTable); tbl.classList.toggle('hidden', !showTable); toggle.textContent = showTable ? t('chart') : t('table'); if (showTable) { clear(tbl).append(tableBuild()); } } }, t('table'));
+  const card = h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('div', null, h('h2', null, title), sub ? h('div', { class: 'sub' }, sub) : null), toggle), body, tbl);
+  build(body, tip);
+  return card;
+}
+function showTip(tip, host, x, y, rows) { clear(tip); rows.forEach(r => tip.append(h('div', { class: 'k' }, h('span', { class: 'row', style: 'gap:6px' }, r.color ? h('span', { class: 'key', style: 'border-color:' + r.color }) : null, h('span', { class: 'muted' }, r.label)), h('b', null, r.value)))); tip.style.display = 'block'; const w = host.clientWidth; tip.style.left = Math.min(x + 12, w - tip.offsetWidth - 4) + 'px'; tip.style.top = Math.max(0, y - 10) + 'px'; }
+function lineChart(host, tip, { series, xs, fmtX, fmtY, height = 180 }) { // series: [{name, color, values}], shared xs (epoch)
+  clear(host); host.append(tip);
+  const W = Math.max(320, host.clientWidth || 600), padL = 44, padR = 12, padT = 10, padB = 24, ih = height, iw = W - padL - padR;
+  const n = xs.length; const ymax = niceMax(Math.max(1, ...series.flatMap(s => s.values))); const yTicks = 4;
+  const sx = i => padL + (n > 1 ? i / (n - 1) : .5) * iw, sy = v => padT + ih - (v / ymax) * ih;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${ih + padT + padB}`, role: 'img' });
+  for (let k = 0; k <= yTicks; k++) { const v = ymax * k / yTicks, y = sy(v); svg.append(svgEl('line', { x1: padL, x2: W - padR, y1: y, y2: y, stroke: k === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 })); svg.append(svgEl('text', { x: padL - 6, y: y + 4, 'text-anchor': 'end', fill: 'var(--muted)', 'font-size': 11 }, document.createTextNode(fmtY ? fmtY(v) : fmtN(v)))); }
+  const xt = Math.min(6, n); for (let k = 0; k < xt; k++) { const i = Math.round(k * (n - 1) / Math.max(1, xt - 1)); if (xs[i] == null) continue; svg.append(svgEl('text', { x: sx(i), y: padT + ih + 16, 'text-anchor': k === 0 ? 'start' : k === xt - 1 ? 'end' : 'middle', fill: 'var(--muted)', 'font-size': 11 }, document.createTextNode(fmtX(xs[i])))); }
+  if (n === 0) { svg.append(svgEl('text', { x: W / 2, y: padT + ih / 2, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 12 }, document.createTextNode(t('no_data')))); host.append(svg); return; }
+  series.forEach((s, si) => {
+    const d = s.values.map((v, i) => (i ? 'L' : 'M') + sx(i).toFixed(1) + ',' + sy(v).toFixed(1)).join(' ');
+    if (series.length === 1) svg.append(svgEl('path', { d: d + ` L${sx(n - 1).toFixed(1)},${sy(0)} L${sx(0).toFixed(1)},${sy(0)} Z`, fill: s.color, opacity: .1 }));
+    svg.append(svgEl('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    const last = n - 1; svg.append(svgEl('circle', { cx: sx(last), cy: sy(s.values[last]), r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2 }));
+  });
+  const cross = svgEl('line', { x1: 0, x2: 0, y1: padT, y2: padT + ih, stroke: 'var(--axis)', 'stroke-width': 1, opacity: 0 }); svg.append(cross);
+  const dots = series.map(s => { const c = svgEl('circle', { r: 4, fill: s.color, stroke: 'var(--surface)', 'stroke-width': 2, opacity: 0 }); svg.append(c); return c; });
+  const hit = svgEl('rect', { x: padL, y: padT, width: iw, height: ih, fill: 'transparent' }); svg.append(hit);
+  const move = (ev) => { const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) * W / r.width; const i = Math.max(0, Math.min(n - 1, Math.round((px - padL) / iw * (n - 1)))); cross.setAttribute('x1', sx(i)); cross.setAttribute('x2', sx(i)); cross.setAttribute('opacity', 1); dots.forEach((c, si) => { c.setAttribute('cx', sx(i)); c.setAttribute('cy', sy(series[si].values[i])); c.setAttribute('opacity', 1); }); showTip(tip, host, (ev.clientX - r.left), (ev.clientY - r.top), [{ label: t('time'), value: fmtX(xs[i], true) }, ...series.map(s => ({ label: s.name, value: fmtY ? fmtY(s.values[i]) : fmtN(s.values[i]), color: s.color }))]); };
+  hit.addEventListener('pointermove', move); hit.addEventListener('pointerleave', () => { cross.setAttribute('opacity', 0); dots.forEach(c => c.setAttribute('opacity', 0)); tip.style.display = 'none'; });
+  host.append(svg);
+  if (series.length > 1) host.append(h('div', { class: 'legend' }, series.map(s => h('span', null, h('i', { class: 'line', style: 'border-color:' + s.color }), s.name))));
+}
+function hbarChart(host, tip, { rows, fmt, color = 'var(--s1)', height }) { // rows: [{label, value, detail?, color?}] – one hue, values at the tip
+  clear(host); host.append(tip);
+  if (!rows.length) { host.append(h('div', { class: 'muted small', style: 'padding:12px 0' }, t('no_data'))); return; }
+  const W = Math.max(320, host.clientWidth || 600), labelW = Math.min(240, Math.round(W * .38)), rowH = 28, barH = 16, padR = 64;
+  const max = niceMax(Math.max(...rows.map(r => r.value || 0))); const iw = W - labelW - padR;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${rows.length * rowH + 4}`, role: 'img' });
+  rows.forEach((r, i) => {
+    const y = i * rowH + (rowH - barH) / 2; const w = Math.max(0, (r.value || 0) / max * iw);
+    const lab = svgEl('text', { x: labelW - 8, y: y + barH - 3, 'text-anchor': 'end', fill: 'var(--ink2)', 'font-size': 12 }, document.createTextNode(r.label.length > 34 ? r.label.slice(0, 33) + '…' : r.label));
+    lab.append(svgEl('title', null, document.createTextNode(r.label))); svg.append(lab);
+    svg.append(svgEl('line', { x1: labelW, x2: labelW, y1: y - 4, y2: y + barH + 4, stroke: 'var(--axis)', 'stroke-width': 1 }));
+    if (w > 0) svg.append(svgEl('path', { d: `M${labelW},${y} H${labelW + Math.max(0, w - 4)} a4,4 0 0 1 4,4 V${y + barH - 4} a4,4 0 0 1 -4,4 H${labelW} Z`, fill: r.color || color }));
+    svg.append(svgEl('text', { x: labelW + w + 6, y: y + barH - 3, fill: 'var(--ink)', 'font-size': 12, 'font-variant-numeric': 'tabular-nums' }, document.createTextNode(fmt ? fmt(r.value) : fmtN(r.value))));
+    const hit = svgEl('rect', { x: 0, y: i * rowH, width: W, height: rowH, fill: 'transparent' });
+    hit.addEventListener('pointermove', ev => { const b = svg.getBoundingClientRect(); showTip(tip, host, ev.clientX - b.left, ev.clientY - b.top, [{ label: r.label, value: fmt ? fmt(r.value) : fmtN(r.value), color: r.color || color }, ...(r.detail ? [{ label: '', value: r.detail }] : [])]); });
+    hit.addEventListener('pointerleave', () => { tip.style.display = 'none'; }); svg.append(hit);
+  });
+  host.append(svg);
+}
+function stackedBar(host, tip, { segments }) { // one horizontal part-to-whole bar with 2px surface gaps and a legend
+  clear(host); host.append(tip);
+  const total = segments.reduce((a, s) => a + (s.value || 0), 0);
+  const bar = h('div', { style: 'display:flex;height:22px;border-radius:6px;overflow:hidden;gap:2px;background:var(--surface-2)' });
+  segments.forEach(s => { if (!s.value) return; const seg = h('div', { style: `flex:${s.value} 0 0;background:${s.color};min-width:2px`, title: `${s.name}: ${fmtN(s.value)}` }); seg.addEventListener('pointermove', ev => { const b = host.getBoundingClientRect(); showTip(tip, host, ev.clientX - b.left, ev.clientY - b.top, [{ label: s.name, value: fmtN(s.value) + ' (' + (total ? Math.round(s.value / total * 100) : 0) + '%)', color: s.color }]); }); seg.addEventListener('pointerleave', () => { tip.style.display = 'none'; }); bar.append(seg); });
+  host.append(total ? bar : h('div', { class: 'muted small' }, t('no_data')));
+  host.append(h('div', { class: 'legend' }, segments.map(s => h('span', null, h('i', { style: 'background:' + s.color }), s.name + ' ', h('b', { class: 'tnum' }, fmtN(s.value))))));
+}
+function spark(values, color) { const W = 80, H = 24, n = values.length, max = Math.max(1, ...values); if (n < 2) return svgEl('svg', { width: W, height: H }); const d = values.map((v, i) => (i ? 'L' : 'M') + (i / (n - 1) * W).toFixed(1) + ',' + (H - 2 - v / max * (H - 4)).toFixed(1)).join(' '); return svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` }, svgEl('path', { d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' })); }
+function dataTable(cols, rows) { return h('table', null, h('thead', null, h('tr', null, cols.map(c => h('th', { class: c.num ? 'num' : '' }, c.label)))), h('tbody', null, rows.map(r => h('tr', null, cols.map(c => h('td', { class: c.num ? 'num' : '' }, r[c.key] == null ? '–' : String(r[c.key]))))))); }
+
+// history → bins
+function bins(range) { // range in hours → [{t, req, c429, fb, thr, err, free, budget, waiting}] per bin of binMin minutes, requests as deltas
+  const binMin = range <= 1 ? 1 : range <= 6 ? 5 : 15; const now = Math.floor(Date.now() / 1000); const from = now - range * 3600;
+  const rows = HIST.filter(r => r.t >= from - 60); const out = []; let prev = null;
+  const delta = (cur, pv, k) => (pv == null || cur[k] < pv[k]) ? (cur[k] || 0) : (cur[k] - pv[k]);
+  const first = rows.length ? Math.floor(rows[0].t / (binMin * 60)) * binMin * 60 : from;
+  for (let b = Math.max(from, first); b <= now; b += binMin * 60) out.push({ t: b, req: 0, c429: 0, fb: 0, thr: 0, err: 0, free: null, budget: null, waiting: null, n: 0 });
+  rows.forEach(r => { const idx = Math.floor((r.t - out[0]?.t) / (binMin * 60)); if (out[idx]) { const o = out[idx]; if (prev) { o.req += delta(r, prev, 'total'); o.c429 += delta(r, prev, 'c429'); o.fb += delta(r, prev, 'fallbacks'); o.thr += delta(r, prev, 'throttled'); o.err += delta(r, prev, 'errors'); } if (r.fresh) { o.free = r.free; o.budget = r.budget; o.waiting = r.waiting; } o.n++; } prev = r; });
+  out.forEach(o => { o.rpm = o.req / binMin; }); return { rows: out, binMin };
+}
+
+// ── notices ───────────────────────────────────────────────────────────────────────────────────────────────
+function renderNotices() {
+  const box = clear($('notices')); if (!S) return;
+  if (S.notices && S.notices.config_changed) box.append(h('div', { class: 'notice' }, h('span', { style: 'flex:1' }, t('config_changed')), btn(t('restart_now'), () => run(['restart']), 'small primary')));
+  const days = S.key && S.key.expires_in_days;
+  if (days != null && days <= 0) box.append(h('div', { class: 'notice crit' }, t('key_expired'))); else if (days != null && days <= 15) box.append(h('div', { class: 'notice' }, t('key_warn', days)));
+  if (settingsSaved) box.append(h('div', { class: 'notice good' }, h('span', { style: 'flex:1' }, t('s_restart_needed')), btn(t('restart_now'), () => { settingsSaved = false; run(['restart']); }, 'small primary')));
+}
+let settingsSaved = false;
+
+// ── pages ─────────────────────────────────────────────────────────────────────────────────────────────────
+const PAGES = ['overview', 'models', 'pool', 'services', 'stats', 'settings'];
+function show(p) { page = PAGES.includes(p) ? p : 'overview'; location.hash = page; document.querySelectorAll('.page').forEach(e => e.classList.toggle('on', e.id === 'page-' + page)); document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false')); renderPage(true); }
+function renderPage(force) { if (!S) return; const host = $('page-' + page); if (!force && host.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON' && document.activeElement.tagName !== 'BODY') return; ({ overview: renderOverview, models: renderModels, pool: renderPool, services: renderServices, stats: renderStats, settings: renderSettings })[page](host); }
+
+function keyPill() { const k = S.key || {}; const m = { ok: ['good', t('key_ok')], none: ['crit', t('key_none')], invalid: ['crit', t('key_bad')], offline: ['warn', t('key_off')] }[k.state] || ['', t('key_unk')]; return pill(m[0], m[1]); }
+function svcPill(s) { const v = S[s] || {}; if (v.up) return pill('good', t('up')); if (v.by === 'foreign') return pill('warn', t('foreign')); return pill('crit', t('down')); }
+function svcMeta(s) { const v = S[s] || {}; const parts = [t('port', v.port)]; if (v.up) { if (v.by) parts.push(t('by', v.by)); if (v.pid) parts.push(t('pid', v.pid)); } return parts.join(' · '); }
+function slotInfo(slot) { const sl = (S.slots || {})[slot] || {}; return sl; }
+function slotState(sl) { if (!sl.model) return pill('', t('none')); if (sl.state === 'ok') return pill('good', t('answers')); if (sl.state === 'unprobed') return pill('', t('unprobed')); return pill('crit', sl.error || 'error'); }
+
+function renderOverview(host) {
+  clear(host);
+  const req = STATS && STATS.requests || {}; const by = req.by_status || {}; const b = bins(1).rows; const sp = (k) => spark(bins(6).rows.slice(-24).map(r => r[k]), 'var(--s1)');
+  const started = S.notices && S.notices.proxy_started;
+  const tile = (label, value, sub, sparkEl) => h('div', { class: 'card tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), h('div', { class: 'sub' }, h('span', null, sub || ''), sparkEl));
+  host.append(h('div', { class: 'kpis' },
+    tile(t('requests'), fmtN(req.total || 0), started ? t('since', hhmm(started)) : '', sp('req')),
+    tile(t('c429'), fmtN(by['429'] || 0), '', sp('c429')),
+    tile(t('fallbacks'), fmtN(STATS && STATS.fallbacks || 0), '', sp('fb')),
+    tile(t('throttled'), fmtN(STATS && STATS.throttled || 0), '', sp('thr')),
+    tile(t('errors'), fmtN(STATS && STATS.errors || 0), '', sp('err'))));
+  // budget meter + key + quick actions
+  const rpm = S.rpm || {}; const fresh = rpm.updated && (S.now - rpm.updated) < 120; const ratio = fresh && rpm.budget ? rpm.free / rpm.budget : null;
+  const meterCls = ratio == null ? '' : ratio < .15 ? 'crit' : ratio < .4 ? 'warn' : '';
+  host.append(h('div', { class: 'grid' },
+    h('div', { class: 'card' }, h('h2', null, t('budget')), fresh ? [h('div', { class: 'meter ' + meterCls }, h('i', { style: 'width:' + Math.round((ratio || 0) * 100) + '%' })), h('div', { class: 'small muted', style: 'margin-top:6px' }, t('budget_sub', rpm.free, rpm.budget, rpm.waiting || 0) + (rpm.rejected ? ' · ' + rpm.rejected + ' ✗' : ''))] : h('div', { class: 'small muted' }, t('budget_stale'))),
+    h('div', { class: 'card' }, h('h2', null, t('key')), h('div', { class: 'row' }, keyPill(), h('span', { class: 'mono' }, S.config && S.config.nvidia_key || '')), h('div', { class: 'small muted', style: 'margin-top:6px' }, [S.key && S.key.checked ? t('checked', ago(S.key.checked)) : '', S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : ''].filter(Boolean).join(' · '))),
+    h('div', { class: 'card' }, h('h2', null, t('services')), h('div', { class: 'stack' }, ['proxy', 'chat', 'ide', 'search', 'web'].filter(s => s === 'proxy' || s === 'chat' || (S[s] && (S[s].enabled || S[s].up))).map(s => h('div', { class: 'row between' }, h('span', null, t(s)), h('span', { class: 'row' }, h('span', { class: 'small muted' }, svcMeta(s)), svcPill(s)))))),
+    h('div', { class: 'card' }, h('h2', null, t('tools_row')), h('div', { class: 'row' }, Object.entries(S.tools || {}).map(([k, v]) => pill(v ? 'good' : 'crit', k))))));
+  host.append(h('div', { class: 'row', style: 'margin:12px 0' }, btn(t('start_all'), () => run(['start']), 'primary'), btn(t('stop_all'), () => run(['stop'])), btn(t('restart_all'), () => run(['restart'])), btn(t('auto_all'), () => run(['auto'])), btn(t('probe_all'), () => run(['check'])), btn(t('doctor'), () => run(['doctor'])), btn(t('bench_all'), () => run(['bench']))));
+  // slots table
+  const maxMs = Math.max(1, ...SLOTS.map(s => slotInfo(s).ms || 0));
+  host.append(h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h2', null, t('models')), h('table', null, h('thead', null, h('tr', null, h('th', null, t('slot')), h('th', null, t('model')), h('th', null, t('state')), h('th', { class: 'num' }, t('latency')), h('th', null, ''), h('th', null, t('tools')), h('th', null, t('probed')))),
+    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', { class: 'slot-model' }, sl.model || t('none')), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
+    h('div', { class: 'small muted', style: 'margin-top:6px' }, t('help_slots'))));
+  // pool summary + requests chart
+  const pool = S.config && S.config.pool || {};
+  host.append(h('div', { class: 'grid wide' },
+    h('div', { class: 'card' }, h('h2', null, t('pool')), h('div', { class: 'row' }, PROVIDERS.map(([p, label]) => pool[p] && pool[p].key ? pill('good', label + ' (' + Object.keys(pool[p].models || {}).length + ')') : pill('', label)))),
+    chartCard(t('req_per_min'), t('req_sub'), (body, tip) => lineChart(body, tip, { series: [{ name: t('requests') + t('per_min'), color: 'var(--s1)', values: b.map(r => +r.rpm.toFixed(1)) }], xs: b.map(r => r.t), fmtX: (e) => hhmm(e), height: 140 }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'v', label: t('requests') + t('per_min'), num: true }], b.map(r => ({ time: hhmm(r.t), v: r.rpm.toFixed(1) }))))));
+}
+
+let catalogQuery = '';
+function renderModels(host) {
+  clear(host);
+  host.append(h('div', { class: 'grid' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
+    h('div', { class: 'slot-model', style: 'margin:6px 0' }, sl.model || t('none')),
+    h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
+    h('div', { class: 'row', style: 'margin-top:8px' }, btn(t('auto'), () => run(['auto', s]), 'small'), btn(t('probe'), () => sl.model && run(['find', sl.model]), 'small'), btn(t('bench'), () => run(['bench', s]), 'small'), btn(t('test'), () => { $('test-model').value = s; $('test-prompt').focus(); }, 'small'))); })));
+  // catalog
+  const list = h('div', { class: 'list' });
+  const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
+  const allIds = [...(S.catalog || []), ...Object.entries(S.pool_catalogs || {}).flatMap(([p, ids]) => S.config.pool[p] && S.config.pool[p].key ? ids.map(i => p + ':' + i) : [])];
+  const fill = () => { clear(list); const q = catalogQuery.toLowerCase(); const ids = allIds.filter(i => !q || i.toLowerCase().includes(q)).slice(0, 200);
+    if (!ids.length) list.append(h('div', { class: 'item muted' }, t('no_data')));
+    ids.forEach(id => { const pr = probeMap[id]; list.append(h('div', { class: 'item' }, pr ? (pr.result === 'ok' ? pill('good', (pr.ms != null ? pr.ms + ' ms' : t('answers')) + (pr.tools === 'ok' ? ' · ' + t('tools_ok') : pr.tools === 'no' ? ' · ' + t('notools') : '')) : pill('crit', pr.result)) : pill('', t('unprobed')), h('span', { class: 'id mono', title: id }, id), btn(t('probe'), () => run(['find', id]), 'small ghost'), SLOTS.map(s => btn(t('set_slot', s), () => run(['pick', s, id]), 'small')))); }); };
+  const search = h('input', { type: 'text', placeholder: t('search_ph'), value: catalogQuery, oninput: (e) => { catalogQuery = e.target.value; fill(); } });
+  fill();
+  host.append(h('div', { class: 'card', style: 'margin:12px 0' }, h('h2', null, t('catalog')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('catalog_hint')), search, h('div', { style: 'margin-top:8px' }, list)));
+  // test box + bench
+  const testModel = h('input', { type: 'text', id: 'test-model', value: 'code', placeholder: 'code | fast | chat | review | <id>' }); const testPrompt = h('textarea', { id: 'test-prompt', placeholder: t('prompt') });
+  const benchRows = (S.bench || []).map(b => ({ id: b.id, ttft: b.ttft_ms, toks: b.tok_s, at: b.at }));
+  host.append(h('div', { class: 'grid wide' },
+    h('div', { class: 'card' }, h('h2', null, t('test_title')), h('div', { class: 'stack' }, field(t('test_model'), testModel), field(t('prompt'), testPrompt), h('div', { class: 'row' }, btn(t('send'), () => run(['test', testModel.value.trim() || 'code', testPrompt.value.trim() || '']), 'primary')))),
+    h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, t('bench_last')), btn(t('bench_all'), () => run(['bench']), 'small')), benchRows.length ? h('table', null, h('thead', null, h('tr', null, h('th', null, t('model')), h('th', { class: 'num' }, t('ttft')), h('th', { class: 'num' }, t('toks')), h('th', null, ''))), h('tbody', null, benchRows.map(r => h('tr', null, h('td', { class: 'mono' }, r.id), h('td', { class: 'num' }, r.ttft != null ? fmtN(r.ttft) + ' ms' : '–'), h('td', { class: 'num' }, r.toks != null ? fmtN(r.toks) : '–'), h('td', { class: 'small muted' }, ago(r.at)))))) : h('div', { class: 'muted small' }, t('no_data')))));
+  // candidates
+  const cands = h('div', { class: 'card', style: 'margin-top:12px' }, h('h2', null, t('candidates')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('candidates_hint')));
+  const inputs = {}; const grid = h('div', { class: 'grid' });
+  const addField = (key, label) => { const eff = CANDS && CANDS[key] || ''; const cur = S.candidates && S.candidates[key] || ''; inputs[key] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(label, inputs[key], t('effective') + ': ' + eff)); };
+  SLOTS.forEach(s => addField(s, s));
+  PROVIDERS.forEach(([p, label]) => { if (S.config.pool[p] && S.config.pool[p].key) SLOTS.forEach(s => addField(p + '.' + s, label + ' · ' + s)); });
+  cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto']))));
+  host.append(cands);
+  if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderModels(host); });
+}
+
+function renderPool(host) {
+  clear(host);
+  const pool = S.config && S.config.pool || {}; const stall = (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT;
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint', stall)));
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('pool_auto'), () => run(['pool', 'auto']))));
+  host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => { const c = pool[p] || {}; const keyIn = h('input', { type: 'password', placeholder: t('pool_key'), autocomplete: 'off' });
+    const probeMap = {}; (S.probes || []).forEach(x => { probeMap[x.id] = x; });
+    return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, label), c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))), h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
+      c.key ? h('table', { style: 'margin-top:8px' }, h('tbody', null, SLOTS.map(s => { const m = (c.models || {})[s]; const pr = m && probeMap[p + ':' + m]; return h('tr', null, h('td', null, s), h('td', { class: 'mono' }, m || t('none')), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_auto'), () => run(['pool', 'auto', p]), 'small') : null, c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
+}
+
+let logName = 'proxy', logLive = false, logSource = null;
+function renderServices(host) {
+  clear(host);
+  const svc = (s, extra) => h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, t(s)), svcPill(s)), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, svcMeta(s) + (S[s] && 'enabled' in S[s] ? ' · ' + (S[s].enabled ? t('enabled') : t('disabled')) : '')), h('div', { class: 'row' }, extra));
+  const url = (s) => S[s] && S[s].url;
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('start_all'), () => run(['start']), 'primary'), btn(t('stop_all'), () => run(['stop'])), btn(t('restart_all'), () => run(['restart'])), btn(t('doctor'), () => run(['doctor'])), btn(t('doctor_fix'), () => run(['doctor', '--fix']))));
+  host.append(h('div', { class: 'grid' },
+    svc('proxy', [btn(t('probe_all'), () => run(['proxy']), 'small'), h('a', { class: 'btn small', href: url('proxy') + '/v1/models', target: '_blank', rel: 'noreferrer' }, url('proxy') || '')]),
+    svc('chat', [h('a', { class: 'btn small', href: url('chat'), target: '_blank', rel: 'noreferrer' }, t('open_chat'))]),
+    svc('ide', [btn(t('install'), () => run(['ide', 'install']), 'small'), btn(t('start'), () => run(['ide', 'start']), 'small'), btn(t('stop'), () => run(['ide', 'stop']), 'small'), btn(t('disable'), () => run(['ide', 'disable']), 'small'), h('a', { class: 'btn small', href: url('ide'), target: '_blank', rel: 'noreferrer' }, t('open_ide'))]),
+    svc('search', [btn(t('install'), () => run(['search', 'install']), 'small'), btn(t('start'), () => run(['search', 'start']), 'small'), btn(t('stop'), () => run(['search', 'stop']), 'small'), btn(t('disable'), () => run(['search', 'disable']), 'small'), btn(t('test'), () => run(['search', 'test']), 'small'), h('a', { class: 'btn small', href: url('search'), target: '_blank', rel: 'noreferrer' }, t('open_search'))]),
+    svc('web', [btn(t('disable'), () => run(['web', 'disable']), 'small')])));
+  // IDE details
+  const ws = h('input', { type: 'text', value: S.workspace || '', placeholder: '/home/…/project' });
+  host.append(h('div', { class: 'grid wide', style: 'margin-top:12px' },
+    h('div', { class: 'card' }, h('h2', null, t('ide')), h('div', { class: 'stack' }, field(t('workspace'), ws, t('workspace_hint')), h('div', { class: 'row' }, btn(t('save'), async () => { try { await api('/api/workspace', { dir: ws.value.trim() }); toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary small')),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.config.ide_autocomplete, onchange: (e) => run(['ide', 'autocomplete', e.target.checked ? 'on' : 'off']) }), t('autocomplete')),
+      h('div', { class: 'row' }, btn(t('ide_password'), () => run(['ide', 'password']), 'small'), btn(t('ide_password_reset'), () => run(['ide', 'password', '--reset']), 'small'), btn(t('ide_config'), () => run(['ide', 'config', '--force']), 'small')))),
+    (() => { const email = h('input', { type: 'text', placeholder: t('email') }); const pw = h('input', { type: 'password', placeholder: t('password'), autocomplete: 'new-password' }); const adm = h('input', { type: 'checkbox' });
+      return h('div', { class: 'card' }, h('h2', null, t('accounts')), h('div', { class: 'stack' }, h('div', { class: 'row' }, btn(t('users'), () => run(['chat', 'users']), 'small')), field(t('email'), email), field(t('password'), pw), h('label', { class: 'check' }, adm, t('admin')), h('div', { class: 'row' }, btn(t('passwd'), () => { const a = ['chat', 'passwd']; if (email.value.trim()) a.push(email.value.trim()); if (adm.checked) a.push('--admin'); const p = pw.value; pw.value = ''; run(a, { env: { NIMCTL_CHAT_PASSWORD: p } }); }, 'primary small'), btn(t('reset_accounts'), () => { if (confirm(t('reset_confirm'))) run(['chat', 'reset']); }, 'small danger')))); })(),
+    h('div', { class: 'card' }, h('h2', null, t('autostart')), h('div', { class: 'row', style: 'margin-bottom:8px' }, ['proxy', 'chat', 'ide', 'search', 'web', 'watch'].map(u => pill(S.systemd && S.systemd[u] ? 'good' : '', 'nimctl-' + u))), h('div', { class: 'row' }, btn(t('autostart_on'), () => run(['install', 'systemd']), 'small'), btn(t('autostart_off'), () => run(['install', 'nosystemd']), 'small'), btn(t('watch_timer'), () => run(['install', 'watch_timer']), 'small'), btn(t('watch_now'), () => run(['watch']), 'small')))));
+  // logs
+  const sel = h('select', { onchange: (e) => { logName = e.target.value; loadLog(); } }, ['proxy', 'chat', 'ide', 'search', 'web', 'watch', 'searxng-install', 'code-server-install'].map(n => h('option', { value: n, selected: n === logName }, n + (S.logs && S.logs[n] ? ' (' + Math.round(S.logs[n] / 1024) + ' kB)' : ''))));
+  const live = h('input', { type: 'checkbox', checked: logLive, onchange: (e) => { logLive = e.target.checked; loadLog(); } });
+  const box = h('div', { class: 'log', id: 'logbox' });
+  host.append(h('div', { class: 'card', style: 'margin-top:12px' }, h('div', { class: 'row between' }, h('h2', null, t('logs')), h('div', { class: 'row' }, sel, h('label', { class: 'check' }, live, t('live')))), box));
+  loadLog();
+}
+async function loadLog() {
+  const box = $('logbox'); if (!box) return;
+  if (logSource) { logSource.close(); logSource = null; }
+  if (logLive) { box.textContent = ''; logSource = new EventSource('/api/log/stream?name=' + encodeURIComponent(logName) + '&token=' + encodeURIComponent(NIMCTL.token)); logSource.onmessage = (e) => { box.textContent += JSON.parse(e.data) + '\n'; box.scrollTop = box.scrollHeight; }; logSource.addEventListener('truncated', () => { box.textContent = ''; }); logSource.onerror = () => { }; return; }
+  try { const j = await api('/api/log?name=' + encodeURIComponent(logName) + '&n=300'); box.textContent = j.lines.join('\n') || t('no_data'); box.scrollTop = box.scrollHeight; } catch (e) { box.textContent = String(e); }
+}
+
+let range = 6;
+function renderStats(host) {
+  clear(host);
+  const seg = h('div', { class: 'seg' }, [[1, 'h1'], [6, 'h6'], [24, 'h24']].map(([r, k]) => h('button', { 'aria-pressed': String(range === r), onclick: () => { range = r; renderStats(host); } }, t(k))));
+  host.append(h('div', { class: 'filters' }, h('span', { class: 'muted small' }, t('range')), seg));
+  const { rows, binMin } = bins(range); const xs = rows.map(r => r.t); const fx = (e) => hhmm(e);
+  const req = STATS && STATS.requests || {}; const by = req.by_status || {};
+  host.append(h('div', { class: 'grid wide' },
+    chartCard(t('req_per_min'), t('req_sub'), (b, tip) => lineChart(b, tip, { series: [{ name: t('requests') + t('per_min'), color: 'var(--s1)', values: rows.map(r => +r.rpm.toFixed(2)) }], xs, fmtX: fx }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'v', label: t('requests') + t('per_min'), num: true }], rows.map(r => ({ time: hhmm(r.t), v: r.rpm.toFixed(2) })))),
+    chartCard(t('events'), t('events_sub') + ' (' + binMin + ' min)', (b, tip) => lineChart(b, tip, { series: [{ name: '429', color: 'var(--s2)', values: rows.map(r => r.c429) }, { name: t('fallbacks'), color: 'var(--s3)', values: rows.map(r => r.fb) }, { name: t('throttled'), color: 'var(--s4)', values: rows.map(r => r.thr) }], xs, fmtX: fx }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'a', label: '429', num: true }, { key: 'b', label: t('fallbacks'), num: true }, { key: 'c', label: t('throttled'), num: true }], rows.map(r => ({ time: hhmm(r.t), a: r.c429, b: r.fb, c: r.thr })))),
+    chartCard(t('budget_hist'), t('budget_hist_sub'), (b, tip) => { const rr = rows.filter(r => r.free != null); lineChart(b, tip, { series: [{ name: t('free'), color: 'var(--s1)', values: rr.map(r => r.free) }, { name: t('budget'), color: 'var(--s3)', values: rr.map(r => r.budget) }], xs: rr.map(r => r.t), fmtX: fx }); }, () => dataTable([{ key: 'time', label: t('time') }, { key: 'f', label: t('free'), num: true }, { key: 'b', label: t('budget'), num: true }, { key: 'w', label: t('waiting'), num: true }], rows.filter(r => r.free != null).map(r => ({ time: hhmm(r.t), f: r.free, b: r.budget, w: r.waiting })))),
+    chartCard(t('status_classes'), req.total != null ? fmtN(req.total) + ' ' + t('requests') : '', (b, tip) => stackedBar(b, tip, { segments: [{ name: '2xx', value: by['2xx'] || 0, color: 'var(--s1)' }, { name: '4xx', value: by['4xx'] || 0, color: 'var(--s4)' }, { name: '429', value: by['429'] || 0, color: 'var(--s2)' }, { name: '5xx', value: by['5xx'] || 0, color: 'var(--s5)' }] }), () => dataTable([{ key: 'k', label: t('state') }, { key: 'v', label: t('count'), num: true }], ['2xx', '4xx', '429', '5xx'].map(k => ({ k, v: by[k] || 0 })))),
+    chartCard(t('paths'), '', (b, tip) => hbarChart(b, tip, { rows: (STATS && STATS.paths || []).slice(0, 8).map(p => ({ label: p.path, value: p.count })) }), () => dataTable([{ key: 'path', label: t('paths') }, { key: 'count', label: t('count'), num: true }], STATS && STATS.paths || [])),
+    chartCard(t('model_latency'), '', (b, tip) => hbarChart(b, tip, { rows: (S.probes || []).filter(p => p.result === 'ok' && p.ms != null).sort((a, c) => a.ms - c.ms).slice(0, 14).map(p => ({ label: p.id, value: p.ms, detail: (p.tools === 'ok' ? t('tools_ok') : p.tools === 'no' ? t('notools') : '') + ' · ' + ago(p.probed) })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ms', label: 'ms', num: true }, { key: 'tools', label: t('tools') }], (S.probes || []).filter(p => p.result === 'ok'))),
+    chartCard(t('bench_ttft'), '', (b, tip) => hbarChart(b, tip, { rows: (S.bench || []).filter(x => x.ttft_ms != null).sort((a, c) => a.ttft_ms - c.ttft_ms).map(x => ({ label: x.id, value: x.ttft_ms })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ttft_ms', label: 'ms', num: true }], S.bench || [])),
+    chartCard(t('bench_toks'), '', (b, tip) => hbarChart(b, tip, { rows: (S.bench || []).filter(x => x.tok_s != null).sort((a, c) => c.tok_s - a.tok_s).map(x => ({ label: x.id, value: x.tok_s })), fmt: v => fmtN(v) }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'tok_s', label: t('toks'), num: true }], S.bench || []))));
+}
+
+function renderSettings(host) {
+  clear(host);
+  const set = S.settings || {}; const env = new Set(S.env_overrides || []); const inputs = {};
+  const sf = (key, label, help, kind) => { const ov = env.has(key); let input; if (kind === 'select') { input = h('select', { disabled: ov }, kind === 'select' && key === 'NIMCTL_CHAT_VIA_PROXY' ? [h('option', { value: '', selected: !set[key] }, t('s_default', t('s_yes'))), h('option', { value: '1', selected: set[key] === '1' }, t('s_yes')), h('option', { value: '0', selected: set[key] === '0' }, t('s_no'))] : [h('option', { value: '', selected: !set[key] }, t('s_lang_auto')), h('option', { value: 'de', selected: set[key] === 'de' }, 'Deutsch'), h('option', { value: 'en', selected: set[key] === 'en' }, 'English')]); } else input = h('input', { type: 'text', value: set[key] || '', placeholder: DEFAULTS[key] || '', disabled: ov }); inputs[key] = input; return field(label, input, (ov ? t('s_env') : (DEFAULTS[key] ? t('s_default', DEFAULTS[key]) : '')) + (help ? ' · ' + help : '')); };
+  const group = (title, kids) => h('div', { class: 'card' }, h('h2', null, title), h('div', { class: 'stack' }, kids));
+  const saveBtn = btn(t('save'), async () => { const v = {}; Object.entries(inputs).forEach(([k, i]) => { if (!i.disabled) v[k] = i.value; }); try { await api('/api/settings', { settings: v }); settingsSaved = true; toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary');
+  // key
+  const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
+  host.append(h('div', { class: 'grid wide' },
+    h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
+    group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
+    group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n'))]),
+    group(t('s_ui'), [sf('NIMCTL_LANG', t('s_lang'), '', 'select'), field(t('s_theme'), h('select', { onchange: (e) => setTheme(e.target.value) }, [['', 'theme_auto'], ['light', 'theme_light'], ['dark', 'theme_dark']].map(([v, k]) => h('option', { value: v, selected: (localStorage.getItem('theme') || '') === v }, t(k)))))])));
+  host.append(h('div', { class: 'row', style: 'margin:12px 0' }, saveBtn));
+  host.append(h('div', { class: 'grid wide' },
+    group(t('s_maint'), [h('div', { class: 'row' }, btn(t('update_check'), () => run(['update', '--check']), 'small'), btn(t('update'), () => run(['update']), 'small'), btn(t('install_all'), () => run(['install', 'all']), 'small'), btn(t('alias'), () => run(['install', 'alias']), 'small'), btn(t('completion'), () => run(['install', 'completion']), 'small')), h('div', { class: 'small muted' }, t('extra_models') + ': ' + ((S.config.extra_models || []).join(', ') || '–'))]),
+    group(t('links'), [h('div', { class: 'small' }, t('proxy_url') + ': ', h('span', { class: 'mono' }, S.proxy && S.proxy.url + '/v1')), h('div', { class: 'small' }, t('version_hint', S.version || '?', S.home || ''))])));
+}
+
+// ── theme, nav, init ──────────────────────────────────────────────────────────────────────────────────────
+function setTheme(v) { if (v) { document.documentElement.setAttribute('data-theme', v); localStorage.setItem('theme', v); } else { document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('theme'); } if (page === 'stats' || page === 'overview') renderPage(true); }
+(function init() {
+  try { const th = localStorage.getItem('theme'); if (th) document.documentElement.setAttribute('data-theme', th); } catch (e) { /* storage blocked */ }
+  $('theme').addEventListener('click', () => { const cur = document.documentElement.getAttribute('data-theme'); setTheme(cur === 'dark' ? 'light' : 'dark'); });
+  const nav = $('nav'); PAGES.forEach(p => nav.append(h('button', { dataset: { page: p }, onclick: () => show(p) }, t(p))));
+  $('console-toggle').addEventListener('click', () => { const c = $('console'); c.classList.toggle('collapsed'); $('console-toggle').textContent = c.classList.contains('collapsed') ? '▲' : '▼'; });
+  $('console-clear').textContent = t('clear'); $('console-clear').addEventListener('click', () => { $('console-out').textContent = ''; });
+  $('console-abort').textContent = t('abort'); $('console-abort').addEventListener('click', () => api('/api/abort', {}).catch(() => { }));
+  $('console-title').textContent = t('console');
+  window.addEventListener('hashchange', () => { const p = location.hash.replace('#', ''); if (p !== page) show(p); });
+  window.addEventListener('resize', () => { clearTimeout(init.rt); init.rt = setTimeout(() => renderPage(true), 150); });
+  show(page); refresh(true); loadHistory(); loadCandidates();
+  setInterval(() => refresh(false), 5000); setInterval(loadHistory, 30000);
+})();
+</script>
+</body>
+</html>
+ASSET_EOF_index_html
+}
+
+# ══════ src/web/server.py (embedded) ══════
+web_asset_server_py() { cat <<'ASSET_EOF_server_py'
+#!/usr/bin/env python3
+"""nimctl web UI – the backend. Written to ~/.nimctl/web/server.py by nimctl (src/55-web.sh; embedded by build.sh).
+
+Standard library only. Serves index.html and a small JSON API: the current state (nimctl status --json plus the
+config, settings, probes, catalogs, bench results and notices), the proxy statistics, a 24-hour sample history for
+the charts, log tails (also as a live stream), and `run`, which executes a nimctl command and streams its output as
+server-sent events. Settings and candidate patterns are written to their files here; everything else goes through
+nimctl itself, so the CLI stays the single place that validates model ids and keys.
+
+Security: bound to NIMCTL_BIND (127.0.0.1). Every API call must carry the per-installation token in the
+X-Nimctl-Token header (the page gets it when it is served, other origins cannot read it), and the Host header must
+name this machine unless nimctl was deliberately bound elsewhere – so a web page open in the same browser can neither
+read the state nor run commands. Secrets (API keys, passwords) reach nimctl through stdin or its environment, never
+through a command line.
+"""
+import hmac
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+HOME = os.environ.get("NIMCTL_HOME") or os.path.expanduser("~/.nimctl")
+WEB = os.path.join(HOME, "web")
+BIN = os.environ.get("NIMCTL_WEB_BIN") or "nimctl"
+PORT = int(os.environ.get("NIMCTL_WEB_PORT") or 4040)
+BIND = os.environ.get("NIMCTL_BIND") or "127.0.0.1"
+LANG = "de" if (os.environ.get("NIMCTL_LANG") or "").startswith("de") else "en"
+SETTINGS_KEYS = (os.environ.get("NIMCTL_WEB_KEYS") or "").split()
+SLOTS = ["code", "fast", "chat", "review"]
+PROVIDERS = ["groq", "gemini", "cerebras", "openrouter", "mistral"]
+SERVICES = ["proxy", "chat", "ide", "search", "web"]
+LOGS = {"proxy": "litellm.log", "chat": "open-webui.log", "ide": "code-server.log", "search": "searxng.log",
+        "web": "web.log", "watch": "watch.log", "searxng-install": "searxng-install.log", "code-server-install": "code-server-install.log"}
+HISTORY_FILE = os.path.join(WEB, "history.json")
+HISTORY_MAX = 2880          # 24 h of samples
+SAMPLE_EVERY = 30.0
+STATE_TTL = 3.0
+# nimctl commands the page may run (first argument). Interactive ones (code, setup, _fg) and the shell completion are out.
+COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "pick", "find", "test", "proxy", "pool", "ide", "search",
+            "key", "doctor", "install", "update", "watch", "bench", "stats", "chat", "models", "web"}
+RUN_ENV_KEYS = {"NIMCTL_CHAT_PASSWORD"}          # secrets a command may receive through its environment
+RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same shape nimctl accepts when it reads the file)
+RE_CAND_KEY = re.compile(r"^[a-z]+(\.[a-z]+)?$")
+RE_CAND_VAL = re.compile(r"^[A-Za-z0-9._*+?()|^$\[\]\\ :/-]*$")
+RE_ARG = re.compile(r"^[^\x00-\x08\x0a-\x1f\x7f]{0,2000}$")   # printable, no control characters
+RE_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")                    # LiteLLM colours its startup banner
+
+with open(os.path.join(WEB, "token")) as _f:
+    TOKEN = _f.read().strip()
+
+
+def log(msg):
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
+
+
+# ── files ──────────────────────────────────────────────────────────────────────────────────────────────────
+def read_text(path, default=""):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return default
+
+
+def read_kv(path):
+    """KEY=VALUE lines → dict (parsed like nimctl does, never sourced)."""
+    out = {}
+    for line in read_text(path).splitlines():
+        m = re.match(r"^([A-Z_]+)=(.*)$", line)
+        if m:
+            out[m.group(1)] = m.group(2).strip('"')
+    return out
+
+
+def read_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def write_atomic(path, text, mode=0o600):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def mtime(path):
+    try:
+        return int(os.stat(path).st_mtime)
+    except OSError:
+        return 0
+
+
+def tail(path, n):
+    lines = [RE_ANSI.sub("", l) for l in read_text(path).splitlines()]
+    return lines[-n:] if n else lines
+
+
+def mask(key):
+    return (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("•" * len(key) if key else "")
+
+
+# ── nimctl ─────────────────────────────────────────────────────────────────────────────────────────────────
+def base_env():
+    env = dict(os.environ)
+    env.update({"NIMCTL_HOME": HOME, "NO_COLOR": "1", "TERM": "dumb", "NIMCTL_INTERACTIVE": "0", "NIMCTL_YES": "1"})
+    env.pop("NIMCTL_WEB_BIN", None)
+    return env
+
+
+def nimctl(args, timeout=120):
+    """Run nimctl non-interactively; returns (rc, stdout)."""
+    try:
+        p = subprocess.run([BIN, *args], env=base_env(), capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+
+
+def nimctl_json(args, timeout=60):
+    rc, out = nimctl(args, timeout)
+    try:
+        return json.loads(out)
+    except ValueError:
+        return {"error": out[-400:], "rc": rc}
+
+
+# ── state ──────────────────────────────────────────────────────────────────────────────────────────────────
+_cache = {}
+_cache_lock = threading.Lock()
+
+
+def cached(key, ttl, fn):
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+    val = fn()
+    with _cache_lock:
+        _cache[key] = (time.monotonic(), val)
+    return val
+
+
+def invalidate():
+    with _cache_lock:
+        _cache.clear()
+
+
+def parse_pool_models(text):
+    out = {}
+    for tok in text.split():
+        if "=" in tok:
+            slot, model = tok.split("=", 1)
+            out[slot] = model
+    return out
+
+
+def probes():
+    rows = []
+    for line in read_text(os.path.join(HOME, "probes")).splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        rows.append({"id": parts[0], "result": parts[1], "ms": int(parts[2]) if parts[2].isdigit() else None,
+                     "probed": int(parts[3]) if parts[3].isdigit() else None, "tools": parts[4] if len(parts) > 4 and parts[4] else None})
+    return rows
+
+
+def bench_last():
+    last = {}
+    for line in read_text(os.path.join(HOME, "bench")).splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 6 and parts[0]:
+            last[parts[0]] = {"id": parts[0], "ttft_ms": _num(parts[1]), "tok_s": _num(parts[2]), "tokens": _num(parts[3]),
+                              "tools": parts[4] or None, "at": _num(parts[5])}
+    return list(last.values())
+
+
+def _num(s):
+    try:
+        return float(s) if "." in s else int(s)
+    except ValueError:
+        return None
+
+
+def candidates_file():
+    out = {}
+    for line in read_text(os.path.join(HOME, "candidates")).splitlines():
+        m = re.match(r"^([a-z]+(?:\.[a-z]+)?):\s*(.*)$", line)
+        if m:
+            out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+def settings_file():
+    return {k: v for k, v in read_kv(os.path.join(HOME, "settings")).items() if k in SETTINGS_KEYS}
+
+
+def build_state():
+    st = nimctl_json(["status", "--json"])
+    conf = read_kv(os.path.join(HOME, "config"))
+    st["config"] = {
+        "nvidia_key": mask(conf.get("NVIDIA_API_KEY", "")),
+        "models": {s: conf.get("MODEL_" + s.upper(), "") for s in SLOTS},
+        "extra_models": conf.get("EXTRA_MODELS", "").split(),
+        "ide_enabled": conf.get("IDE_ENABLED") == "1", "ide_autocomplete": conf.get("IDE_AUTOCOMPLETE") == "1",
+        "search_enabled": conf.get("SEARCH_ENABLED") == "1", "web_enabled": conf.get("WEB_ENABLED") == "1",
+        "pool": {p: {"key": bool(conf.get(p.upper() + "_API_KEY")), "key_masked": mask(conf.get(p.upper() + "_API_KEY", "")),
+                     "models": parse_pool_models(conf.get("POOL_" + p.upper(), ""))} for p in PROVIDERS},
+    }
+    st["settings"] = settings_file()
+    st["settings_keys"] = SETTINGS_KEYS
+    st["env_overrides"] = sorted(k for k in SETTINGS_KEYS if k in os.environ)
+    st["rpm"] = read_json(os.path.join(HOME, "rpm.json"), {})
+    st["probes"] = probes()
+    st["catalog"] = read_text(os.path.join(HOME, "models.cache")).split()
+    st["pool_catalogs"] = {p: read_text(os.path.join(HOME, f"models.{p}.cache")).split() for p in PROVIDERS}
+    st["candidates"] = candidates_file()
+    st["bench"] = bench_last()
+    st["workspace"] = read_text(os.path.join(HOME, "ide-workspace")).strip()
+    st["state_file"] = read_kv(os.path.join(HOME, "state"))
+    proxy_started = _num(read_text(os.path.join(HOME, "run", "proxy.started")).strip() or "0") or 0
+    st["notices"] = {
+        "config_changed": bool(st.get("proxy", {}).get("up")) and mtime(os.path.join(HOME, "litellm.yaml")) > proxy_started + 1,
+        "proxy_started": proxy_started,
+    }
+    st["logs"] = {name: os.path.getsize(os.path.join(HOME, "logs", f)) if os.path.exists(os.path.join(HOME, "logs", f)) else 0
+                  for name, f in LOGS.items()}
+    st["systemd"] = {s: os.path.exists(os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "systemd", "user", f"nimctl-{s}.service"))
+                     for s in SERVICES + ["watch"]}
+    st["lang"] = LANG
+    st["home"] = HOME
+    st["bin"] = BIN
+    st["web"] = st.get("web") or {}
+    st["web"]["history_samples"] = len(HISTORY)
+    st["busy"] = CURRENT.get("args") if CURRENT.get("proc") else None
+    st["now"] = int(time.time())
+    return st
+
+
+# ── history: one sample every 30 s, for the charts ─────────────────────────────────────────────────────────
+HISTORY = read_json(HISTORY_FILE, []) if os.path.exists(HISTORY_FILE) else []
+if not isinstance(HISTORY, list):
+    HISTORY = []
+_hist_lock = threading.Lock()
+
+
+def sample():
+    stats = nimctl_json(["stats", "--json"], 30)
+    rpm = read_json(os.path.join(HOME, "rpm.json"), {}) or {}
+    req = stats.get("requests") or {}
+    by = req.get("by_status") or {}
+    rec = {"t": int(time.time()), "total": req.get("total", 0) if stats.get("data", True) else 0,
+           "c2": by.get("2xx", 0), "c4": by.get("4xx", 0), "c429": by.get("429", 0), "c5": by.get("5xx", 0),
+           "fallbacks": stats.get("fallbacks", 0), "throttled": stats.get("throttled", 0), "errors": stats.get("errors", 0),
+           "budget": rpm.get("budget"), "free": rpm.get("free"), "waiting": rpm.get("waiting"),
+           "fresh": bool(rpm.get("updated")) and time.time() - rpm.get("updated", 0) < 120}
+    with _hist_lock:
+        HISTORY.append(rec)
+        del HISTORY[:-HISTORY_MAX]
+        try:
+            write_atomic(HISTORY_FILE, json.dumps(HISTORY, separators=(",", ":")))
+        except OSError:
+            pass
+
+
+def sampler():
+    while True:
+        try:
+            sample()
+        except Exception as e:  # never let the sampler die
+            log(f"sampler: {e}")
+        time.sleep(SAMPLE_EVERY)
+
+
+# ── running commands ───────────────────────────────────────────────────────────────────────────────────────
+RUN_LOCK = threading.Lock()
+CURRENT = {}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "nimctl-web"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):  # only what matters: commands and errors (state polls would flood the log)
+        if self.path.startswith("/api/run") or "40" in str(args[1:2]) or "50" in str(args[1:2]):
+            log(f"{self.address_string()} {fmt % args}")
+
+    # ── helpers ─────────────────────────────────────────────────────────────────────────────────────
+    def send_json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_text(self, code, text, ctype="text/plain; charset=utf-8"):
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def start_sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def sse(self, data, event=None):
+        if event:
+            self.wfile.write(f"event: {event}\n".encode())
+        self.wfile.write(f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode())   # real glyphs in the console (✓ ✗ →)
+        self.wfile.flush()
+
+    def host_ok(self):
+        host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
+        if BIND not in ("127.0.0.1", "localhost", "::1"):
+            return True                     # deliberately exposed with NIMCTL_BIND – the token still protects the API
+        return host in ("127.0.0.1", "localhost", "::1")
+
+    def auth_ok(self, query_token=None):
+        tok = self.headers.get("X-Nimctl-Token") or query_token or ""   # EventSource cannot send headers: the log stream takes ?token=
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1", (self.headers.get("Host") or "").split(":")[0]):
+            return False
+        return hmac.compare_digest(tok, TOKEN)
+
+    def body_json(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 1_000_000:
+            return None
+        try:
+            return json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return None
+
+    # ── routing ─────────────────────────────────────────────────────────────────────────────────────
+    def do_GET(self):
+        if not self.host_ok():
+            return self.send_text(403, "forbidden host")
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        if u.path in ("/", "/index.html"):
+            page = read_text(os.path.join(WEB, "index.html"))
+            page = page.replace("__TOKEN__", TOKEN).replace("__LANG__", LANG).replace("__PORT__", str(PORT))
+            return self.send_text(200, page, "text/html; charset=utf-8")
+        if u.path == "/health":
+            return self.send_json(200, {"ok": True})
+        if u.path == "/favicon.ico":
+            return self.send_text(204, "")
+        if not u.path.startswith("/api/"):
+            return self.send_text(404, "not found")
+        if not self.auth_ok((q.get("token") or [None])[0] if u.path == "/api/log/stream" else None):
+            return self.send_json(403, {"error": "token"})
+        try:
+            if u.path == "/api/state":
+                return self.send_json(200, cached("state", STATE_TTL, build_state))
+            if u.path == "/api/stats":
+                return self.send_json(200, cached("stats", STATE_TTL, lambda: nimctl_json(["stats", "--json"], 30)))
+            if u.path == "/api/history":
+                with _hist_lock:
+                    return self.send_json(200, HISTORY)
+            if u.path == "/api/candidates":
+                return self.send_json(200, cached("cands", 30, lambda: nimctl_json(["web", "candidates"], 30)))
+            if u.path == "/api/log":
+                name = (q.get("name") or ["proxy"])[0]
+                if name not in LOGS:
+                    return self.send_json(400, {"error": "unknown log"})
+                n = min(int((q.get("n") or ["200"])[0]), 5000)
+                path = os.path.join(HOME, "logs", LOGS[name])
+                return self.send_json(200, {"name": name, "lines": tail(path, n), "size": os.path.getsize(path) if os.path.exists(path) else 0})
+            if u.path == "/api/log/stream":
+                return self.stream_log((q.get("name") or ["proxy"])[0])
+        except Exception as e:
+            log(f"GET {u.path}: {e}")
+            return self.send_json(500, {"error": str(e)})
+        return self.send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if not self.host_ok():
+            return self.send_text(403, "forbidden host")
+        u = urlparse(self.path)
+        if not u.path.startswith("/api/") or not self.auth_ok():
+            return self.send_json(403, {"error": "token"})
+        body = self.body_json()
+        if body is None:
+            return self.send_json(400, {"error": "bad json"})
+        try:
+            if u.path == "/api/run":
+                return self.run(body)
+            if u.path == "/api/abort":
+                return self.abort()
+            if u.path == "/api/settings":
+                return self.save_settings(body)
+            if u.path == "/api/candidates":
+                return self.save_candidates(body)
+            if u.path == "/api/workspace":
+                return self.set_workspace(body)
+        except Exception as e:
+            log(f"POST {u.path}: {e}")
+            return self.send_json(500, {"error": str(e)})
+        return self.send_json(404, {"error": "not found"})
+
+    # ── endpoints ───────────────────────────────────────────────────────────────────────────────────
+    def run(self, body):
+        args = body.get("args")
+        if not isinstance(args, list) or not args or not all(isinstance(a, str) and RE_ARG.match(a) for a in args):
+            return self.send_json(400, {"error": "bad args"})
+        if args[0] not in COMMANDS or len(args) > 12:
+            return self.send_json(400, {"error": "command not allowed"})
+        stdin_text = body.get("stdin") if isinstance(body.get("stdin"), str) else ""
+        extra_env = {k: v for k, v in (body.get("env") or {}).items() if k in RUN_ENV_KEYS and isinstance(v, str)}
+        env = base_env()
+        env.update(extra_env)
+        env["NIMCTL_YES"] = "0" if body.get("yes") is False else "1"
+        env["NIMCTL_INTERACTIVE"] = "1" if stdin_text else "0"
+        if not RUN_LOCK.acquire(blocking=False):
+            return self.send_json(409, {"error": "busy", "running": CURRENT.get("args")})
+        try:
+            log(f"run: {' '.join(args)}" + (" (stdin)" if stdin_text else ""))
+            proc = subprocess.Popen([BIN, *args], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
+            CURRENT.update({"proc": proc, "args": args, "started": time.time()})
+            invalidate()
+            self.start_sse()
+            self.sse({"args": args}, "start")
+            try:
+                proc.stdin.write(stdin_text + ("\n" if stdin_text and not stdin_text.endswith("\n") else ""))
+            except OSError:
+                pass
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                for line in proc.stdout:
+                    self.sse(line.rstrip("\n"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the browser went away – let the command finish on its own
+            rc = proc.wait()
+            invalidate()
+            try:
+                self.sse({"rc": rc, "seconds": round(time.time() - CURRENT["started"], 1)}, "exit")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        finally:
+            CURRENT.clear()
+            RUN_LOCK.release()
+
+    def abort(self):
+        proc = CURRENT.get("proc")
+        if not proc:
+            return self.send_json(200, {"aborted": False})
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except OSError:
+            pass
+        return self.send_json(200, {"aborted": True})
+
+    def save_settings(self, body):
+        values = body.get("settings")
+        if not isinstance(values, dict):
+            return self.send_json(400, {"error": "settings"})
+        current = settings_file()
+        for k, v in values.items():
+            if k not in SETTINGS_KEYS or not isinstance(v, str) or not RE_VALUE.match(v) or len(v) > 300:
+                return self.send_json(400, {"error": f"bad setting {k}"})
+            if v.strip() == "":
+                current.pop(k, None)
+            else:
+                current[k] = v.strip()
+        text = "".join(f"{k}={current[k]}\n" for k in SETTINGS_KEYS if k in current)
+        write_atomic(os.path.join(HOME, "settings"), text)
+        invalidate()
+        return self.send_json(200, {"settings": current, "restart": True})
+
+    def save_candidates(self, body):
+        values = body.get("candidates")
+        if not isinstance(values, dict):
+            return self.send_json(400, {"error": "candidates"})
+        current = candidates_file()
+        for k, v in values.items():
+            if not RE_CAND_KEY.match(k or "") or not isinstance(v, str) or not RE_CAND_VAL.match(v) or len(v) > 500:
+                return self.send_json(400, {"error": f"bad candidates {k}"})
+            if v.strip() == "":
+                current.pop(k, None)
+            else:
+                current[k] = " ".join(v.split())
+        write_atomic(os.path.join(HOME, "candidates"), "".join(f"{k}: {v}\n" for k, v in current.items()))
+        invalidate()
+        return self.send_json(200, {"candidates": current})
+
+    def set_workspace(self, body):
+        d = body.get("dir")
+        if not isinstance(d, str) or not d or "\n" in d:
+            return self.send_json(400, {"error": "dir"})
+        d = os.path.realpath(os.path.expanduser(d))
+        if not os.path.isdir(d):
+            return self.send_json(400, {"error": "not a directory"})
+        write_atomic(os.path.join(HOME, "ide-workspace"), d + "\n")
+        rc, out = nimctl(["ide", "config"], 60)
+        invalidate()
+        return self.send_json(200, {"dir": d, "rc": rc, "output": out[-2000:]})
+
+    def stream_log(self, name):
+        if name not in LOGS:
+            return self.send_json(400, {"error": "unknown log"})
+        path = os.path.join(HOME, "logs", LOGS[name])
+        self.start_sse()
+        try:
+            for line in tail(path, 100):
+                self.sse(line)
+            pos = os.path.getsize(path) if os.path.exists(path) else 0
+            while True:
+                size = os.path.getsize(path) if os.path.exists(path) else 0
+                if size < pos:
+                    pos = 0             # truncated (proxy restart)
+                    self.sse("", "truncated")
+                if size > pos:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        f.seek(pos)
+                        chunk = f.read()
+                        pos = f.tell()
+                    for line in chunk.splitlines():
+                        self.sse(RE_ANSI.sub("", line))
+                else:
+                    self.sse("", "ping")
+                    time.sleep(1.0)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+
+def main():
+    if not os.path.exists(os.path.join(WEB, "index.html")):
+        sys.exit("nimctl web: index.html missing – run nimctl web")
+    threading.Thread(target=sampler, daemon=True).start()
+    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    srv.daemon_threads = True
+    log(f"nimctl web UI on http://{BIND}:{PORT} (home {HOME}, nimctl {BIN})")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
+ASSET_EOF_server_py
 }
 
 [[ "${BASH_SOURCE[0]}" == "$0" ]] && main "$@"
