@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.11.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.11.1                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
