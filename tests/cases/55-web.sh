@@ -31,7 +31,7 @@ check "candidates file: nimctl uses it" '"code":"glm-5 deepseek-v4-pro"' < <(cur
 # finds outside the rankings (scan results from 23-scan: deepseek-v4-flash answers with tools and sits in no code pattern)
 check "web discover: finds per slot plus the filters the page mirrors" '^\{"flash":true,"slots":\["code","fast","chat","review"\],"nc":"embed\|","small":"\('  < <(timeout 60 "$N" web discover | jq -c '{flash: (.found.code | index("deepseek-ai/deepseek-v4-flash-0731") != null), slots: (.found | keys_unsorted), nc: .not_chat[0:6], small: .small[0:2]}')
 check "web: discover endpoint" '^true$' < <(curl -s -H "$H" "$U/api/discover" | jq -c '.found.code | index("deepseek-ai/deepseek-v4-flash-0731") != null')
-check "web: discovered saved" '"code": \[$' < <(curl -s -H "$H" -d '{"discovered":{"code":["deepseek-ai/deepseek-v4-flash-0731"]}}' "$U/api/discovered")
+check "web: discovered saved" '"code": \["deepseek-ai/deepseek-v4-flash-0731"\]' < <(curl -s -H "$H" -d '{"discovered":{"code":["deepseek-ai/deepseek-v4-flash-0731"]}}' "$U/api/discovered")
 grep -qx 'code: deepseek-ai/deepseek-v4-flash-0731' "$TMP/home/discovered" && pass "web: discovered file" || fail "web: discovered file"
 check "discovered file: nimctl appends it to the ranking" '"code":"glm-5 deepseek-v4-pro deepseek-ai/deepseek-v4-flash-0731"' < <(curl -s -H "$H" "$U/api/candidates" | jq -c .)
 check "web: state carries the taken-over models" '"discovered":\{"code":\["deepseek-ai/deepseek-v4-flash-0731"\]\}' < <(curl -s -H "$H" "$U/api/state" | jq -c '{discovered}')
