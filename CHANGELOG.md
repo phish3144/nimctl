@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.10.0] – 2026-09-19
+
+### Added
+- **`nimctl scan [provider…|all] [--sizes] [--use|--clear]`**: probes every chat model of every provider with a key –
+  NVIDIA and the pool – at the pace each free tier tolerates (`NIMCTL_SCAN_RPM` overrides: NVIDIA 30, Groq 25,
+  Gemini 8, Cerebras 25, OpenRouter 15, Mistral 40 requests/min; embeddings, rerankers, guards, speech and image
+  entries are skipped), then tool calling for the responders and, with `--sizes`, the request sizes. One table per
+  provider, results in `~/.nimctl/probes` for the dashboard, `find`, the web UI catalog and the next `auto`. Models
+  that qualify for a slot (tool calling where needed, no models below 30B for `code`/`review`) but that no ranking
+  names are listed; `--use` appends them to the slot's ranking (`~/.nimctl/discovered`, after the patterns) and
+  rebuilds the chains, `--clear` removes them. OpenRouter is scanned only when named (50 requests a day). Web UI:
+  scan buttons on the models and pool pages.
+
+### Changed
+- **Every provider with a key gets its ranks.** The chain is filled in two passes: at most `NIMCTL_CHAIN_PER_PROVIDER`
+  ranks (2) per provider first, in ranking order, then the ranks skipped for that. Mistral, OpenRouter and Cerebras
+  used to sit behind NVIDIA's third and fourth model and never made it into a chain of six; now NVIDIA's third-best
+  comes after the other providers' best, and a provider that is down as a whole costs one or two ranks. Chains have
+  8 ranks by default (`NIMCTL_CHAIN_LEN`), the setting is on the web UI's Settings page.
+
 ## [1.9.0] – 2026-09-19
 
 ### Fixed

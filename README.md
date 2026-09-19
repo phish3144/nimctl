@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.9.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.10.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -150,6 +150,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl status [--json]` | Dashboard once, non-interactive; JSON for scripts; exit code reflects the state |
 | `nimctl check` | Probe the configured models with a real request (tool calls for `code`/`review`) |
 | `nimctl auto [slot…]` | Re-select models automatically, all slots or e.g. `nimctl auto code` |
+| `nimctl scan [provider…\|all] [--sizes] [--use\|--clear]` | Probe every chat model of every provider with a key at the pace its free tier tolerates (tool calling, `--sizes` request sizes); list the models that qualify for a slot but sit in no ranking, `--use` appends them to the rankings, `--clear` takes them out again. OpenRouter only when named (50 requests a day) |
 | `nimctl pick <slot> [text\|id]` | Set a slot manually from a list, or directly with an exact id (also a pool model's `provider:id`); the pick is probed before it is saved |
 | `nimctl find <text>` | Probe every catalog entry matching `<text>` – shows what really answers, and whether it makes tool calls |
 | `nimctl test [model\|slot] [prompt]` | Send a prompt, see reply, tokens and time |
@@ -189,7 +190,7 @@ Every slot is a **chain of ranks**: rank 1 is the slot's model and gets every re
 `NIMCTL_STALL_TIMEOUT` seconds, 429, 5xx) the next rank takes over at once, and the failed rank pauses. The chain is
 built from a ranking of candidate patterns matched against the live catalogs of NVIDIA **and every pool provider with
 a key**: a bare pattern names NVIDIA's catalog, `provider:pattern` a provider's. Patterns are tried in order; every
-pattern with a responding model (tool calling for `code`/`review`) adds it to the chain, up to `NIMCTL_CHAIN_LEN` (6).
+pattern with a responding model (tool calling for `code`/`review`) adds it to the chain, up to `NIMCTL_CHAIN_LEN` (8).
 Quality decides the order, placed by what the free tiers carry – small daily quotas (Gemini Pro, OpenRouter) sit late
 in the busy slots and early in `review`, and NVIDIA is not first where a provider is as good and more reliable.
 
@@ -199,6 +200,14 @@ summarise), `chat` 8k. `nimctl auto` sends one request of that size per model an
 `~/.nimctl/sizes` (probe rows and the web UI show `32k ✓`/`✗` with the provider's reason) and leaves a model that
 rejects it out of the slot. Groq's free tier caps a single request at its per-minute token limit (6–12k tokens), so
 Groq models are chat candidates only; a model with a small context window drops out the same way.
+
+The chain is filled in two passes: first at most `NIMCTL_CHAIN_PER_PROVIDER` ranks (2) per provider, in ranking order,
+so every provider with a key gets its turn; then the ranks skipped for that, again in ranking order, up to
+`NIMCTL_CHAIN_LEN`. NVIDIA's third-best model therefore sits behind Mistral's or OpenRouter's best, and a provider that
+is down as a whole costs one or two ranks, not six. `nimctl scan` probes every chat model of every provider with a key
+(at the pace each free tier tolerates, `NIMCTL_SCAN_RPM` overrides it), shows what answers, makes tool calls and takes
+which request sizes, and lists the models that qualify for a slot but that no ranking names; `nimctl scan --use`
+appends them to the rankings (`~/.nimctl/discovered`, after the patterns), `--clear` takes them out again.
 
 | Slot | Used for | Default ranking (first pattern with a responding model = rank 1, the rest follow) |
 |---|---|---|
@@ -341,6 +350,7 @@ chains.json     the slot chains as the proxy hook sees them (rank groups → mod
 health.json     paused ranks (written by the proxy hook; dashboard line `Paused`, web UI notices)
 probes          last probe result per model (ok/error, latency, time, tool calling); pool models as <provider>:<id>
 sizes           which request sizes a model takes (per model and size: ok/error, time) – a rank must take its slot's size
+discovered      models `nimctl scan --use` appended to the rankings ("code: id id …", one line per slot)
 bench           bench results
 models.cache    catalog snapshot (refreshed hourly, used as fallback when NVIDIA is unreachable)
 models.<provider>.cache  catalog snapshot per pool provider
@@ -395,7 +405,8 @@ The key is checked at the provider before it is saved (`~/.nimctl/config`, mode 
 the chains of all four slots are rebuilt: the provider's models take the ranks the candidate list gives them (see
 [The four model slots](#the-four-model-slots)) – with a Groq key, `groq:kimi-k2` is rank 1 for `chat` when it
 answers, not a fallback behind NVIDIA; `code` and `review` skip Groq, whose free tier takes at most 6–12k tokens per
-request. `nimctl pool` shows each provider's ranks, `nimctl pool remove <provider>`
+request. Every provider gets `NIMCTL_CHAIN_PER_PROVIDER` ranks (2) before the ranking fills the rest of the chain, and
+`nimctl scan` finds the models of a provider that no ranking names. `nimctl pool` shows each provider's ranks, `nimctl pool remove <provider>`
 takes its ranks out and rebuilds, `nimctl pool auto` rebuilds everything, `nimctl pool test` runs the proxy round trip.
 Pool models are also reachable by their own id, e.g. `nimctl code --model cerebras:gpt-oss-120b`, and can be picked
 into a slot with `nimctl pick chat groq:moonshotai/kimi-k2-instruct-0905` (`pick` warns when the model takes no
@@ -464,7 +475,9 @@ All optional, via environment variables:
 | `NIMCTL_STALL_TIMEOUT` | `120` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the next rank |
 | `NIMCTL_COOLDOWN` | `90` | Seconds a failed rank is paused after a timeout or 5xx before it is tried again; doubles on every further failure, up to 30 minutes |
 | `NIMCTL_COOLDOWN_RATELIMIT` | `15` | First cooldown after a rate limit / 429 (shorter than `NIMCTL_COOLDOWN` so code mode recovers faster); doubles on further consecutive failures |
-| `NIMCTL_CHAIN_LEN` | `6` | Ranks per slot the proxy gets |
+| `NIMCTL_CHAIN_LEN` | `8` | Ranks per slot the proxy gets |
+| `NIMCTL_CHAIN_PER_PROVIDER` | `2` | Ranks a provider gets before the others had their turn; the ranking fills the chain up afterwards |
+| `NIMCTL_SCAN_RPM` | per provider | Requests per minute `nimctl scan` sends (NVIDIA 30, Groq 25, Gemini 8, Cerebras 25, OpenRouter 15, Mistral 40) |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
 | `NIMCTL_KEY_WARN_DAYS` | `165` | Key age in days after which the dashboard warns (NVIDIA keys last ~180 days) |
 | `NIMCTL_WEBUI_PYTHON` | auto | Python interpreter with `bcrypt` for `nimctl chat passwd` (default: the Open WebUI environment) |

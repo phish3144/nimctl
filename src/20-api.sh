@@ -137,7 +137,7 @@ probe_line() { # probe_line <id> → one table row from the stored result: answe
 probe_many() { # probe_many <id…> – parallel, stores results, prints rows; skips ids already OK in this run
   local tmp="$TMP_ROOT/probe.$$.$RANDOM"; mkdir -p "$tmp"; local i=0 id todo=() res
   for id in "$@"; do [[ -n "${RUN_OK[$id]:-}" ]] || todo+=("$id"); done
-  ((${#todo[@]})) && info "$(tf probing "${#todo[@]}" "$PROBE_TIMEOUT")"
+  ((${#todo[@]})) && [[ -z "${PROBE_QUIET:-}" ]] && info "$(tf probing "${#todo[@]}" "$PROBE_TIMEOUT")"   # PROBE_QUIET: no headline, no rows (scan prints its own)
   for id in "${todo[@]}"; do ( probe_one "$id" >"$tmp/$i" ) & ((i++)); done; wait
   i=0
   for id in "$@"; do
@@ -146,14 +146,14 @@ probe_many() { # probe_many <id…> – parallel, stores results, prints rows; s
       if [[ "$res" == ok* ]]; then RUN_OK[$id]="${res#ok }"; probe_set "$id" ok "${res#ok }"
       elif (( INTERRUPTED )); then probe_set "$id" "$(t aborted)"; else probe_set "$id" "${res:-$(t noanswer)}"; fi
     fi
-    probe_line "$id"
+    [[ -n "${PROBE_QUIET:-}" ]] || probe_line "$id"
   done
   rm -rf "$tmp"
 }
 probe_tools_many() { # probe_tools_many <id…> – tool-calling check for models that already answered
   local tmp="$TMP_ROOT/tools.$$.$RANDOM"; mkdir -p "$tmp"; local i=0 id todo=() res
   for id in "$@"; do [[ -n "${RUN_TOOLS[$id]:-}" ]] || todo+=("$id"); done
-  ((${#todo[@]})) && info "$(tf probing_tools "${#todo[@]}")"
+  ((${#todo[@]})) && [[ -z "${PROBE_QUIET:-}" ]] && info "$(tf probing_tools "${#todo[@]}")"
   for id in "${todo[@]}"; do ( probe_one "$id" "$PROBE_TIMEOUT" tools >"$tmp/$i" ) & ((i++)); done; wait
   i=0; local again=()
   for id in "${todo[@]}"; do res=$(cat "$tmp/$i" 2>/dev/null); ((i++))
@@ -166,7 +166,7 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
       notools*) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-${res#notools }}" no;;
       *) RUN_TOOLS[$id]=err; TOOLS_ERR[$id]="${res:-$(t noanswer)}"; probe_set "$id" ok "${RUN_OK[$id]:-0}" "";; esac
   done
-  for id in "$@"; do probe_line "$id"; done
+  [[ -n "${PROBE_QUIET:-}" ]] || for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
 }
 pat_provider() { local p="${1%%:*}"; [[ "$1" == *:* && " ${POOL_PROVIDERS[*]} " == *" $p "* ]] && printf '%s' "$p"; return 0; }   # provider of a candidate pattern, "" = NVIDIA
@@ -212,8 +212,8 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     # models that need function calling: check the responders of this slot once
     if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then local responders=(); for m in "${cands[@]}"; do [[ -n "${RUN_OK[$m]:-}" ]] && responders+=("$m"); done
       ((${#responders[@]})) && probe_tools_many "${responders[@]}"; fi
-    # the chain: patterns in ranking order, a pattern's responders by latency, until CHAIN_LEN ranks
-    local chain=() rows p re notools=" " tokens="${SLOT_TOKENS[$slot]:-0}"
+    # the ranking: patterns in order, a pattern's responders by latency (tool calling where the slot needs it)
+    local rows p re notools=" " tokens="${SLOT_TOKENS[$slot]:-0}" ordered=()
     while read -r pat; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat"); rows=()
       for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$p" ]] && echo "$m" | grep -qiE -- "$re" || continue
         probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
@@ -222,13 +222,20 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
         rows+=("$PROBE_MS $m")
       done
       ((${#rows[@]})) || continue
-      # a rank must take a request of the slot's size: probed once per model and size, in ranking order, until the chain is full
-      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] || continue
-        if (( tokens > 0 )) && ! size_ok "$m" "$tokens"; then info "$(tf auto_toolarge "$m" "$(size_k "$tokens")" "$slot")"; continue; fi
-        chain+=("$m"); (( ${#chain[@]} >= CHAIN_LEN )) && break
-      done < <(printf '%s\n' "${rows[@]}" | sort -n)
-      (( ${#chain[@]} >= CHAIN_LEN )) && break
+      while read -r _ m; do [[ -n "$m" && " ${ordered[*]} " != *" $m "* ]] && ordered+=("$m"); done < <(printf '%s\n' "${rows[@]}" | sort -n)
     done < <(candidates "$slot")
+    # the chain: first pass takes at most CHAIN_PER_PROVIDER ranks per provider (every provider with a key gets its turn), the
+    # second pass fills up with the ranks skipped for that, in ranking order; a rank must take a request of the slot's size,
+    # probed once per model and size, until the chain has CHAIN_LEN ranks
+    local chain=() skipped=() pass; declare -A percount=()
+    for pass in 1 2; do (( pass == 2 )) && ordered=("${skipped[@]}")
+      for m in "${ordered[@]}"; do (( ${#chain[@]} >= CHAIN_LEN )) && break 2
+        p=$(pool_of "$m"); p="${p:-nim}"
+        if (( pass == 1 && ${percount[$p]:-0} >= CHAIN_PER_PROVIDER )); then skipped+=("$m"); continue; fi
+        if (( tokens > 0 )) && ! size_ok "$m" "$tokens"; then info "$(tf auto_toolarge "$m" "$(size_k "$tokens")" "$slot")"; continue; fi
+        chain+=("$m"); percount[$p]=$(( ${percount[$p]:-0} + 1 ))
+      done
+    done
     if ((${#chain[@]})); then
       chain=("${chain[@]:0:CHAIN_LEN}"); set_chain "$slot" "${chain[*]}"; probe_get "${chain[0]}"
       ok "$(tf auto_pick "$slot" "${chain[0]}" "$PROBE_MS")"; (( ${#chain[@]} > 1 )) && info "$(tf auto_chain "${chain[*]:1}")"

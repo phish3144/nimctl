@@ -59,11 +59,12 @@ key_days_left() { # → days until the key is ~180 days old, or "" when unknown
   echo $(( 180 - ( $(date +%s) - KEY_SET_AT ) / 86400 ))
 }
 key_masked() { local k="$NVIDIA_API_KEY"; (( ${#k} > 10 )) && printf 'nvapi-…%s' "${k: -4}" || printf '%s' "$k"; }
-candidates() { # candidates <slot> → patterns, from env NIMCTL_CAND_<SLOT>, ~/.nimctl/candidates ("code: a b c") or defaults
+candidates() { # candidates <slot> → patterns: env NIMCTL_CAND_<SLOT>, ~/.nimctl/candidates ("code: a b c") or the defaults; then the ids `nimctl scan --use` added (~/.nimctl/discovered)
   local slot="$1" ev="NIMCTL_CAND_${1^^}" arr="CAND_${1^^}[@]" line
-  if [[ -n "${!ev:-}" ]]; then printf '%s\n' ${!ev}; return; fi
-  if [[ -f "$CAND_FILE" ]]; then line=$(grep -E "^${slot}:" "$CAND_FILE" 2>/dev/null | head -n1); [[ -n "$line" ]] && { printf '%s\n' ${line#*:}; return; }; fi
-  printf '%s\n' "${!arr}"
+  if [[ -n "${!ev:-}" ]]; then printf '%s\n' ${!ev}
+  elif [[ -f "$CAND_FILE" ]] && line=$(grep -E "^${slot}:" "$CAND_FILE" 2>/dev/null | head -n1) && [[ -n "$line" ]]; then printf '%s\n' ${line#*:}
+  else printf '%s\n' "${!arr}"; fi
+  [[ -f "$DISCOVERED_FILE" ]] && { line=$(grep -E "^${slot}:" "$DISCOVERED_FILE" 2>/dev/null | head -n1); [[ -n "$line" ]] && printf '%s\n' ${line#*:}; }; return 0
 }
 # Project profile: a .nimctl file in the current directory (KEY=VALUE) for `nimctl code`.
 PROFILE_MODEL=""; PROFILE_THINK=""; PROFILE_MAXOUT=""
