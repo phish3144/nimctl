@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.8.1] – 2026-09-19
+
+### Fixed
+- **SearXNG reinstall**: `nimctl search install` creates the venv with `uv venv --clear`, so a second install no longer
+  fails when `~/.nimctl/searxng/venv` already exists.
+- **Open WebUI search URL**: when search is enabled, `start_chat` / `nimctl search start` write the local SearXNG JSON
+  URL into `~/.nimctl/webui-data/webui.db` (`web.search.searxng_query_url`, engine `searxng`, enable true). Open WebUI
+  prefers the DB over env after the first admin save, so a previously persisted public instance (often HTML/Turnstile)
+  no longer overrides the local service.
+- **Rate-limit cooldowns**: a `RateLimitError` / 429 starts a short pause (`NIMCTL_COOLDOWN_RATELIMIT`, default 20 s)
+  instead of the full `NIMCTL_COOLDOWN` (120 s) used for timeouts and 5xx; still doubles per consecutive failure and is
+  registered with LiteLLM's cooldown cache.
+
+### Changed
+- **Chat candidate ranking**: `CAND_CHAT` puts Gemini Flash and Groq ahead of `nemotron-3-super` so `nimctl auto` builds
+  healthier chat chains when those free tiers are configured (NVIDIA free-tier mid-stream 503s were common with
+  nemotron first). Tool-capable rankings for `code` / `review` are unchanged.
+
+### Notes
+- Full-page reloads in the **Open WebUI** chat come from Open WebUI's own `/_app/version.json` update checker, not from
+  nimctl's web UI (which only soft-refreshes every 5 s). There is no clean env flag to disable that checker; leave it
+  alone.
+
 ## [1.8.0] – 2026-09-19
 
 ### Changed

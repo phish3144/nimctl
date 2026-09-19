@@ -9,7 +9,7 @@ T_de+=(
   [search_disabled]="Websuche deaktiviert – start/stop/restart lassen sie aus; wieder an: nimctl search start"
   [search_git_missing]="git fehlt – nötig, um SearXNG zu holen" [search_settings]="SearXNG-Konfiguration: %s" [search_url]="Suche: http://localhost:%s  · nimctl search \"Suchbegriff\""
   [search_none]="keine Treffer" [search_chat_hint]="Chat neu starten, damit die Websuche dort erscheint: nimctl restart"
-  [search_persist]="Open WebUI merkt sich Änderungen aus dem Admin-Panel; die Umgebung setzt nur den Anfangswert"
+  [search_persist]="nimctl schreibt die lokale SearXNG-URL bei start/restart in die Open-WebUI-Datenbank (andere Admin-Engines bleiben möglich)"
 )
 T_en+=(
   [k_o]="Search" [h_search]="web search (SearXNG) for the chat and the IDE: nimctl search [\"query\"|start|stop|disable|install|test]"
@@ -17,7 +17,7 @@ T_en+=(
   [search_disabled]="web search disabled – start/stop/restart leave it out; back on: nimctl search start"
   [search_git_missing]="git missing – needed to fetch SearXNG" [search_settings]="SearXNG configuration: %s" [search_url]="search: http://localhost:%s  · nimctl search \"query\""
   [search_none]="no results" [search_chat_hint]="restart the chat so web search shows up there: nimctl restart"
-  [search_persist]="Open WebUI remembers changes made in its admin panel; the environment only sets the initial value"
+  [search_persist]="nimctl writes the local SearXNG URL into Open WebUI's database on start/restart (other admin engines remain possible)"
 )
 search_python() { local p="$SEARX_DIR/venv/bin/python"; [[ -x "$p" ]] && printf '%s' "$p"; }
 search_secret() { # one secret per installation, kept out of settings.yml diffs
@@ -35,7 +35,7 @@ inst_searxng() { # git clone (or pull) + uv venv + requirements + editable insta
   local repo="${NIMCTL_SEARXNG_REPO:-https://github.com/searxng/searxng}" log="$LOG_DIR/searxng-install.log" py="$SEARX_DIR/venv/bin/python"
   mkdir -p "$SEARX_DIR"; printf "  %s" "$(t search_installing)"
   if { if [[ -d "$SEARX_DIR/src/.git" ]]; then git -C "$SEARX_DIR/src" pull --ff-only; else git clone --depth 1 "$repo" "$SEARX_DIR/src"; fi &&
-       uv venv --python '>=3.11' "$SEARX_DIR/venv" &&
+       uv venv --clear --python '>=3.11' "$SEARX_DIR/venv" &&
        uv pip install --python "$py" setuptools wheel -r "$SEARX_DIR/src/requirements.txt" &&
        uv pip install --python "$py" --no-build-isolation -e "$SEARX_DIR/src"; } >"$log" 2>&1 && [[ -x "$py" ]]; then printf "%s\n" "$OK"
   else printf "%s\n" "$NO"; bad "$(tf inst_fail SearXNG) → $log"; return 1; fi
@@ -43,10 +43,77 @@ inst_searxng() { # git clone (or pull) + uv venv + requirements + editable insta
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; svc_running chat && info "$(t search_chat_hint)"; }
   ok "$(t search_enabled)"
 }
+chat_sync_searxng() { # point Open WebUI's persisted SearXNG URL at the local instance (DB wins over env after first save)
+  [[ "$SEARCH_ENABLED" == 1 ]] || return 0
+  local db="$NIM_DIR/webui-data/webui.db"
+  [[ -f "$db" ]] || return 0
+  local url="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
+  if has python3; then
+    NIMCTL_WEBUI_DB="$db" NIMCTL_SEARXNG_URL="$url" python3 - <<'PY' 2>/dev/null || true
+import json, os, sqlite3, time
+db, url = os.environ["NIMCTL_WEBUI_DB"], os.environ["NIMCTL_SEARXNG_URL"]
+try:
+    con = sqlite3.connect(db, timeout=5)
+except sqlite3.Error:
+    raise SystemExit(0)
+try:
+    cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+except sqlite3.Error:
+    con.close(); raise SystemExit(0)
+now = int(time.time())
+rows = {
+    "web.search.searxng_query_url": url,
+    "web.search.engine": "searxng",
+    "web.search.enable": True,
+}
+try:
+    if "key" in cols and "value" in cols:
+        for k, v in rows.items():
+            con.execute(
+                "INSERT INTO config(key, value, updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (k, json.dumps(v), now),
+            )
+    elif "data" in cols:
+        row = con.execute("SELECT id, data FROM config ORDER BY id LIMIT 1").fetchone()
+        if row:
+            data = row[1]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                data = {}
+            web = data.setdefault("web", {})
+            if not isinstance(web, dict):
+                web = {}; data["web"] = web
+            search = web.setdefault("search", {})
+            if not isinstance(search, dict):
+                search = {}; web["search"] = search
+            search["searxng_query_url"] = url
+            search["engine"] = "searxng"
+            search["enable"] = True
+            payload = json.dumps(data)
+            if "updated_at" in cols:
+                con.execute("UPDATE config SET data=?, updated_at=? WHERE id=?", (payload, now, row[0]))
+            else:
+                con.execute("UPDATE config SET data=? WHERE id=?", (payload, row[0]))
+    con.commit()
+except sqlite3.Error:
+    pass
+finally:
+    con.close()
+PY
+  elif has sqlite3; then
+    local esc="${url//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    sqlite3 "$db" "INSERT INTO config(key,value,updated_at) VALUES('web.search.searxng_query_url','\"$esc\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.engine','\"searxng\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.enable','true',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;" 2>/dev/null || true
+  fi
+}
 search_ensure() { # installed, running, enabled
   search_python >/dev/null || { bad "$(tf svc_missing SearXNG)"; info "→ nimctl search install"; return 1; }
   svc_running search || start_search || return 1
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; ok "$(t search_enabled)"; svc_running chat && info "$(t search_chat_hint)"; }
+  chat_sync_searxng
 }
 search_query() { # search_query <query> [count] → title and url per result
   local n="${2:-${NIMCTL_SEARCH_RESULTS:-5}}" out

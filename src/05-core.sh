@@ -3,7 +3,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -35,14 +35,15 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 # regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a responding model (tool
 # calling for code/review) adds it to the slot's chain – the first is the slot's model, the others take over one after
 # another when it fails (LiteLLM order + cooldown, see write_litellm_yaml). Quality first, placed by what the free
-# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is
-# not first by default where a provider is as good and more reliable. Override: NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
+# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; chat prefers
+# Gemini Flash / Groq ahead of nemotron-3-super (NVIDIA 503 mid-stream is common on free tier). Override:
+# NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
 # shellcheck disable=SC2034
 CAND_CODE=(groq:kimi-k2 deepseek-v4-pro 'gemini:gemini-[0-9.]+-pro$' laguna-xs groq:gpt-oss-120b glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra groq:llama-3.3-70b nemotron-3-super)
 # shellcheck disable=SC2034
 CAND_FAST=(deepseek-v4-flash groq:llama-3.1-8b-instant cerebras:llama3.1-8b 'gemini:flash-lite$' groq:gpt-oss-20b nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_CHAT=(nemotron-3-super groq:llama-3.3-70b 'gemini:gemini-[0-9.]+-flash$' deepseek-v4-flash cerebras:llama-3.3-70b groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
+CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:llama-3.3-70b groq:gpt-oss-120b cerebras:llama-3.3-70b nemotron-3-super deepseek-v4-flash nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
 CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro groq:kimi-k2 nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 groq:gpt-oss-120b mistral:magistral-medium nemotron-3-super)
 CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets

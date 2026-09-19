@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.8.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.8.1                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -197,7 +197,7 @@ in the busy slots and early in `review`, and NVIDIA is not first where a provide
 |---|---|---|
 | `code` | Claude Code main model – must make tool calls | groq:kimi-k2 · deepseek-v4-pro · gemini:gemini-*-pro · laguna-xs · groq:gpt-oss-120b · glm-5 · qwen3-coder · openrouter:qwen3-coder:free · mistral:devstral-medium · gemini:gemini-*-flash · kimi-k3 · cerebras:gpt-oss-120b · nemotron-3-ultra · groq:llama-3.3-70b · nemotron-3-super |
 | `fast` | Claude Code side tasks (`ANTHROPIC_SMALL_FAST_MODEL`) and the last fallback of the other slots | deepseek-v4-flash · groq:llama-3.1-8b-instant · cerebras:llama3.1-8b · gemini:flash-lite · groq:gpt-oss-20b · nemotron-3.5-lightning · nemotron-3-nano · mistral:mistral-small · cerebras:llama-3.3-70b · glm-5-flash · openrouter:gpt-oss-20b:free · nemotron-3-super |
-| `chat` | Browser chat default model | nemotron-3-super · groq:llama-3.3-70b · gemini:gemini-*-flash · deepseek-v4-flash · cerebras:llama-3.3-70b · groq:gpt-oss-120b · nemotron-3-ultra · mistral:mistral-medium · openrouter:deepseek-chat:free · llama-4-maverick |
+| `chat` | Browser chat default model | gemini:gemini-*-flash · groq:llama-3.3-70b · groq:gpt-oss-120b · cerebras:llama-3.3-70b · nemotron-3-super · deepseek-v4-flash · nemotron-3-ultra · mistral:mistral-medium · openrouter:deepseek-chat:free · llama-4-maverick |
 | `review` | Big, slow model for `nimctl code --model review` – must make tool calls | gemini:gemini-*-pro · kimi-k3 · deepseek-v4-pro · groq:kimi-k2 · nemotron-3-ultra · openrouter:deepseek-r1:free · glm-5 · groq:gpt-oss-120b · mistral:magistral-medium · nemotron-3-super |
 
 Selection rule: the patterns are case-insensitive regular expressions (`glm-5.*flash` also matches `glm-5.3-flash`);
@@ -209,9 +209,9 @@ rebuilds the chains, `nimctl pick <slot> <id>` makes a model rank 1 (the rest mo
 one line per slot) – the web UI has an editor for it.
 
 At run time the proxy's hook (`~/.nimctl/nimctl_hooks.py`) sends a request for a slot to the best rank that is not
-paused; a rank that fails is paused for `NIMCTL_COOLDOWN` seconds (120), twice as long on every further failure, up
-to 30 minutes, and cleared by a success. The pause is registered with LiteLLM too, so the fallback chain of a running
-request skips it. One limit remains: a single request that hits two ranks that both stall after sending their HTTP
+paused; a rank that fails is paused – `NIMCTL_COOLDOWN_RATELIMIT` seconds (20) for a rate limit / 429, `NIMCTL_COOLDOWN`
+seconds (120) for timeouts and 5xx – twice as long on every further failure, up to 30 minutes, and cleared by a success.
+The pause is registered with LiteLLM too, so the fallback chain of a running request skips it. One limit remains: a single request that hits two ranks that both stall after sending their HTTP
 headers ends in an error – LiteLLM recovers a mid-stream failure once – and the client's own retry (Claude Code
 retries by itself) lands on the healthy rank. The dashboard shows paused ranks (`Paused` line), the web UI marks them.
 
@@ -286,8 +286,10 @@ needs, and turns the bot limiter off, so no Redis is required.
 Open WebUI gets the search through its start environment (`ENABLE_WEB_SEARCH`, `WEB_SEARCH_ENGINE=searxng`,
 `SEARXNG_QUERY_URL`, `NIMCTL_SEARCH_RESULTS` results per query). Pages go straight into the model's context instead of
 through a local embedding model, which keeps the first search from downloading one. In the chat, the globe icon next
-to the message box switches web search on per message. One thing to know: Open WebUI stores settings changed in its
-admin panel in its database, and those win over the environment afterwards.
+to the message box switches web search on per message. Open WebUI stores admin-panel settings in its database and those
+win over the environment afterwards – so when search is enabled, `nimctl` also writes the local SearXNG JSON URL into
+`~/.nimctl/webui-data/webui.db` on chat/search start (a previously saved public instance often returns HTML/Turnstile
+instead of JSON).
 
 The IDE gets the same search as a `web_search` tool in its MCP server, so Continue's agent can look things up too.
 `nimctl start`, `stop`, `restart` and the systemd units include the search once it is enabled; `nimctl search disable`
@@ -410,9 +412,12 @@ per-installation token (`~/.nimctl/web/token`, mode 600); every API call must pr
 header naming this machine, so another site open in your browser can neither read your state nor run commands. Keys
 and passwords reach nimctl through stdin or its environment, never a command line. Values changed under Settings
 land in `~/.nimctl/settings` (`NIMCTL_*` names nimctl reads at start – a variable set in the environment still wins)
-and apply after a restart; the page says so and offers the button. The server samples the proxy statistics every
-30 s into `web/history.json` (24 hours) for the charts. `nimctl web disable` takes the service out of
-start/stop/restart and systemd; the wizard offers the web UI after the IDE and the search.
+and apply after a restart; the page says so and offers the button. The page soft-refreshes its state every 5 s (no
+full reload). Full-page reloads you may see in the **Open WebUI** chat come from Open WebUI's own
+`/_app/version.json` update checker, not from this cockpit – there is no clean env flag to turn that checker off.
+The server samples the proxy statistics every 30 s into `web/history.json` (24 hours) for the charts. `nimctl web
+disable` takes the service out of start/stop/restart and systemd; the wizard offers the web UI after the IDE and the
+search.
 
 ## Configuration
 
@@ -444,7 +449,8 @@ All optional, via environment variables:
 | `NIMCTL_RPM` | `36` | Request budget per minute for the whole key; the proxy delays requests beyond it instead of forwarding them (see Rate limiting) |
 | `NIMCTL_RPM_MAX_WAIT` | `30` | Seconds a request may wait for a free slot before the proxy answers 429 with `Retry-After` |
 | `NIMCTL_STALL_TIMEOUT` | `90` | Seconds the proxy waits for a model to send anything – the next byte of a streamed answer, a whole non-streamed one – before it hands the request to the next rank |
-| `NIMCTL_COOLDOWN` | `120` | Seconds a failed rank is paused before it is tried again; doubles on every further failure, up to 30 minutes |
+| `NIMCTL_COOLDOWN` | `120` | Seconds a failed rank is paused after a timeout or 5xx before it is tried again; doubles on every further failure, up to 30 minutes |
+| `NIMCTL_COOLDOWN_RATELIMIT` | `20` | First cooldown after a rate limit / 429 (shorter than `NIMCTL_COOLDOWN` so code mode recovers faster); doubles on further consecutive failures |
 | `NIMCTL_CHAIN_LEN` | `6` | Ranks per slot the proxy gets |
 | `NIMCTL_PROVIDER` | `custom_openai` | LiteLLM provider prefix. Do not use `openai` – LiteLLM would send Claude Code's requests to a Responses API NVIDIA lacks |
 | `NIMCTL_KEY_WARN_DAYS` | `165` | Key age in days after which the dashboard warns (NVIDIA keys last ~180 days) |

@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.8.0"
+VERSION="1.8.1"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -17,7 +17,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -49,14 +49,15 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 # regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a responding model (tool
 # calling for code/review) adds it to the slot's chain – the first is the slot's model, the others take over one after
 # another when it fails (LiteLLM order + cooldown, see write_litellm_yaml). Quality first, placed by what the free
-# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is
-# not first by default where a provider is as good and more reliable. Override: NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
+# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; chat prefers
+# Gemini Flash / Groq ahead of nemotron-3-super (NVIDIA 503 mid-stream is common on free tier). Override:
+# NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
 # shellcheck disable=SC2034
 CAND_CODE=(groq:kimi-k2 deepseek-v4-pro 'gemini:gemini-[0-9.]+-pro$' laguna-xs groq:gpt-oss-120b glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra groq:llama-3.3-70b nemotron-3-super)
 # shellcheck disable=SC2034
 CAND_FAST=(deepseek-v4-flash groq:llama-3.1-8b-instant cerebras:llama3.1-8b 'gemini:flash-lite$' groq:gpt-oss-20b nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_CHAT=(nemotron-3-super groq:llama-3.3-70b 'gemini:gemini-[0-9.]+-flash$' deepseek-v4-flash cerebras:llama-3.3-70b groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
+CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:llama-3.3-70b groq:gpt-oss-120b cerebras:llama-3.3-70b nemotron-3-super deepseek-v4-flash nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
 CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro groq:kimi-k2 nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 groq:gpt-oss-120b mistral:magistral-medium nemotron-3-super)
 CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets
@@ -453,7 +454,7 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
 auto_all() { auto_select code fast chat review; local rc=$?; printf "\n  %s\n" "$(t auto_done)"; local s; for s in "${SLOTS[@]}"; do slot_line "$s"; done; return $rc; }
 
 # ── LiteLLM config ────────────────────────────────────────────────────────────
-COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused (doubling per consecutive failure, up to 30 min)
+COOLDOWN="${NIMCTL_COOLDOWN:-120}"   # seconds a failed rank is paused for timeouts/5xx (RateLimit uses NIMCTL_COOLDOWN_RATELIMIT)
 rank_group() { if (( $2 == 1 )); then printf 'nim-%s' "$1"; else printf 'nim-%s-r%s' "$1" "$2"; fi; }   # rank_group <slot> <rank> → model group name
 write_litellm_yaml() {
   local DROP='"prompt_cache_key", "prompt_cache_retention", "safety_identifier", "store", "metadata", "service_tier", "web_search_options"'
@@ -671,7 +672,8 @@ dash_register m cmd_pool k_m use
 #     a request for nim-<slot> is sent to the best rank that is not cooling down.
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
-#     and every later request skip it: 2 minutes, doubling per consecutive failure up to 30, cleared by a success.
+#     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (20 s), timeouts/5xx at
+#     NIMCTL_COOLDOWN (120 s), doubling per consecutive failure up to 30 min, cleared by a success.
 # State for the dashboard and the web UI: $NIM_DIR/rpm.json (budget) and $NIM_DIR/health.json (cooldowns).
 T_de+=(
   [thr_line]="Budget   %s/min · %s frei · %s wartend · %s gebremst%s" [thr_avg]=" (Ø %s s)" [thr_penalty]=" · gedrosselt nach 429 bis %s"
@@ -683,7 +685,7 @@ T_en+=(
 )
 throttle_env() { # the hook's settings, exported for the proxy process
   export NIMCTL_RPM="${NIMCTL_RPM:-36}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-30}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
-  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN"
+  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-20}"
   export PYTHONPATH="$NIM_DIR${PYTHONPATH:+:$PYTHONPATH}"
 }
 write_litellm_hooks() { # $NIM_DIR/nimctl_hooks.py – rewritten on every proxy start
@@ -708,7 +710,8 @@ MAX_WAIT = float(os.environ.get("NIMCTL_RPM_MAX_WAIT", "30") or 30)
 STATE = os.environ.get("NIMCTL_RPM_STATE", "")
 HEALTH = os.environ.get("NIMCTL_HEALTH", "")
 CHAINS_FILE = os.environ.get("NIMCTL_CHAINS", "")
-COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "120") or 120)   # first failure; doubles per consecutive failure
+COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "120") or 120)   # first timeout/5xx; doubles per consecutive failure
+COOLDOWN_RATELIMIT = float(os.environ.get("NIMCTL_COOLDOWN_RATELIMIT", "20") or 20)  # first 429 / RateLimitError
 COOLDOWN_MAX = 1800.0
 PENALTY_SECONDS = 300.0
 
@@ -841,8 +844,10 @@ class Throttle(CustomLogger):
         self.recent[group] = time.monotonic()
         n = self.fails.get(group, 0) + 1
         self.fails[group] = n
-        seconds = min(COOLDOWN * (2 ** (n - 1)), COOLDOWN_MAX)
         reason = type(exc).__name__ if exc is not None else "error"
+        code = getattr(exc, "status_code", None) if exc is not None else None
+        base = COOLDOWN_RATELIMIT if (code == 429 or "RateLimit" in reason) else COOLDOWN
+        seconds = min(base * (2 ** (n - 1)), COOLDOWN_MAX)
         self.cool[group] = (time.monotonic() + seconds, reason)
         self._tell_router(model_id, exc if isinstance(exc, Exception) else Exception(reason), seconds)
         print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})", flush=True)
@@ -1004,6 +1009,7 @@ start_chat() {
   if svc_state chat; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign chat; return 1; }; info "$(tf svc_already "$(t chat)")"; return 0; fi
   has open-webui || { bad "$(tf svc_missing open-webui)"; return 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }
   [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && { svc_running proxy || start_proxy || return 1; }
+  declare -F chat_sync_searxng >/dev/null && chat_sync_searxng
   ( chat_env; nohup open-webui serve --host "$BIND" --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 & echo $! >"$PID_DIR/chat.pid" )
   date +%s >"$PID_DIR/chat.started"
   _start_result chat "$(cat "$PID_DIR/chat.pid")" 150
@@ -1067,6 +1073,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
     proxy) has litellm || { echo "nimctl: litellm missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" ]] || { echo "nimctl: not configured – run nimctl setup" >&2; exit 1; }
            write_litellm_yaml; write_litellm_hooks; throttle_env; pool_env; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
+           declare -F chat_sync_searxng >/dev/null && chat_sync_searxng
            chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
     ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }
            ide_write_config || exit 1; date +%s >"$PID_DIR/ide.started"
@@ -2214,7 +2221,7 @@ T_de+=(
   [search_disabled]="Websuche deaktiviert – start/stop/restart lassen sie aus; wieder an: nimctl search start"
   [search_git_missing]="git fehlt – nötig, um SearXNG zu holen" [search_settings]="SearXNG-Konfiguration: %s" [search_url]="Suche: http://localhost:%s  · nimctl search \"Suchbegriff\""
   [search_none]="keine Treffer" [search_chat_hint]="Chat neu starten, damit die Websuche dort erscheint: nimctl restart"
-  [search_persist]="Open WebUI merkt sich Änderungen aus dem Admin-Panel; die Umgebung setzt nur den Anfangswert"
+  [search_persist]="nimctl schreibt die lokale SearXNG-URL bei start/restart in die Open-WebUI-Datenbank (andere Admin-Engines bleiben möglich)"
 )
 T_en+=(
   [k_o]="Search" [h_search]="web search (SearXNG) for the chat and the IDE: nimctl search [\"query\"|start|stop|disable|install|test]"
@@ -2222,7 +2229,7 @@ T_en+=(
   [search_disabled]="web search disabled – start/stop/restart leave it out; back on: nimctl search start"
   [search_git_missing]="git missing – needed to fetch SearXNG" [search_settings]="SearXNG configuration: %s" [search_url]="search: http://localhost:%s  · nimctl search \"query\""
   [search_none]="no results" [search_chat_hint]="restart the chat so web search shows up there: nimctl restart"
-  [search_persist]="Open WebUI remembers changes made in its admin panel; the environment only sets the initial value"
+  [search_persist]="nimctl writes the local SearXNG URL into Open WebUI's database on start/restart (other admin engines remain possible)"
 )
 search_python() { local p="$SEARX_DIR/venv/bin/python"; [[ -x "$p" ]] && printf '%s' "$p"; }
 search_secret() { # one secret per installation, kept out of settings.yml diffs
@@ -2240,7 +2247,7 @@ inst_searxng() { # git clone (or pull) + uv venv + requirements + editable insta
   local repo="${NIMCTL_SEARXNG_REPO:-https://github.com/searxng/searxng}" log="$LOG_DIR/searxng-install.log" py="$SEARX_DIR/venv/bin/python"
   mkdir -p "$SEARX_DIR"; printf "  %s" "$(t search_installing)"
   if { if [[ -d "$SEARX_DIR/src/.git" ]]; then git -C "$SEARX_DIR/src" pull --ff-only; else git clone --depth 1 "$repo" "$SEARX_DIR/src"; fi &&
-       uv venv --python '>=3.11' "$SEARX_DIR/venv" &&
+       uv venv --clear --python '>=3.11' "$SEARX_DIR/venv" &&
        uv pip install --python "$py" setuptools wheel -r "$SEARX_DIR/src/requirements.txt" &&
        uv pip install --python "$py" --no-build-isolation -e "$SEARX_DIR/src"; } >"$log" 2>&1 && [[ -x "$py" ]]; then printf "%s\n" "$OK"
   else printf "%s\n" "$NO"; bad "$(tf inst_fail SearXNG) → $log"; return 1; fi
@@ -2248,10 +2255,77 @@ inst_searxng() { # git clone (or pull) + uv venv + requirements + editable insta
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; svc_running chat && info "$(t search_chat_hint)"; }
   ok "$(t search_enabled)"
 }
+chat_sync_searxng() { # point Open WebUI's persisted SearXNG URL at the local instance (DB wins over env after first save)
+  [[ "$SEARCH_ENABLED" == 1 ]] || return 0
+  local db="$NIM_DIR/webui-data/webui.db"
+  [[ -f "$db" ]] || return 0
+  local url="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
+  if has python3; then
+    NIMCTL_WEBUI_DB="$db" NIMCTL_SEARXNG_URL="$url" python3 - <<'PY' 2>/dev/null || true
+import json, os, sqlite3, time
+db, url = os.environ["NIMCTL_WEBUI_DB"], os.environ["NIMCTL_SEARXNG_URL"]
+try:
+    con = sqlite3.connect(db, timeout=5)
+except sqlite3.Error:
+    raise SystemExit(0)
+try:
+    cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+except sqlite3.Error:
+    con.close(); raise SystemExit(0)
+now = int(time.time())
+rows = {
+    "web.search.searxng_query_url": url,
+    "web.search.engine": "searxng",
+    "web.search.enable": True,
+}
+try:
+    if "key" in cols and "value" in cols:
+        for k, v in rows.items():
+            con.execute(
+                "INSERT INTO config(key, value, updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (k, json.dumps(v), now),
+            )
+    elif "data" in cols:
+        row = con.execute("SELECT id, data FROM config ORDER BY id LIMIT 1").fetchone()
+        if row:
+            data = row[1]
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                data = {}
+            web = data.setdefault("web", {})
+            if not isinstance(web, dict):
+                web = {}; data["web"] = web
+            search = web.setdefault("search", {})
+            if not isinstance(search, dict):
+                search = {}; web["search"] = search
+            search["searxng_query_url"] = url
+            search["engine"] = "searxng"
+            search["enable"] = True
+            payload = json.dumps(data)
+            if "updated_at" in cols:
+                con.execute("UPDATE config SET data=?, updated_at=? WHERE id=?", (payload, now, row[0]))
+            else:
+                con.execute("UPDATE config SET data=? WHERE id=?", (payload, row[0]))
+    con.commit()
+except sqlite3.Error:
+    pass
+finally:
+    con.close()
+PY
+  elif has sqlite3; then
+    local esc="${url//\\/\\\\}"; esc="${esc//\"/\\\"}"
+    sqlite3 "$db" "INSERT INTO config(key,value,updated_at) VALUES('web.search.searxng_query_url','\"$esc\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.engine','\"searxng\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
+INSERT INTO config(key,value,updated_at) VALUES('web.search.enable','true',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;" 2>/dev/null || true
+  fi
+}
 search_ensure() { # installed, running, enabled
   search_python >/dev/null || { bad "$(tf svc_missing SearXNG)"; info "→ nimctl search install"; return 1; }
   svc_running search || start_search || return 1
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; ok "$(t search_enabled)"; svc_running chat && info "$(t search_chat_hint)"; }
+  chat_sync_searxng
 }
 search_query() { # search_query <query> [count] → title and url per result
   local n="${2:-${NIMCTL_SEARCH_RESULTS:-5}}" out
