@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.8.2] – 2026-09-19
+
+### Changed
+- **Stronger out-of-the-box defaults** (every install, not only local tweaks):
+  - Web search: `NIMCTL_SEARCH_RESULTS` default **10**, concurrent requests **8** (`NIMCTL_SEARCH_CONCURRENT`); Open WebUI DB sync also sets result count, concurrency, bypass-embedding, and turns search confirmation **off**.
+  - SearXNG outgoing timeouts **10 s / 20 s** (was 6 / 15).
+  - Proxy: `NIMCTL_RPM` **40**, `NIMCTL_RPM_MAX_WAIT` **45**, stall timeout **120 s**, cooldown **90 s**, rate-limit cooldown **15 s**.
+  - Chat deployments and Claude Code: default `NIMCTL_MAX_OUTPUT_TOKENS` **16384** so reasoning models are less likely to return empty `finish_reason: length` answers.
+- `NIMCTL_SEARCH_CONCURRENT` is a first-class settings key (web UI / `~/.nimctl/settings`).
+
+### Notes
+- Existing installs pick up the new defaults after `nimctl update` and `nimctl restart` (chat start re-syncs the Open WebUI DB). Values already set in `~/.nimctl/settings` or the environment still win.
+
 ## [1.8.1] – 2026-09-19
 
 ### Fixed

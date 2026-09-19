@@ -76,7 +76,7 @@ chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM
   export ENABLE_OLLAMA_API=false DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true
   if [[ "$SEARCH_ENABLED" == 1 ]]; then   # SearXNG (src/53-search.sh); pages go straight into the context, no local embedding model
     export ENABLE_WEB_SEARCH=true WEB_SEARCH_ENGINE=searxng SEARXNG_QUERY_URL="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
-    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-5}" WEB_SEARCH_CONCURRENT_REQUESTS=5 BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
+    export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-10}" WEB_SEARCH_CONCURRENT_REQUESTS="${NIMCTL_SEARCH_CONCURRENT:-8}" BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
   fi
 }
 start_chat() {

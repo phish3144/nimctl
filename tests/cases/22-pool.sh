@@ -19,7 +19,7 @@ grep -q '^GROQ_API_KEY=gsk_testkey_0123456789$' "$TMP/home/config" && pass "conf
 check "config: code chain with Groq ranks" '^CHAIN_CODE=deepseek-ai/deepseek-v4-pro-0813 groq:openai/gpt-oss-120b zai-org/glm-5.3 nvidia/nemotron-3-ultra-550b-a55b groq:llama-3.3-70b-versatile nvidia/nemotron-3-super-120b$' < "$TMP/home/config"
 awk -F'\t' '$1=="groq:openai/gpt-oss-120b" && $2=="ok" && $5=="ok"' "$TMP/home/probes" | grep -q . && pass "probes: namespaced pool id with tools column" || fail "probes: namespaced pool id with tools column"
 Y="$TMP/home/litellm.yaml"
-grep -A1 'model_name: nim-code-r2$' "$Y" | grep -q "model: custom_openai/openai/gpt-oss-120b, api_base: http://127.0.0.1:$GP/v1, api_key: os.environ/GROQ_API_KEY, max_tokens: 16384, timeout: 90," && pass "litellm.yaml: rank 2 of code is its own group at Groq with Groq's key" || { fail "litellm.yaml: rank 2 of code"; grep -A1 'nim-code-r2$' "$Y"; }
+grep -A1 'model_name: nim-code-r2$' "$Y" | grep -q "model: custom_openai/openai/gpt-oss-120b, api_base: http://127.0.0.1:$GP/v1, api_key: os.environ/GROQ_API_KEY, max_tokens: 16384, timeout: 120," && pass "litellm.yaml: rank 2 of code is its own group at Groq with Groq's key" || { fail "litellm.yaml: rank 2 of code"; grep -A1 'nim-code-r2$' "$Y"; }
 check "litellm.yaml: rank 1 falls down the chain, then to the fast model" 'fallbacks: \[ \{ nim-code: \["nim-code-r2", "nim-code-r3", "nim-code-r4", "nim-code-r5", "nim-code-r6", "nim-fast"\] \}' < "$Y"
 check "litellm.yaml: the last rank falls to the fast model only" '\{ nim-code-r6: \["nim-fast"\] \}' < "$Y"
 check "litellm.yaml: the review chain ends at the code model" '\{ nim-review-r[0-9]: \["nim-code"\] \}' < "$Y"
