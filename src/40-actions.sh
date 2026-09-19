@@ -97,7 +97,7 @@ act_probe() { # probes every configured slot; tool calling for code/review
 }
 act_find() {
   sect "$(t k_f)"; local f="${1:-}"; [[ -z "$f" ]] && { prompt "$(t search)" || return 1; f="$REPLY"; }; [[ -z "$f" ]] && return 0
-  local list n; list=$(models_cached | grep -iF -- "$f") || { bad "$(t nohit)"; return 1; }; n=$(echo "$list" | wc -l)
+  local list n; if [[ -n "$(pool_of "$f")" ]]; then list="$f"; else list=$(models_cached | grep -iF -- "$f") || { bad "$(t nohit)"; return 1; }; fi; n=$(echo "$list" | wc -l)   # a pool id (provider:id) is probed as it is
   ((n > 12)) && { warn "$(tf toomany "$n" 12)"; echo "$list" | sed 's/^/     /'; return 1; }
   local ids=(); while read -r m; do [[ -n "$m" ]] && ids+=("$m"); done <<<"$list"
   probe_many "${ids[@]}"

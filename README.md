@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.10.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.11.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -163,7 +163,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl ide [folder]` | Start the browser IDE if needed and open it (the folder, else the git project in the current directory, else the last one); `install`, `start`, `stop`, `disable`, `password [--reset]`, `config [--force]`, `autocomplete on\|off` |
 | `nimctl search ["query"]` | Local web search (SearXNG) for the chat and the IDE: start it, or search from the terminal; `install`, `start`, `stop`, `disable`, `test` |
 | `nimctl pool [add <provider> [key]\|remove <provider>\|auto [provider]\|test\|models <provider>]` | Fallback providers with free quotas (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral): the proxy hands a request to them when NVIDIA fails it |
-| `nimctl web` | Web UI in the browser (dashboard, models, pool, services, statistics, settings): start it and open it; `start`, `stop`, `disable`, `url`, `candidates` |
+| `nimctl web` | Web UI in the browser (dashboard, models, providers, services, statistics, settings): start it and open it; `start`, `stop`, `disable`, `url`, `candidates`, `discover` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
@@ -419,15 +419,30 @@ counts NVIDIA ranks only.
 ## Web UI
 
 `nimctl web` opens http://localhost:4040: the dashboard in the browser, with everything the CLI can do and the one
-thing a terminal cannot show – charts. Six pages: **Overview** (key, services, tools, budget meter, the four slots
-with latency bars, request rate), **Models** (slot cards with auto/probe/bench/test, the catalog with one-click
-assignment to a slot – the model is probed first –, the candidate-pattern editor, a prompt box, bench results),
-**Pool** (one card per provider: key, chosen models, add/remove/re-select), **Services** (start/stop/restart/install/
-disable per service, IDE project folder and autocomplete, chat accounts, systemd autostart and the watchdog timer, a
-live log viewer), **Statistics** (requests per minute, 429/fallback/throttle events, free budget over time, status
-classes, top paths, model latency and bench charts – each with a table view and a hover readout, 1/6/24 h) and
-**Settings** (the NVIDIA key, budget and stall timeout, ports and bind address, probing, IDE and search, language and
-theme, update and maintenance). Every action runs through nimctl itself; its output streams into a console drawer.
+thing a terminal cannot show – charts. Six pages:
+
+- **Overview** – key, services, tools, budget meter, the four slots with latency bars, the providers with their
+  ranks, request rate.
+- **Models** – slot cards (chain with provider, latency, request sizes; auto/probe/bench/test, any rank to rank 1),
+  then one table of every catalog entry of every provider with a key: provider, model, answer and latency, tool
+  calling, request sizes (32k/12k/8k ✓/✗), chain ranks and the time of the last probe; search box, provider chips
+  and filters (answering, tool-capable, in a chain, chat models), sortable columns, probe and a slot picker per
+  row. Below it the **scan card** (catalog, answering and tool-capable counts, last probe and pace per provider;
+  scan one provider or all, request sizes optional) and the **finds card**: models a scan found suitable for a slot
+  that no ranking pattern names, with checkboxes – take them over and the chain is rebuilt; taken-over models are
+  listed with a remove button. Then the ranking editor (candidate patterns per slot), a prompt box and bench results.
+- **Providers** – one card per provider, NVIDIA included: key state, the free-tier note with a link to create a
+  key, catalog/answering/tool-capable counts and the last scan, its ranks across the chains with probe results,
+  add or replace the key, scan, remove.
+- **Services** – start/stop/restart/install/disable per service, IDE project folder and autocomplete, chat accounts,
+  systemd autostart and the watchdog timer, a live log viewer.
+- **Statistics** – requests per minute, 429/fallback/throttle events, free budget over time, status classes,
+  answering models per provider, top paths, model latency and bench charts – each with a table view and a hover
+  readout, 1/6/24 h.
+- **Settings** – the NVIDIA key, proxy budget and pauses, chains (ranks per slot, ranks per provider, scan pace),
+  ports and bind address, probing, IDE and search, language and theme, update and maintenance.
+
+Every action runs through nimctl itself; its output streams into a console drawer.
 
 How it works: nimctl writes `~/.nimctl/web/index.html` and `server.py` (both embedded in the script; Python standard
 library only, no packages) and starts the server on `127.0.0.1:4040` (`NIMCTL_WEB_PORT`). The page carries a

@@ -6,12 +6,12 @@
 # (an explicit environment variable still wins). Every API call needs the per-installation token the page carries and
 # a Host header naming this machine, so no other site open in the browser can reach it.
 T_de+=(
-  [k_z]="Web-UI" [h_web]="Web-Oberfläche im Browser (Dashboard, Einstellungen, Statistik): nimctl web [open|start|stop|disable|url|candidates]"
+  [k_z]="Web-UI" [h_web]="Web-Oberfläche im Browser (Dashboard, Modelle, Anbieter, Dienste, Statistik, Einstellungen): nimctl web [open|start|stop|disable|url|candidates|discover]"
   [web_url]="Web-UI: http://localhost:%s" [web_enabled]="Web-UI aktiviert – nimctl start startet sie mit" [web_disabled]="Web-UI deaktiviert – wieder an: nimctl web"
   [web_no_python]="python3 fehlt – für die Web-UI nötig: %s" [web_local]="nur von diesem Rechner erreichbar; Token in %s"
 )
 T_en+=(
-  [k_z]="Web UI" [h_web]="web UI in the browser (dashboard, settings, statistics): nimctl web [open|start|stop|disable|url|candidates]"
+  [k_z]="Web UI" [h_web]="web UI in the browser (dashboard, models, providers, services, statistics, settings): nimctl web [open|start|stop|disable|url|candidates|discover]"
   [web_url]="web UI: http://localhost:%s" [web_enabled]="web UI enabled – nimctl start starts it too" [web_disabled]="web UI disabled – back on: nimctl web"
   [web_no_python]="python3 missing – needed for the web UI: %s" [web_local]="reachable from this machine only; token in %s"
 )
@@ -44,7 +44,12 @@ web_candidates_json() { # the effective candidate patterns (the ranking) per slo
   for s in "${SLOTS[@]}"; do v=$(candidates "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$s" --arg v "${v% }" '$a + {($k): $v}'); done
   printf '%s\n' "$j"
 }
-cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]
+web_discover_json() { # the models a scan found for each slot (outside the rankings, same rules as `nimctl scan`) and the filters the UI mirrors
+  local j="{}" s ids provs=(nim); mapfile -t -O 1 provs < <(pool_active)
+  for s in "${SLOTS[@]}"; do ids=$(scan_found "$s" "${provs[@]}" | jq -R . | jq -s -c .); j=$(jq -n --argjson a "$j" --arg k "$s" --argjson v "${ids:-[]}" '$a + {($k): $v}'); done
+  jq -n --argjson f "$j" --arg nc "$RE_NOT_CHAT" --arg sm "$RE_SMALL" '{found: $f, not_chat: $nc, small: $sm}'
+}
+cmd_web() { # cmd_web [open|start|stop|disable|url|candidates|discover]
   local sub="${1:-open}"
   case "$sub" in
     open)       web_open;;
@@ -53,6 +58,7 @@ cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]
     disable)    web_disable;;
     url)        printf 'http://localhost:%s\n' "$WEB_PORT";;
     candidates) web_candidates_json;;
+    discover)   web_discover_json;;
     *)          bad "$(t invalid): $sub"; return 64;;
   esac
 }

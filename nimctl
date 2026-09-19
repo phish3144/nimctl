@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.10.0"
+VERSION="1.11.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -644,28 +644,25 @@ scan_use() { # scan_use <slot> <id…> – append to the slot's line in ~/.nimct
   for m in "$@"; do [[ " $cur " == *" $m "* ]] || cur+=" $m"; done
   { [[ -f "$DISCOVERED_FILE" ]] && grep -vE "^${slot}:" "$DISCOVERED_FILE"; printf '%s: %s\n' "$slot" "${cur# }"; } >"$DISCOVERED_FILE.tmp" && mv "$DISCOVERED_FILE.tmp" "$DISCOVERED_FILE"   # "code: id id …" like ~/.nimctl/candidates
 }
-scan_discover() { # scan_discover <use 0|1> <nim|provider…> – responders of the scanned providers that qualify for a slot but sit in no ranking
-  local use="$1"; shift; local scanned=" $* " slot m res tools p listed any=0 found=() line; [[ -s "$PROBES" ]] || return 0
+scan_found() { # scan_found <slot> <nim|provider…> → responders of those providers that qualify for the slot but sit in no ranking, best latency first
+  local slot="$1"; shift; local scanned=" $* " listed m res tools p; [[ -s "$PROBES" ]] || return 0
+  listed=" $(slot_candidates "$slot" | tr '\n' ' ') "
+  while IFS=$'\t' read -r m res _ _ tools; do
+    [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
+    [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue
+    echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
+    if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi
+    printf '%s\n' "$m"
+  done < <(sort -t$'\t' -k3,3n "$PROBES"); return 0
+}
+scan_discover() { # scan_discover <use 0|1> <nim|provider…> – list the finds per slot; --use (or the question) appends them to the rankings
+  local use="$1"; shift; local slot found=() any=0
   printf '\n'
-  for slot in "${SLOTS[@]}"; do listed=" $(slot_candidates "$slot" | tr '\n' ' ') "; found=()
-    while IFS=$'\t' read -r m res _ _ tools; do
-      [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
-      [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue
-      echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
-      if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi
-      found+=("$m")
-    done < <(sort -t$'\t' -k3,3n "$PROBES")
-    ((${#found[@]})) || continue; any=1; line="${found[*]}"; info "$(tf scan_found "$slot" "$line")"
-    (( use )) && scan_use "$slot" "${found[@]}"
-  done
-  if (( ! any )); then info "$(t scan_nothing)"; return 0; fi
+  for slot in "${SLOTS[@]}"; do mapfile -t found < <(scan_found "$slot" "$@"); ((${#found[@]})) || continue; any=1
+    info "$(tf scan_found "$slot" "${found[*]}")"; (( use )) && scan_use "$slot" "${found[@]}"; done
+  (( any )) || { info "$(t scan_nothing)"; return 0; }
   if (( ! use )) && (( INTERACTIVE )) && ask "$(t scan_use_q)" n; then use=1
-    for slot in "${SLOTS[@]}"; do listed=" $(slot_candidates "$slot" | tr '\n' ' ') "; found=()
-      while IFS=$'\t' read -r m res _ _ tools; do [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
-        [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue; echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
-        if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi; found+=("$m"); done < <(sort -t$'\t' -k3,3n "$PROBES")
-      ((${#found[@]})) && scan_use "$slot" "${found[@]}"; done
-  fi
+    for slot in "${SLOTS[@]}"; do mapfile -t found < <(scan_found "$slot" "$@"); ((${#found[@]})) && scan_use "$slot" "${found[@]}"; done; fi
   if (( use )); then ok "$(t scan_used)"; auto_all || true; restart_if_running; else info "$(tf scan_hint_use "${*//nim/nvidia}")"; fi
 }
 cmd_scan() { # cmd_scan [provider…|all|nvidia] [--sizes] [--use] [--clear]
@@ -1504,7 +1501,7 @@ act_probe() { # probes every configured slot; tool calling for code/review
 }
 act_find() {
   sect "$(t k_f)"; local f="${1:-}"; [[ -z "$f" ]] && { prompt "$(t search)" || return 1; f="$REPLY"; }; [[ -z "$f" ]] && return 0
-  local list n; list=$(models_cached | grep -iF -- "$f") || { bad "$(t nohit)"; return 1; }; n=$(echo "$list" | wc -l)
+  local list n; if [[ -n "$(pool_of "$f")" ]]; then list="$f"; else list=$(models_cached | grep -iF -- "$f") || { bad "$(t nohit)"; return 1; }; fi; n=$(echo "$list" | wc -l)   # a pool id (provider:id) is probed as it is
   ((n > 12)) && { warn "$(tf toomany "$n" 12)"; echo "$list" | sed 's/^/     /'; return 1; }
   local ids=(); while read -r m; do [[ -n "$m" ]] && ids+=("$m"); done <<<"$list"
   probe_many "${ids[@]}"
@@ -2187,7 +2184,7 @@ _nimctl() {
     test|bench) COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     code) [[ "\$prev" == --model || "\$prev" == -m ]] && COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide web" -- "\$cur"));;
-    web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates" -- "\$cur"));;
+    web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates discover" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     scan) COMPREPLY=(\$(compgen -W "all nvidia groq gemini cerebras openrouter mistral --sizes --use --clear" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
@@ -2602,12 +2599,12 @@ dash_register o cmd_search k_o use
 # (an explicit environment variable still wins). Every API call needs the per-installation token the page carries and
 # a Host header naming this machine, so no other site open in the browser can reach it.
 T_de+=(
-  [k_z]="Web-UI" [h_web]="Web-Oberfläche im Browser (Dashboard, Einstellungen, Statistik): nimctl web [open|start|stop|disable|url|candidates]"
+  [k_z]="Web-UI" [h_web]="Web-Oberfläche im Browser (Dashboard, Modelle, Anbieter, Dienste, Statistik, Einstellungen): nimctl web [open|start|stop|disable|url|candidates|discover]"
   [web_url]="Web-UI: http://localhost:%s" [web_enabled]="Web-UI aktiviert – nimctl start startet sie mit" [web_disabled]="Web-UI deaktiviert – wieder an: nimctl web"
   [web_no_python]="python3 fehlt – für die Web-UI nötig: %s" [web_local]="nur von diesem Rechner erreichbar; Token in %s"
 )
 T_en+=(
-  [k_z]="Web UI" [h_web]="web UI in the browser (dashboard, settings, statistics): nimctl web [open|start|stop|disable|url|candidates]"
+  [k_z]="Web UI" [h_web]="web UI in the browser (dashboard, models, providers, services, statistics, settings): nimctl web [open|start|stop|disable|url|candidates|discover]"
   [web_url]="web UI: http://localhost:%s" [web_enabled]="web UI enabled – nimctl start starts it too" [web_disabled]="web UI disabled – back on: nimctl web"
   [web_no_python]="python3 missing – needed for the web UI: %s" [web_local]="reachable from this machine only; token in %s"
 )
@@ -2640,7 +2637,12 @@ web_candidates_json() { # the effective candidate patterns (the ranking) per slo
   for s in "${SLOTS[@]}"; do v=$(candidates "$s" | tr '\n' ' '); j=$(jq -n --argjson a "$j" --arg k "$s" --arg v "${v% }" '$a + {($k): $v}'); done
   printf '%s\n' "$j"
 }
-cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]
+web_discover_json() { # the models a scan found for each slot (outside the rankings, same rules as `nimctl scan`) and the filters the UI mirrors
+  local j="{}" s ids provs=(nim); mapfile -t -O 1 provs < <(pool_active)
+  for s in "${SLOTS[@]}"; do ids=$(scan_found "$s" "${provs[@]}" | jq -R . | jq -s -c .); j=$(jq -n --argjson a "$j" --arg k "$s" --argjson v "${ids:-[]}" '$a + {($k): $v}'); done
+  jq -n --argjson f "$j" --arg nc "$RE_NOT_CHAT" --arg sm "$RE_SMALL" '{found: $f, not_chat: $nc, small: $sm}'
+}
+cmd_web() { # cmd_web [open|start|stop|disable|url|candidates|discover]
   local sub="${1:-open}"
   case "$sub" in
     open)       web_open;;
@@ -2649,6 +2651,7 @@ cmd_web() { # cmd_web [open|start|stop|disable|url|candidates]
     disable)    web_disable;;
     url)        printf 'http://localhost:%s\n' "$WEB_PORT";;
     candidates) web_candidates_json;;
+    discover)   web_discover_json;;
     *)          bad "$(t invalid): $sub"; return 64;;
   esac
 }
@@ -3070,6 +3073,19 @@ tr:last-child td { border-bottom: 0; }
 details summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
 kbd { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 .sr { position: absolute; left: -9999px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--ink2); }
+.chip:hover { background: var(--surface-2); } .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0 10px; }
+.tbl { max-height: 560px; overflow: auto; border: 1px solid var(--grid); border-radius: 8px; }
+.tbl table th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+th.sort { cursor: pointer; user-select: none; white-space: nowrap; } th.sort[aria-sort="ascending"]::after { content: " ▲"; color: var(--muted); } th.sort[aria-sort="descending"]::after { content: " ▼"; color: var(--muted); }
+.tag { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 5px; font-size: 11.5px; background: var(--surface-2); color: var(--ink2); white-space: nowrap; }
+.pdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.ok { color: var(--good-text); } .bad { color: var(--crit-text); }
+.count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+select.small { width: auto; padding: 3px 6px; font-size: 12px; }
+.sizes span { margin-right: 6px; white-space: nowrap; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -3085,7 +3101,7 @@ kbd { background: var(--surface-2); border-radius: 4px; padding: 1px 5px; font-f
   <div id="notices"></div>
   <section id="page-overview" class="page"></section>
   <section id="page-models" class="page"></section>
-  <section id="page-pool" class="page"></section>
+  <section id="page-providers" class="page"></section>
   <section id="page-services" class="page"></section>
   <section id="page-stats" class="page"></section>
   <section id="page-settings" class="page"></section>
@@ -3106,7 +3122,7 @@ const NIMCTL = { token: '__TOKEN__', lang: '__LANG__', port: '__PORT__' };
 const L = NIMCTL.lang === 'de' ? 'de' : 'en';
 const T = {
 de: {
-  overview:'Übersicht', models:'Modelle', pool:'Pool', services:'Dienste', stats:'Statistik', settings:'Einstellungen', console:'Konsole',
+  overview:'Übersicht', models:'Modelle', providers:'Anbieter', services:'Dienste', stats:'Statistik', settings:'Einstellungen', console:'Konsole', loading:'lädt …',
   requests:'Anfragen', since:'seit %s', c429:'429 (Rate-Limit)', fallbacks:'Fallbacks', throttled:'Gebremst (Budget)', errors:'Fehler',
   budget:'Budget', budget_sub:'%s von %s frei · %s wartend', budget_stale:'Proxy-Budget: keine frischen Daten', per_min:'/min',
   key:'Key', key_ok:'gültig', key_none:'kein Key', key_bad:'ungültig/abgelaufen', key_off:'NVIDIA nicht erreichbar', key_unk:'nicht geprüft', checked:'geprüft %s', expires:'läuft in ~%s Tagen ab',
@@ -3115,28 +3131,39 @@ de: {
   auto:'Auto-Wahl', auto_all:'Alle Slots automatisch wählen', probe:'Prüfen', probe_all:'Gewählte Modelle prüfen', doctor:'Doctor', doctor_fix:'Doctor mit Reparatur', test:'Testen', bench:'Bench', bench_all:'Bench aller Slots',
   slot:'Slot', model:'Modell', state:'Status', latency:'Latenz', tools:'Tools', probed:'geprüft', answers:'antwortet', unprobed:'nicht geprüft', notools:'keine Tool-Calls', tools_ok:'Tool-Calls ✓', none:'– keins –',
   slot_code:'Claude Code', slot_fast:'Nebenaufgaben & Fallback', slot_chat:'Browser-Chat', slot_review:'großes Modell (nimctl code --model review)',
-  pick:'Wählen', set_slot:'→ %s', catalog:'Katalog', catalog_hint:'Suchen und direkt einem Slot zuweisen – das Modell wird vorher geprüft. Pool-Modelle stehen als anbieter:id dabei.', search_ph:'Suchbegriff, z. B. deepseek, nemotron, groq:',
-  candidates:'Kandidaten-Muster', candidates_hint:'Reguläre Ausdrücke gegen den Katalog, in Reihenfolge; das erste Muster mit einem antwortenden Modell gewinnt. Leer = Standard.', effective:'wirksam', save:'Speichern', saved:'gespeichert', reset:'Zurücksetzen',
+  pick:'Wählen', set_slot:'→ %s', catalog:'Katalog', search_ph:'Suchen: deepseek, nemotron, groq:, :free …',
+  model_table:'Alle Modelle', filter_all:'alle', filter_answering:'antwortend', filter_tools:'Tool-fähig', filter_ranked:'in einer Kette', filter_chat:'Chat-Modelle', not_chat:'kein Chat-Modell',
+  col_provider:'Anbieter', col_model:'Modell', col_answer:'Antwort', col_tools:'Tools', col_sizes:'Anfragegrößen', col_chain:'Kette', col_probed:'geprüft', n_models:'%s Modelle · %s antworten · %s mit Tool-Calls', more_rows:'… %s weitere – Suche oder Filter eingrenzen',
+  table_hint:'Jeder Katalogeintrag der Anbieter mit Key. Prüfen schickt eine Anfrage (bei code/review auch Tool-Calls); → Slot macht das Modell zu Rang 1 des Slots. Anfragegrößen: was das Modell laut Scan oder Auto-Wahl annimmt (code/review 32k, fast 12k, chat 8k Tokens).',
+  scan_title:'Scan – alle Modelle prüfen', scan_all:'Alle scannen', scan_provider:'Scannen', scan_sizes:'Anfragegrößen mitprüfen (langsamer)', scan_last_col:'zuletzt', scan_pace_col:'Tempo', scan_last:'zuletzt geprüft %s',
+  scan_hint:'Prüft jeden Chat-Eintrag eines Anbieters mit echter Anfrage, im Tempo, das sein Free-Tier verträgt, danach Tool-Calling bei den Antwortenden. Laufende Sitzungen sind solange langsamer. Ergebnisse stehen in der Tabelle und fließen in die nächste Auto-Wahl.',
+  or_note:'OpenRouter erlaubt im Free-Tier 50 Anfragen am Tag – „Alle scannen“ lässt es aus, der eigene Knopf prüft es.', catalog_n:'%s Chat-Modelle im Katalog', answering_n:'%s antworten', tools_n:'%s mit Tool-Calls',
+  found_title:'Funde außerhalb der Ranglisten', found_hint:'Modelle, die ein Scan als geeignet erkannt hat, aber die kein Muster der Rangliste des Slots nennt (code/review: mit Tool-Calls, nicht unter 30B). Übernommene hängen am Ende der Rangliste des Slots; die Kette wird danach neu gebaut.',
+  found_none:'keine Funde – erst scannen', take_selected:'Auswahl übernehmen', taken_title:'Übernommene Modelle', remove:'Entfernen', no_taken:'noch keine übernommen',
+  candidates:'Ranglisten (Kandidaten-Muster)', candidates_hint:'Reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette: zuerst höchstens %s Ränge je Anbieter, dann der Rest, bis %s Ränge. Leer = Standard.', effective:'wirksam', save:'Speichern', saved:'gespeichert', reset:'Zurücksetzen',
   test_title:'Prompt schicken', test_model:'Modell oder Slot', prompt:'Prompt', send:'Senden', bench_last:'Letzte Bench-Werte', ttft:'Zeit bis 1. Token', toks:'Tokens/s', no_data:'noch keine Daten',
-  pool_hint:'NVIDIA bleibt erste Wahl. Scheitert eine Anfrage dort (keine Antwort für %s s, 429, 5xx), übernimmt der Pool – Anbieter in dieser Reihenfolge.', pool_key:'API-Key', pool_add:'Key prüfen & übernehmen', pool_remove:'Entfernen', pool_auto:'Modelle neu wählen', pool_test:'Pool-Roundtrip', pool_key_url:'Key erzeugen', pool_none:'kein Key',
-  note_groq:'~30 Anfragen/min, ~1.000/Tag, keine Karte nötig', note_gemini:'10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen', note_cerebras:'~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell', note_openrouter:'20 Anfragen/min, 50/Tag (1.000 ab 10 $ Guthaben), nur :free-Modelle', note_mistral:'Experiment-Tier: ~1 Anfrage/s, 1 Mrd. Tokens/Monat; Daten dürfen zum Training genutzt werden',
+  pool_hint:'Jeder Anbieter mit Key nimmt an den Ranglisten teil und bekommt zuerst %s Ränge je Kette, bevor die Rangliste den Rest auffüllt. Fällt ein Rang aus, übernimmt der nächste. Scannen zeigt, was ein Anbieter wirklich liefert.', pool_key:'API-Key', pool_add:'Key prüfen & übernehmen', pool_remove:'Entfernen', pool_test:'Proxy-Roundtrip', pool_key_url:'Key erzeugen', pool_none:'kein Key', no_ranks:'in keiner Kette', ranks:'Ränge', n_ranks:'%s Ränge', chain:'Kette', rank:'Rang',
+  note_nvidia:'~40 Anfragen/min je Modell, kein Token-Limit; unter Last hängen Anfragen minutenlang – Key läuft nach ~6 Monaten ab', note_groq:'~30 Anfragen/min, ~1.000/Tag, keine Karte nötig; höchstens 6–12k Tokens je Anfrage – nur für den Chat', note_gemini:'10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen', note_cerebras:'~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell', note_openrouter:'20 Anfragen/min, 50/Tag (1.000 ab 10 $ Guthaben), nur :free-Modelle', note_mistral:'Experiment-Tier: ~1 Anfrage/s, 1 Mrd. Tokens/Monat; Daten dürfen zum Training genutzt werden',
   logs:'Logs', live:'live', log_of:'Log: %s', accounts:'Chat-Konten', users:'Konten anzeigen', passwd:'Passwort setzen', email:'E-Mail', password:'Passwort', admin:'Admin', reset_accounts:'Alle Konten löschen', reset_confirm:'Wirklich alle Chat-Konten löschen? Chats bleiben, gehören aber niemandem mehr.',
   workspace:'Projektordner der IDE', workspace_hint:'Ordner, den code-server öffnet und in dem das Shell-Werkzeug arbeitet', autocomplete:'Autocomplete (Continue)', ide_password:'IDE-Passwort anzeigen', ide_password_reset:'IDE-Passwort neu erzeugen', ide_config:'IDE-Konfiguration neu schreiben',
   autostart:'Autostart (systemd --user)', autostart_on:'Autostart einrichten', autostart_off:'Autostart entfernen', watch_timer:'Watchdog-Timer einrichten', watch_now:'Watchdog jetzt laufen lassen', alias:'PATH/Aliase einrichten', completion:'Shell-Completion einrichten', install_all:'Fehlende Werkzeuge installieren', update_check:'Update prüfen', update:'Update einspielen',
-  range:'Zeitraum', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Anfragen pro Minute', req_sub:'aus dem Proxy-Log, alle 30 s abgetastet', events:'429, Fallbacks, gebremst', events_sub:'je Intervall', budget_hist:'Freies Budget', budget_hist_sub:'freie Slots pro Minute (NIMCTL_RPM)', status_classes:'Status-Klassen', paths:'Häufigste Pfade', model_latency:'Modell-Latenz (Probe)', bench_ttft:'Bench: Zeit bis zum ersten Token', bench_toks:'Bench: Tokens pro Sekunde', table:'Tabelle', chart:'Diagramm', time:'Zeit', value:'Wert', count:'Anzahl', free:'frei', waiting:'wartend',
+  range:'Zeitraum', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Anfragen pro Minute', req_sub:'aus dem Proxy-Log, alle 30 s abgetastet', events:'429, Fallbacks, gebremst', events_sub:'je Intervall', budget_hist:'Freies Budget', budget_hist_sub:'freie Slots pro Minute (NIMCTL_RPM)', status_classes:'Status-Klassen', paths:'Häufigste Pfade', model_latency:'Modell-Latenz (Probe)', bench_ttft:'Bench: Zeit bis zum ersten Token', bench_toks:'Bench: Tokens pro Sekunde', by_provider:'Antwortende Modelle je Anbieter', by_provider_sub:'Chat-Modelle mit Antwort im letzten Scan bzw. der letzten Prüfung', table:'Tabelle', chart:'Diagramm', time:'Zeit', value:'Wert', count:'Anzahl', free:'frei', waiting:'wartend',
   s_key:'NVIDIA API-Key', s_key_hint:'Beginnt mit nvapi-, ~6 Monate gültig. Wird bei NVIDIA geprüft, bevor er gespeichert wird.', s_key_new:'Neuer Key', s_key_save:'Key prüfen & speichern',
-  s_proxy:'Proxy & Budget', s_net:'Ports & Netzwerk', s_probe:'Prüfung', s_ide:'IDE & Suche', s_ui:'Oberfläche', s_maint:'Wartung', s_danger:'Gefahrenzone',
-  s_rpm:'Anfragen pro Minute (Budget)', s_rpm_h:'Token-Bucket für den ganzen NVIDIA-Key; Anfragen darüber warten', s_rpm_wait:'Maximale Wartezeit (s)', s_rpm_wait_h:'danach antwortet der Proxy 429 mit Retry-After', s_stall:'Stillstand-Timeout (s)', s_stall_h:'schickt ein Modell so lange nichts, geht die Anfrage zum Fallback', s_maxout:'Max. Ausgabe-Tokens (Claude Code)', s_chat_via:'Chat über den Proxy', s_yes:'ja', s_no:'nein (direkt zu NVIDIA)',
+  s_proxy:'Proxy & Budget', s_chains:'Ketten', s_net:'Ports & Netzwerk', s_probe:'Prüfung', s_ide:'IDE & Suche', s_ui:'Oberfläche', s_maint:'Wartung',
+  s_rpm:'Anfragen pro Minute (Budget)', s_rpm_h:'Token-Bucket für den ganzen NVIDIA-Key; Anfragen darüber warten', s_rpm_wait:'Maximale Wartezeit (s)', s_rpm_wait_h:'danach antwortet der Proxy 429 mit Retry-After', s_stall:'Stillstand-Timeout (s)', s_stall_h:'schickt ein Modell so lange nichts, geht die Anfrage zum nächsten Rang', s_maxout:'Max. Ausgabe-Tokens', s_chat_via:'Chat über den Proxy', s_yes:'ja', s_no:'nein (direkt zu NVIDIA)',
+  s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_cooldown_rl:'Pause nach 429 (s)', s_cooldown_rl_h:'erste Pause nach einem Rate-Limit – kürzer als nach Timeout/5xx, danach ebenfalls verdoppelt', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', s_perprov:'Ränge je Anbieter zuerst', s_perprov_h:'so viele Ränge bekommt ein Anbieter, bevor die anderen dran sind; danach füllt die Rangliste auf', s_scan_rpm:'Scan-Tempo (Anfragen/min)', s_scan_rpm_h:'leer = je Anbieter (NVIDIA 30, Groq 25, Gemini 8, Cerebras 25, OpenRouter 15, Mistral 40)',
   s_port_proxy:'Proxy-Port', s_port_chat:'Chat-Port', s_port_ide:'IDE-Port', s_port_search:'Such-Port', s_port_web:'Web-UI-Port', s_bind:'Adresse der Dienste', s_bind_h:'127.0.0.1 = nur dieser Rechner; 0.0.0.0 macht alle Dienste im Netz erreichbar',
-  s_probe_to:'Probe-Timeout (s)', s_reprobe:'Neu prüfen nach (h)', s_keywarn:'Key-Warnung nach (Tagen)', s_ide_ctx:'Kontextlänge für Continue', s_ide_ext:'Zusätzliche Erweiterungen (Open VSX)', s_search_n:'Suchergebnisse je Anfrage', s_lang:'Sprache', s_lang_auto:'automatisch ($LANG)', s_theme:'Farbschema', theme_auto:'System', theme_light:'Hell', theme_dark:'Dunkel',
+  s_probe_to:'Probe-Timeout (s)', s_reprobe:'Neu prüfen nach (h)', s_keywarn:'Key-Warnung nach (Tagen)', s_ide_ctx:'Kontextlänge für Continue', s_ide_ext:'Zusätzliche Erweiterungen (Open VSX)', s_search_n:'Suchergebnisse je Anfrage', s_search_c:'Parallele Seitenabrufe je Suche', s_lang:'Sprache', s_lang_auto:'automatisch ($LANG)', s_theme:'Farbschema', theme_auto:'System', theme_light:'Hell', theme_dark:'Dunkel',
   s_env:'aus der Umgebung – hier nicht änderbar', s_default:'Standard: %s', s_restart_needed:'Einstellungen gespeichert – wirksam nach Neustart der Dienste.', restart_now:'Jetzt neu starten',
   config_changed:'Konfiguration geändert – der Proxy läuft noch mit der alten. Neustart?', key_warn:'Der NVIDIA-Key läuft in ~%s Tagen ab – neuen Key erzeugen.', key_expired:'Der NVIDIA-Key ist vermutlich abgelaufen (älter als 180 Tage).',
-  running:'läuft: %s', done_ok:'fertig (%s s)', done_fail:'beendet mit Code %s (%s s)', busy:'Es läuft bereits ein Befehl.', abort:'Abbrechen', clear:'Leeren', restart_after:'Dienste danach neu starten', offline:'Web-UI nicht erreichbar – läuft der Dienst? nimctl web', forbidden:'Zugriff verweigert (Token) – Seite neu laden.',
+  paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.',
+  chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange. Jeder Rang muss eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens); Modelle, die sie ablehnen, bleiben draußen.',
+  running:'läuft: %s', done_ok:'fertig (%s s)', done_fail:'beendet mit Code %s (%s s)', busy:'Es läuft bereits ein Befehl.', abort:'Abbrechen', clear:'Leeren', offline:'Web-UI nicht erreichbar – läuft der Dienst? nimctl web', forbidden:'Zugriff verweigert (Token) – Seite neu laden.',
   extra_models:'Zusätzliche Modelle im Proxy', help_slots:'code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell', version_hint:'nimctl %s · %s', ago_s:'vor %ss', ago_m:'vor %s min', ago_h:'vor %s h', ago_d:'vor %s d', never:'nie',
-  tool_present:'vorhanden', tool_missing:'fehlt', tools_row:'Werkzeuge', show:'Anzeigen', hide:'Verbergen', links:'Links', open_chat:'Chat öffnen', open_ide:'IDE öffnen', open_search:'Suche öffnen', proxy_url:'Proxy-URL', master_key:'Proxy-Master-Key', env_lines:'Export-Zeilen für andere Werkzeuge',
+  tools_row:'Werkzeuge', links:'Links', open_chat:'Chat öffnen', open_ide:'IDE öffnen', open_search:'Suche öffnen', proxy_url:'Proxy-URL', quick:'Schnellzugriff',
 },
 en: {
-  overview:'Overview', models:'Models', pool:'Pool', services:'Services', stats:'Statistics', settings:'Settings', console:'Console',
+  overview:'Overview', models:'Models', providers:'Providers', services:'Services', stats:'Statistics', settings:'Settings', console:'Console', loading:'loading …',
   requests:'Requests', since:'since %s', c429:'429 (rate limit)', fallbacks:'Fallbacks', throttled:'Throttled (budget)', errors:'Errors',
   budget:'Budget', budget_sub:'%s of %s free · %s waiting', budget_stale:'proxy budget: no fresh data', per_min:'/min',
   key:'Key', key_ok:'valid', key_none:'no key', key_bad:'invalid/expired', key_off:'NVIDIA unreachable', key_unk:'not checked', checked:'checked %s', expires:'expires in ~%s days',
@@ -3145,36 +3172,46 @@ en: {
   auto:'Auto-select', auto_all:'Auto-select all slots', probe:'Probe', probe_all:'Probe the selected models', doctor:'Doctor', doctor_fix:'Doctor with repair', test:'Test', bench:'Bench', bench_all:'Bench all slots',
   slot:'Slot', model:'Model', state:'State', latency:'Latency', tools:'Tools', probed:'probed', answers:'responds', unprobed:'not probed', notools:'no tool calls', tools_ok:'tool calls ✓', none:'– none –',
   slot_code:'Claude Code', slot_fast:'side tasks & fallback', slot_chat:'browser chat', slot_review:'big model (nimctl code --model review)',
-  pick:'Pick', set_slot:'→ %s', catalog:'Catalog', catalog_hint:'Search and assign to a slot directly – the model is probed first. Pool models are listed as provider:id.', search_ph:'search, e.g. deepseek, nemotron, groq:',
-  candidates:'Candidate patterns', candidates_hint:'Regular expressions matched against the catalog, in order; the first pattern with a responding model wins. Empty = default.', effective:'effective', save:'Save', saved:'saved', reset:'Reset',
+  pick:'Pick', set_slot:'→ %s', catalog:'Catalog', search_ph:'search: deepseek, nemotron, groq:, :free …',
+  model_table:'All models', filter_all:'all', filter_answering:'answering', filter_tools:'tool-capable', filter_ranked:'in a chain', filter_chat:'chat models', not_chat:'not a chat model',
+  col_provider:'Provider', col_model:'Model', col_answer:'Answer', col_tools:'Tools', col_sizes:'Request sizes', col_chain:'Chain', col_probed:'probed', n_models:'%s models · %s answer · %s make tool calls', more_rows:'… %s more – narrow the search or filters',
+  table_hint:'Every catalog entry of the providers with a key. Probe sends a request (tool calls too for code/review); → slot makes the model rank 1 of that slot. Request sizes: what the model takes according to the scan or the auto-selection (code/review 32k, fast 12k, chat 8k tokens).',
+  scan_title:'Scan – probe all models', scan_all:'Scan all', scan_provider:'Scan', scan_sizes:'check request sizes too (slower)', scan_last_col:'last', scan_pace_col:'pace', scan_last:'last probed %s',
+  scan_hint:'Probes every chat entry of a provider with a real request at the pace its free tier tolerates, then tool calling for the responders. Running sessions are slower meanwhile. Results show in the table and feed the next auto-selection.',
+  or_note:'OpenRouter\'s free tier allows 50 requests a day – “Scan all” leaves it out, its own button probes it.', catalog_n:'%s chat models in the catalog', answering_n:'%s answer', tools_n:'%s make tool calls',
+  found_title:'Finds outside the rankings', found_hint:'Models a scan found suitable that no pattern of the slot\'s ranking names (code/review: tool calls, nothing below 30B). Taken-over models are appended to the slot\'s ranking; the chain is rebuilt afterwards.',
+  found_none:'no finds – scan first', take_selected:'Take over selection', taken_title:'Taken-over models', remove:'Remove', no_taken:'none taken over yet',
+  candidates:'Rankings (candidate patterns)', candidates_hint:'Regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain: at most %s ranks per provider first, then the rest, up to %s ranks. Empty = default.', effective:'effective', save:'Save', saved:'saved', reset:'Reset',
   test_title:'Send a prompt', test_model:'Model or slot', prompt:'Prompt', send:'Send', bench_last:'Last bench results', ttft:'Time to first token', toks:'Tokens/s', no_data:'no data yet',
-  pool_hint:'NVIDIA stays first. When a request fails there (no answer for %s s, 429, 5xx) the pool takes over – providers in this order.', pool_key:'API key', pool_add:'Check key & add', pool_remove:'Remove', pool_auto:'Re-select models', pool_test:'Pool round trip', pool_key_url:'create a key', pool_none:'no key',
-  note_groq:'~30 requests/min, ~1,000/day, no card needed', note_gemini:'10–15 requests/min, 250–1,000/day; Google may train on free-tier data', note_cerebras:'~30 requests/min, 1M tokens/day, very fast', note_openrouter:'20 requests/min, 50/day (1,000 with $10 credit), :free models only', note_mistral:'experiment tier: ~1 request/s, 1B tokens/month; data may be used for training',
+  pool_hint:'Every provider with a key takes part in the rankings and gets %s ranks per chain first, before the ranking fills the rest. When a rank fails the next one takes over. Scanning shows what a provider really delivers.', pool_key:'API key', pool_add:'Check key & add', pool_remove:'Remove', pool_test:'Proxy round trip', pool_key_url:'create a key', pool_none:'no key', no_ranks:'in no chain', ranks:'Ranks', n_ranks:'%s ranks', chain:'Chain', rank:'Rank',
+  note_nvidia:'~40 requests/min per model, no token limit; under load requests hang for minutes – the key expires after ~6 months', note_groq:'~30 requests/min, ~1,000/day, no card needed; at most 6–12k tokens per request – chat only', note_gemini:'10–15 requests/min, 250–1,000/day; Google may train on free-tier data', note_cerebras:'~30 requests/min, 1M tokens/day, very fast', note_openrouter:'20 requests/min, 50/day (1,000 with $10 credit), :free models only', note_mistral:'experiment tier: ~1 request/s, 1B tokens/month; data may be used for training',
   logs:'Logs', live:'live', log_of:'Log: %s', accounts:'Chat accounts', users:'Show accounts', passwd:'Set password', email:'Email', password:'Password', admin:'Admin', reset_accounts:'Delete all accounts', reset_confirm:'Really delete all chat accounts? Chats stay but belong to nobody.',
   workspace:'IDE project folder', workspace_hint:'The folder code-server opens and the shell tool runs in', autocomplete:'Autocomplete (Continue)', ide_password:'Show IDE password', ide_password_reset:'Regenerate IDE password', ide_config:'Rewrite IDE configuration',
   autostart:'Autostart (systemd --user)', autostart_on:'Enable autostart', autostart_off:'Remove autostart', watch_timer:'Set up watchdog timer', watch_now:'Run the watchdog now', alias:'Set up PATH/aliases', completion:'Set up shell completion', install_all:'Install missing tools', update_check:'Check for updates', update:'Update',
-  range:'Range', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Requests per minute', req_sub:'from the proxy log, sampled every 30 s', events:'429, fallbacks, throttled', events_sub:'per interval', budget_hist:'Free budget', budget_hist_sub:'free slots per minute (NIMCTL_RPM)', status_classes:'Status classes', paths:'Top paths', model_latency:'Model latency (probe)', bench_ttft:'Bench: time to first token', bench_toks:'Bench: tokens per second', table:'Table', chart:'Chart', time:'Time', value:'Value', count:'Count', free:'free', waiting:'waiting',
+  range:'Range', h1:'1 h', h6:'6 h', h24:'24 h', req_per_min:'Requests per minute', req_sub:'from the proxy log, sampled every 30 s', events:'429, fallbacks, throttled', events_sub:'per interval', budget_hist:'Free budget', budget_hist_sub:'free slots per minute (NIMCTL_RPM)', status_classes:'Status classes', paths:'Top paths', model_latency:'Model latency (probe)', bench_ttft:'Bench: time to first token', bench_toks:'Bench: tokens per second', by_provider:'Answering models per provider', by_provider_sub:'chat models that answered the last scan or probe', table:'Table', chart:'Chart', time:'Time', value:'Value', count:'Count', free:'free', waiting:'waiting',
   s_key:'NVIDIA API key', s_key_hint:'Starts with nvapi-, valid ~6 months. Checked at NVIDIA before it is saved.', s_key_new:'New key', s_key_save:'Check & save key',
-  s_proxy:'Proxy & budget', s_net:'Ports & network', s_probe:'Probing', s_ide:'IDE & search', s_ui:'Interface', s_maint:'Maintenance', s_danger:'Danger zone',
-  s_rpm:'Requests per minute (budget)', s_rpm_h:'token bucket for the whole NVIDIA key; requests beyond it wait', s_rpm_wait:'Maximum wait (s)', s_rpm_wait_h:'then the proxy answers 429 with Retry-After', s_stall:'Stall timeout (s)', s_stall_h:'a model that sends nothing for this long is given up and the request goes to the fallback', s_maxout:'Max output tokens (Claude Code)', s_chat_via:'Chat through the proxy', s_yes:'yes', s_no:'no (directly to NVIDIA)',
+  s_proxy:'Proxy & budget', s_chains:'Chains', s_net:'Ports & network', s_probe:'Probing', s_ide:'IDE & search', s_ui:'Interface', s_maint:'Maintenance',
+  s_rpm:'Requests per minute (budget)', s_rpm_h:'token bucket for the whole NVIDIA key; requests beyond it wait', s_rpm_wait:'Maximum wait (s)', s_rpm_wait_h:'then the proxy answers 429 with Retry-After', s_stall:'Stall timeout (s)', s_stall_h:'a model that sends nothing for this long is given up and the request goes to the next rank', s_maxout:'Max output tokens', s_chat_via:'Chat through the proxy', s_yes:'yes', s_no:'no (directly to NVIDIA)',
+  s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_cooldown_rl:'Pause after 429 (s)', s_cooldown_rl_h:'first pause after a rate limit – shorter than after a timeout/5xx, doubling afterwards as well', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', s_perprov:'Ranks per provider first', s_perprov_h:'how many ranks a provider gets before the others have their turn; the ranking fills up afterwards', s_scan_rpm:'Scan pace (requests/min)', s_scan_rpm_h:'empty = per provider (NVIDIA 30, Groq 25, Gemini 8, Cerebras 25, OpenRouter 15, Mistral 40)',
   s_port_proxy:'Proxy port', s_port_chat:'Chat port', s_port_ide:'IDE port', s_port_search:'Search port', s_port_web:'Web UI port', s_bind:'Service address', s_bind_h:'127.0.0.1 = this machine only; 0.0.0.0 exposes every service on the network',
-  s_probe_to:'Probe timeout (s)', s_reprobe:'Re-probe after (h)', s_keywarn:'Key warning after (days)', s_ide_ctx:'Context length for Continue', s_ide_ext:'Extra extensions (Open VSX)', s_search_n:'Search results per query', s_lang:'Language', s_lang_auto:'automatic ($LANG)', s_theme:'Color scheme', theme_auto:'System', theme_light:'Light', theme_dark:'Dark',
+  s_probe_to:'Probe timeout (s)', s_reprobe:'Re-probe after (h)', s_keywarn:'Key warning after (days)', s_ide_ctx:'Context length for Continue', s_ide_ext:'Extra extensions (Open VSX)', s_search_n:'Search results per query', s_search_c:'Parallel page fetches per search', s_lang:'Language', s_lang_auto:'automatic ($LANG)', s_theme:'Color scheme', theme_auto:'System', theme_light:'Light', theme_dark:'Dark',
   s_env:'from the environment – not editable here', s_default:'default: %s', s_restart_needed:'Settings saved – they apply after the services restart.', restart_now:'Restart now',
   config_changed:'Configuration changed – the proxy still runs the old one. Restart?', key_warn:'The NVIDIA key expires in ~%s days – create a new one.', key_expired:'The NVIDIA key has probably expired (older than 180 days).',
-  running:'running: %s', done_ok:'done (%s s)', done_fail:'exited with code %s (%s s)', busy:'A command is already running.', abort:'Abort', clear:'Clear', restart_after:'Restart services afterwards', offline:'Web UI unreachable – is the service running? nimctl web', forbidden:'Access denied (token) – reload the page.',
+  paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.',
+  chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition. Every rank must take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens); models that reject it stay out.',
+  running:'running: %s', done_ok:'done (%s s)', done_fail:'exited with code %s (%s s)', busy:'A command is already running.', abort:'Abort', clear:'Clear', offline:'Web UI unreachable – is the service running? nimctl web', forbidden:'Access denied (token) – reload the page.',
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
-  tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
+  tools_row:'Tools', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', quick:'Quick actions',
 }};
-Object.assign(T.de, { scan_all:'Alle Modelle scannen', scan_use:'Scannen und passende übernehmen', scan_hint:'Scan prüft jeden Chat-Eintrag aller Anbieter mit Key im Tempo ihres Free-Tiers (OpenRouter nur auf Nennung) und listet Modelle, die für einen Slot taugen, aber in keiner Rangliste stehen; „übernehmen“ hängt sie ans Ende der Ranglisten.', s_perprov:'Ränge je Anbieter zuerst', s_perprov_h:'so viele Ränge bekommt ein Anbieter, bevor die anderen dran sind – jeder Anbieter mit Key kommt in die Kette, danach füllt die Rangliste auf', s_cooldown_rl:'Pause nach 429 (s)', s_cooldown_rl_h:'erste Pause nach einem Rate-Limit – kürzer als nach Timeout/5xx, danach ebenfalls verdoppelt', s_search_c:'Parallele Seitenabrufe je Suche', size_hint:'Jeder Rang muss außerdem eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens) – Modelle, die sie ablehnen (✗ hinter der Größe, Grund im Tooltip), bleiben draußen; Groqs Free-Tier nimmt höchstens 6–12k Tokens je Anfrage.', s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
-  pool_hint:'Anbieter mit Key nehmen an der Rangliste teil – ihre Modelle stehen dort, wo die Kandidatenliste sie einordnet, nicht automatisch hinter NVIDIA. Die Ketten werden nach jedem Hinzufügen neu gebaut.', no_ranks:'in keiner Kette', ranks:'Ränge',
-  candidates_hint:'Die Rangliste je Slot: reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette. Leer = Standard.' });
-Object.assign(T.en, { scan_all:'Scan all models', scan_use:'Scan and take over suitable ones', scan_hint:'Scan probes every chat entry of every provider with a key at the pace of its free tier (OpenRouter only when named) and lists models that qualify for a slot but sit in no ranking; “take over” appends them to the rankings.', s_perprov:'Ranks per provider first', s_perprov_h:'how many ranks a provider gets before the others have their turn – every provider with a key enters the chain, then the ranking fills up', s_cooldown_rl:'Pause after 429 (s)', s_cooldown_rl_h:'first pause after a rate limit – shorter than after a timeout/5xx, doubling afterwards as well', s_search_c:'Parallel page fetches per search', size_hint:'Every rank must also take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens) – models that reject it (✗ after the size, reason in the tooltip) stay out; Groq\'s free tier takes at most 6–12k tokens per request.', s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
-  pool_hint:'Providers with a key take part in the ranking – their models sit where the candidate list places them, not automatically behind NVIDIA. The chains are rebuilt after every addition.', no_ranks:'in no chain', ranks:'Ranks',
-  candidates_hint:'The ranking per slot: regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain. Empty = default.' });
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
-const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
-const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'8', NIMCTL_CHAIN_PER_PROVIDER:'2', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
+// providers: NVIDIA first, then the pool (src/22-pool.sh); colours are series roles, used for the dot only
+const PROVIDERS = [['nvidia','NVIDIA','https://build.nvidia.com/settings/api-keys'],['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
+const POOL = PROVIDERS.slice(1);
+const PCOL = { nvidia: 'var(--s6)', groq: 'var(--s2)', gemini: 'var(--s1)', cerebras: 'var(--s4)', openrouter: 'var(--s5)', mistral: 'var(--s3)' };
+const SCAN_RPM = { nvidia: 30, groq: 25, gemini: 8, cerebras: 25, openrouter: 15, mistral: 40 };   // src/21-scan.sh
+const SIZE_CLASSES = [32000, 12000, 8000];
+const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'8', NIMCTL_CHAIN_PER_PROVIDER:'2', NIMCTL_SCAN_RPM:'', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -3196,6 +3233,31 @@ function toast(msg, kind) { const e = $('toast'); e.textContent = msg; e.classNa
 function pill(kind, text) { return h('span', { class: 'pill ' + (kind || '') }, h('span', { class: 'dot' }), text); }
 function btn(label, onclick, cls) { return h('button', { class: 'btn' + (cls ? ' ' + cls : ''), onclick }, label); }
 function field(label, input, help) { return h('label', { class: 'field' }, label, input, help ? h('span', { class: 'help' }, help) : null); }
+function setting(key) { return (S && S.settings && S.settings[key]) || DEFAULTS[key]; }
+
+// ── providers and model ids ───────────────────────────────────────────────────────────────────────────────
+function provOf(id) { const i = id.indexOf(':'); if (i > 0) { const p = id.slice(0, i); if (POOL.some(x => x[0] === p)) return p; } return 'nvidia'; }
+function plainId(id) { const p = provOf(id); return p === 'nvidia' ? id : id.slice(p.length + 1); }
+function provLabel(p) { const e = PROVIDERS.find(x => x[0] === p); return e ? e[1] : p; }
+function provTag(p) { return h('span', { class: 'tag' }, h('i', { class: 'pdot', style: 'background:' + (PCOL[p] || 'var(--muted)') }), provLabel(p)); }
+function hasKey(p) { if (!S || !S.config) return false; if (p === 'nvidia') return !!S.config.nvidia_key; const c = S.config.pool && S.config.pool[p]; return !!(c && c.key); }
+function catalogOf(p) { return p === 'nvidia' ? (S.catalog || []) : ((S.pool_catalogs || {})[p] || []).map(i => p + ':' + i); }
+function allIds() { return PROVIDERS.flatMap(([p]) => hasKey(p) ? catalogOf(p) : []); }
+function maps() {
+  const probe = {}, size = {}, rank = {};
+  (S.probes || []).forEach(p => { probe[p.id] = p; });
+  (S.sizes || []).forEach(x => { (size[x.id] = size[x.id] || {})[x.tokens] = x; });
+  SLOTS.forEach(s => ((S.config && S.config.chains || {})[s] || []).forEach((m, i) => { (rank[m] = rank[m] || []).push({ slot: s, rank: i + 1 }); }));
+  return { probe, size, rank };
+}
+function modelRows() { // one row per catalog entry of every provider with a key, with what is known about it
+  const { probe, size, rank } = maps(); const nc = DISC && DISC.not_chat ? new RegExp(DISC.not_chat, 'i') : null;
+  return allIds().map(id => { const pr = probe[id] || null; const plain = plainId(id);
+    return { id, prov: provOf(id), plain, pr, ok: !!(pr && pr.result === 'ok'), ms: pr && pr.result === 'ok' && pr.ms != null ? pr.ms : null, err: pr && pr.result !== 'ok' ? pr.result : null,
+      tools: pr ? pr.tools : null, sizes: size[id] || {}, ranks: rank[id] || [], chat: !nc || !nc.test(plain), probed: pr ? pr.probed : null }; });
+}
+function sizeMarks(id) { const rows = (S.sizes || []).filter(x => x.id === id).sort((a, b) => b.tokens - a.tokens); return rows.map(x => Math.round(x.tokens / 1000) + 'k ' + (x.result === 'ok' ? '✓' : '✗')).join(' · '); }
+function sizeCells(sizes) { return h('span', { class: 'sizes' }, SIZE_CLASSES.map(tk => { const x = sizes[tk]; if (!x) return null; return h('span', { class: x.result === 'ok' ? 'ok' : 'bad', title: x.result === 'ok' ? '' : x.result }, Math.round(tk / 1000) + 'k ' + (x.result === 'ok' ? '✓' : '✗')); })); }
 
 // ── API ───────────────────────────────────────────────────────────────────────────────────────────────────
 async function api(path, body) {
@@ -3205,7 +3267,7 @@ async function api(path, body) {
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
 }
-let S = null, STATS = null, HIST = [], CANDS = null, page = location.hash.replace('#', '') || 'overview';
+let S = null, STATS = null, HIST = [], CANDS = null, DISC = null, page = location.hash.replace('#', '') || 'overview';
 let lastState = 0;
 async function refresh(force) {
   try {
@@ -3216,6 +3278,7 @@ async function refresh(force) {
 }
 async function loadHistory() { try { HIST = await api('/api/history'); if (page === 'stats' || page === 'overview') renderPage(); } catch (e) { /* offline */ } }
 async function loadCandidates() { try { CANDS = await api('/api/candidates'); } catch (e) { CANDS = {}; } }
+async function loadDiscover() { try { DISC = await api('/api/discover'); } catch (e) { DISC = { found: {} }; } }
 
 // ── console: run a nimctl command and stream its output ──────────────────────────────────────────────────
 let running = false;
@@ -3241,7 +3304,7 @@ async function run(args, opts = {}) {
       }
     }
   } catch (e) { toast(String(e), 'crit'); }
-  finally { running = false; $('console-abort').classList.add('hidden'); renderBusy(); refresh(true); loadHistory(); }
+  finally { running = false; $('console-abort').classList.add('hidden'); renderBusy(); DISC = null; CANDS = null; refresh(true); loadHistory(); }
   return ok;
 }
 function renderBusy(args) { const b = $('busy'); const a = args || (S && S.busy); b.classList.toggle('on', !!a); $('busy-text').textContent = a ? 'nimctl ' + a.join(' ') : ''; }
@@ -3324,6 +3387,7 @@ function bins(range) { // range in hours → [{t, req, c429, fb, thr, err, free,
 }
 
 // ── notices ───────────────────────────────────────────────────────────────────────────────────────────────
+let settingsSaved = false;
 function renderNotices() {
   const box = clear($('notices')); if (!S) return;
   if (S.notices && S.notices.config_changed) box.append(h('div', { class: 'notice' }, h('span', { style: 'flex:1' }, t('config_changed')), btn(t('restart_now'), () => run(['restart']), 'small primary')));
@@ -3333,24 +3397,22 @@ function renderNotices() {
   Object.values(cool).filter(e => e.until > S.now).sort((a, b) => a.slot.localeCompare(b.slot) || a.rank - b.rank).forEach(e => box.append(h('div', { class: 'notice' }, t('paused_notice', e.slot, e.rank, e.model, hhmm(e.until), e.reason))));
   if (settingsSaved) box.append(h('div', { class: 'notice good' }, h('span', { style: 'flex:1' }, t('s_restart_needed')), btn(t('restart_now'), () => { settingsSaved = false; run(['restart']); }, 'small primary')));
 }
-let settingsSaved = false;
 
 // ── pages ─────────────────────────────────────────────────────────────────────────────────────────────────
-const PAGES = ['overview', 'models', 'pool', 'services', 'stats', 'settings'];
-function show(p) { page = PAGES.includes(p) ? p : 'overview'; location.hash = page; document.querySelectorAll('.page').forEach(e => e.classList.toggle('on', e.id === 'page-' + page)); document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false')); renderPage(true); }
-function renderPage(force) { if (!S) return; const host = $('page-' + page); if (!force && host.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON' && document.activeElement.tagName !== 'BODY') return; ({ overview: renderOverview, models: renderModels, pool: renderPool, services: renderServices, stats: renderStats, settings: renderSettings })[page](host); }
+const PAGES = ['overview', 'models', 'providers', 'services', 'stats', 'settings'];
+function show(p) { if (p === 'pool') p = 'providers'; page = PAGES.includes(p) ? p : 'overview'; location.hash = page; document.querySelectorAll('.page').forEach(e => e.classList.toggle('on', e.id === 'page-' + page)); document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false')); renderPage(true); }
+function renderPage(force) { if (!S) return; const host = $('page-' + page); if (!force && host.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON' && document.activeElement.tagName !== 'BODY') return; ({ overview: renderOverview, models: renderModels, providers: renderProviders, services: renderServices, stats: renderStats, settings: renderSettings })[page](host); }
 
 function keyPill() { const k = S.key || {}; const m = { ok: ['good', t('key_ok')], none: ['crit', t('key_none')], invalid: ['crit', t('key_bad')], offline: ['warn', t('key_off')] }[k.state] || ['', t('key_unk')]; return pill(m[0], m[1]); }
 function svcPill(s) { const v = S[s] || {}; if (v.up) return pill('good', t('up')); if (v.by === 'foreign') return pill('warn', t('foreign')); return pill('crit', t('down')); }
 function svcMeta(s) { const v = S[s] || {}; const parts = [t('port', v.port)]; if (v.up) { if (v.by) parts.push(t('by', v.by)); if (v.pid) parts.push(t('pid', v.pid)); } return parts.join(' · '); }
-function slotInfo(slot) { const sl = (S.slots || {})[slot] || {}; return sl; }
+function slotInfo(slot) { return (S.slots || {})[slot] || {}; }
 function groupName(slot, i) { return i === 0 ? 'nim-' + slot : 'nim-' + slot + '-r' + (i + 1); }
 function pausedInfo(slot, i) { const c = S.health && S.health.cooldown || {}; const e = c[groupName(slot, i)]; return e && e.until > S.now ? e : null; }
-function sizeMarks(id) { const rows = (S.sizes || []).filter(x => x.id === id).sort((a, b) => b.tokens - a.tokens); return rows.map(x => Math.round(x.tokens / 1000) + 'k ' + (x.result === 'ok' ? '✓' : '✗')).join(' · '); }
-function sizeTitle(id) { return (S.sizes || []).filter(x => x.id === id && x.result !== 'ok').map(x => Math.round(x.tokens / 1000) + 'k: ' + x.result).join('\n'); }
-function chainList(slot, sl, withButtons) { const chain = sl.chain || []; if (chain.length <= 1 && !withButtons) return null; const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
-  return h('ul', { class: 'chain' }, chain.map((m, i) => { const pi = pausedInfo(slot, i); const pr = probeMap[m]; const prov = m.includes(':') ? m.split(':')[0] : 'nvidia';
-    return h('li', { class: pi ? 'paused' : '' }, h('span', { class: 'rk' }, (i + 1) + '.'), h('span', { class: 'id', title: m + ' (' + prov + ')' }, m), h('span', { class: 'meta' }, pr && pr.result === 'ok' ? h('span', { class: 'small muted tnum' }, pr.ms + ' ms') : pr && pr.result ? pill('crit', pr.result) : null, pi ? pill('warn', t('paused', hhmm(pi.until), pi.reason)) : null, withButtons && i > 0 ? btn(t('make_rank1'), () => run(['pick', slot, m]), 'small ghost') : null)); })); }
+function rankCount(p) { const chains = S.config && S.config.chains || {}; return SLOTS.flatMap(s => chains[s] || []).filter(m => provOf(m) === p).length; }
+function chainList(slot, sl, withButtons) { const chain = sl.chain || []; if (chain.length <= 1 && !withButtons) return null; const { probe } = maps();
+  return h('ul', { class: 'chain' }, chain.map((m, i) => { const pi = pausedInfo(slot, i); const pr = probe[m];
+    return h('li', { class: pi ? 'paused' : '' }, h('span', { class: 'rk' }, (i + 1) + '.'), h('span', { class: 'id', title: m }, plainId(m)), h('span', { class: 'meta' }, provTag(provOf(m)), pr && pr.result === 'ok' ? h('span', { class: 'small muted tnum' }, fmtN(pr.ms) + ' ms') : pr && pr.result ? pill('crit', pr.result) : null, pi ? pill('warn', t('paused', hhmm(pi.until), pi.reason)) : null, withButtons && i > 0 ? btn(t('make_rank1'), () => run(['pick', slot, m]), 'small ghost') : null)); })); }
 function slotState(sl) { if (!sl.model) return pill('', t('none')); if (sl.state === 'ok') return pill('good', t('answers')); if (sl.state === 'unprobed') return pill('', t('unprobed')); return pill('crit', sl.error || 'error'); }
 
 function renderOverview(host) {
@@ -3364,7 +3426,7 @@ function renderOverview(host) {
     tile(t('fallbacks'), fmtN(STATS && STATS.fallbacks || 0), '', sp('fb')),
     tile(t('throttled'), fmtN(STATS && STATS.throttled || 0), '', sp('thr')),
     tile(t('errors'), fmtN(STATS && STATS.errors || 0), '', sp('err'))));
-  // budget meter + key + quick actions
+  // budget meter + key + services + tools
   const rpm = S.rpm || {}; const fresh = rpm.updated && (S.now - rpm.updated) < 120; const ratio = fresh && rpm.budget ? rpm.free / rpm.budget : null;
   const meterCls = ratio == null ? '' : ratio < .15 ? 'crit' : ratio < .4 ? 'warn' : '';
   host.append(h('div', { class: 'grid' },
@@ -3376,60 +3438,129 @@ function renderOverview(host) {
   // slots table
   const maxMs = Math.max(1, ...SLOTS.map(s => slotInfo(s).ms || 0));
   host.append(h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h2', null, t('models')), h('table', null, h('thead', null, h('tr', null, h('th', null, t('slot')), h('th', null, t('model')), h('th', null, t('state')), h('th', { class: 'num' }, t('latency')), h('th', null, ''), h('th', null, t('tools')), h('th', null, t('probed')))),
-    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', null, h('div', { class: 'slot-model' }, sl.model || t('none')), (sl.chain || []).length > 1 ? h('div', { class: 'small muted' }, t('chain') + ': ' + sl.chain.slice(1).map((m, i) => (i + 2) + '. ' + m).join(' · ')) : null), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
+    h('tbody', null, SLOTS.map(s => { const sl = slotInfo(s); return h('tr', null, h('td', null, h('b', null, s), h('div', { class: 'small muted' }, t('slot_' + s))), h('td', null, h('div', { class: 'row', style: 'gap:6px' }, sl.model ? provTag(provOf(sl.model)) : null, h('span', { class: 'slot-model' }, sl.model ? plainId(sl.model) : t('none'))), (sl.chain || []).length > 1 ? h('div', { class: 'small muted' }, t('chain') + ': ' + sl.chain.slice(1).map((m, i) => (i + 2) + '. ' + m).join(' · ')) : null), h('td', null, slotState(sl)), h('td', { class: 'num' }, sl.ms != null ? fmtN(sl.ms) + ' ms' : '–'), h('td', null, h('div', { class: 'bar-track' }, h('i', { style: 'width:' + Math.round((sl.ms || 0) / maxMs * 100) + '%' }))), h('td', null, sl.tools === 'ok' ? pill('good', t('tools_ok')) : sl.tools === 'no' ? pill('warn', t('notools')) : ''), h('td', { class: 'small muted' }, sl.probed ? ago(sl.probed) : '')); }))),
     h('div', { class: 'small muted', style: 'margin-top:6px' }, t('help_slots'))));
-  // pool summary + requests chart
-  const pool = S.config && S.config.pool || {};
+  // providers summary + requests chart
   host.append(h('div', { class: 'grid wide' },
-    h('div', { class: 'card' }, h('h2', null, t('pool')), h('div', { class: 'row' }, PROVIDERS.map(([p, label]) => pool[p] && pool[p].key ? pill('good', label + ' (' + Object.keys(pool[p].models || {}).length + ')') : pill('', label)))),
+    h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, t('providers')), btn(t('providers') + ' →', () => show('providers'), 'small ghost')), h('div', { class: 'row' }, PROVIDERS.map(([p, label]) => { const n = rankCount(p); return hasKey(p) ? pill('good', label + (n ? ' · ' + t('n_ranks', n) : '')) : pill('', label); })), h('div', { class: 'small muted', style: 'margin-top:8px' }, t('pool_hint', setting('NIMCTL_CHAIN_PER_PROVIDER')))),
     chartCard(t('req_per_min'), t('req_sub'), (body, tip) => lineChart(body, tip, { series: [{ name: t('requests') + t('per_min'), color: 'var(--s1)', values: b.map(r => +r.rpm.toFixed(1)) }], xs: b.map(r => r.t), fmtX: (e) => hhmm(e), height: 140 }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'v', label: t('requests') + t('per_min'), num: true }], b.map(r => ({ time: hhmm(r.t), v: r.rpm.toFixed(1) }))))));
 }
 
-let catalogQuery = '';
+// ── models page: slots, the model table, scan, finds, rankings, test, bench ───────────────────────────────
+const MT = { q: '', prov: '', only: 'all', sort: 'model', dir: 1 };
+let SCAN_SIZES = false;
+function slotSelect(id) { return h('select', { class: 'small', title: t('pick'), onchange: (e) => { const s = e.target.value; e.target.value = ''; if (s) run(['pick', s, id]); } }, h('option', { value: '' }, '→ ' + t('slot')), SLOTS.map(s => h('option', { value: s }, s))); }
+function modelTableCard(rows) {
+  const box = h('div', { class: 'tbl' }); const count = h('span', { class: 'count' });
+  const cols = [['prov', t('col_provider')], ['model', t('col_model')], ['answer', t('col_answer')], ['tools', t('col_tools')], ['sizes', t('col_sizes')], ['chain', t('col_chain')], ['probed', t('col_probed')]];
+  const keyOf = { prov: r => r.prov + ' ' + r.plain, model: r => r.plain, answer: r => r.ok ? (r.ms != null ? r.ms : 1e9) : r.err ? 2e9 : 3e9, tools: r => r.tools === 'ok' ? 0 : r.tools === 'no' ? 1 : 2, sizes: r => -SIZE_CLASSES.filter(k => r.sizes[k] && r.sizes[k].result === 'ok').length, chain: r => r.ranks.length ? Math.min(...r.ranks.map(x => x.rank)) : 99, probed: r => -(r.probed || 0) };
+  const chip = (label, pressed, on) => h('button', { class: 'chip', 'aria-pressed': String(pressed), onclick: on }, label);
+  const fill = () => {
+    const q = MT.q.trim().toLowerCase();
+    const list = rows.filter(r => (!q || r.id.toLowerCase().includes(q)) && (!MT.prov || r.prov === MT.prov) && (MT.only === 'all' || (MT.only === 'answering' && r.ok) || (MT.only === 'tools' && r.tools === 'ok') || (MT.only === 'ranked' && r.ranks.length) || (MT.only === 'chat' && r.chat)));
+    list.sort((a, b) => { const ka = keyOf[MT.sort](a), kb = keyOf[MT.sort](b); const c = typeof ka === 'string' ? ka.localeCompare(kb) : ka - kb; return (c || a.id.localeCompare(b.id)) * MT.dir; });
+    count.textContent = t('n_models', fmtN(list.length), fmtN(list.filter(r => r.ok).length), fmtN(list.filter(r => r.tools === 'ok').length));
+    const head = h('tr', null, cols.map(([k, label]) => h('th', { class: 'sort', 'aria-sort': MT.sort === k ? (MT.dir > 0 ? 'ascending' : 'descending') : 'none', onclick: () => { if (MT.sort === k) MT.dir = -MT.dir; else { MT.sort = k; MT.dir = 1; } fill(); } }, label)), h('th', null, ''));
+    const body = h('tbody', null, list.slice(0, 300).map(r => h('tr', null,
+      h('td', null, provTag(r.prov)),
+      h('td', { class: 'mono', title: r.id }, r.plain, r.chat ? null : h('span', { class: 'tag', style: 'margin-left:6px' }, t('not_chat'))),
+      h('td', null, r.ok ? pill('good', r.ms != null ? fmtN(r.ms) + ' ms' : t('answers')) : r.err ? pill('crit', r.err) : pill('', t('unprobed'))),
+      h('td', null, r.tools === 'ok' ? pill('good', t('tools_ok')) : r.tools === 'no' ? pill('warn', t('notools')) : ''),
+      h('td', null, sizeCells(r.sizes)),
+      h('td', null, r.ranks.map(x => h('span', { class: 'tag', style: 'margin-right:4px' }, x.slot + ' #' + x.rank))),
+      h('td', { class: 'small muted' }, r.probed ? ago(r.probed) : ''),
+      h('td', null, h('div', { class: 'row', style: 'flex-wrap:nowrap;gap:4px;justify-content:flex-end' }, btn(t('probe'), () => run(['find', r.id]), 'small ghost'), slotSelect(r.id))))));
+    if (list.length > 300) body.append(h('tr', null, h('td', { colspan: 8, class: 'muted small' }, t('more_rows', fmtN(list.length - 300)))));
+    if (!list.length) body.append(h('tr', null, h('td', { colspan: 8, class: 'muted small' }, t('no_data'))));
+    clear(box).append(h('table', null, h('thead', null, head), body));
+    document.querySelectorAll('#mt-prov .chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.v === MT.prov)));
+    document.querySelectorAll('#mt-only .chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.v === MT.only)));
+  };
+  const search = h('input', { type: 'text', placeholder: t('search_ph'), value: MT.q, style: 'max-width:340px', oninput: (e) => { MT.q = e.target.value; fill(); } });
+  const provChips = h('div', { class: 'chips', id: 'mt-prov' }, chip(t('filter_all'), !MT.prov, () => { MT.prov = ''; fill(); }), PROVIDERS.filter(([p]) => hasKey(p)).map(([p, label]) => chip(label, MT.prov === p, () => { MT.prov = MT.prov === p ? '' : p; fill(); })));
+  provChips.querySelectorAll('.chip').forEach((c, i) => { c.dataset.v = i === 0 ? '' : PROVIDERS.filter(([p]) => hasKey(p))[i - 1][0]; });
+  const onlyDefs = [['all', 'filter_all'], ['answering', 'filter_answering'], ['tools', 'filter_tools'], ['ranked', 'filter_ranked'], ['chat', 'filter_chat']];
+  const onlyChips = h('div', { class: 'chips', id: 'mt-only' }, onlyDefs.map(([v, k]) => chip(t(k), MT.only === v, () => { MT.only = v; fill(); })));
+  onlyChips.querySelectorAll('.chip').forEach((c, i) => { c.dataset.v = onlyDefs[i][0]; });
+  fill();
+  return h('div', { class: 'card', style: 'margin:12px 0' }, h('div', { class: 'row between' }, h('h2', null, t('model_table')), count), h('div', { class: 'small muted' }, t('table_hint')),
+    h('div', { class: 'toolbar' }, search, provChips, onlyChips), box);
+}
+function scanCard(rows) {
+  const provs = PROVIDERS.filter(([p]) => hasKey(p)); const by = {}; provs.forEach(([p]) => { by[p] = { cat: 0, ok: 0, tools: 0, last: 0 }; });
+  rows.forEach(r => { const b = by[r.prov]; if (!b) return; if (r.chat) b.cat++; if (r.ok) b.ok++; if (r.tools === 'ok') b.tools++; if (r.probed > b.last) b.last = r.probed; });
+  const sizesCb = h('input', { type: 'checkbox', checked: SCAN_SIZES, onchange: (e) => { SCAN_SIZES = e.target.checked; } });
+  const scanArgs = (p) => ['scan', ...(p ? [p] : []), ...(SCAN_SIZES ? ['--sizes'] : [])];
+  const pace = (p) => (setting('NIMCTL_SCAN_RPM') || SCAN_RPM[p]) + t('per_min');
+  return h('div', { class: 'card', style: 'margin-bottom:12px' }, h('div', { class: 'row between' }, h('h2', null, t('scan_title')), h('div', { class: 'row' }, h('label', { class: 'check' }, sizesCb, t('scan_sizes')), btn(t('scan_all'), () => run(scanArgs()), 'primary small'))),
+    h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('scan_hint')),
+    provs.length ? h('table', null, h('thead', null, h('tr', null, h('th', null, t('col_provider')), h('th', { class: 'num' }, t('catalog')), h('th', { class: 'num' }, t('filter_answering')), h('th', { class: 'num' }, t('filter_tools')), h('th', null, t('scan_last_col')), h('th', null, t('scan_pace_col')), h('th', null, ''))),
+      h('tbody', null, provs.map(([p]) => h('tr', null, h('td', null, provTag(p)), h('td', { class: 'num' }, fmtN(by[p].cat)), h('td', { class: 'num' }, fmtN(by[p].ok)), h('td', { class: 'num' }, fmtN(by[p].tools)), h('td', { class: 'small muted' }, by[p].last ? ago(by[p].last) : t('never')), h('td', { class: 'small muted tnum' }, pace(p)), h('td', { style: 'text-align:right' }, btn(t('scan_provider'), () => run(scanArgs(p)), 'small')))))) : h('div', { class: 'muted small' }, t('key_none')),
+    h('div', { class: 'small muted', style: 'margin-top:8px' }, t('or_note')));
+}
+async function saveDiscovered(slot, ids) { try { await api('/api/discovered', { discovered: { [slot]: ids } }); toast(t('saved'), 'good'); DISC = null; await run(['auto', slot]); } catch (e) { toast(String(e), 'crit'); } }
+function takeOver(slot, ids) { const cur = (S.discovered || {})[slot] || []; return saveDiscovered(slot, [...cur, ...ids.filter(i => !cur.includes(i))]); }
+function removeTaken(slot, id) { return saveDiscovered(slot, ((S.discovered || {})[slot] || []).filter(i => i !== id)); }
+function foundCard() {
+  const card = h('div', { class: 'card', style: 'margin-bottom:12px' }, h('h2', null, t('found_title')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('found_hint')));
+  if (!DISC) { card.append(h('div', { class: 'muted small' }, t('loading'))); loadDiscover().then(() => { if (page === 'models') renderPage(true); }); return card; }
+  const { probe } = maps(); const found = DISC.found || {}; const taken = S.discovered || {};
+  const slotsWith = SLOTS.filter(s => (found[s] || []).length);
+  if (!slotsWith.length) card.append(h('div', { class: 'muted small' }, t('found_none')));
+  else card.append(h('div', { class: 'grid' }, slotsWith.map(s => { const boxes = [];
+    return h('div', null, h('h3', { style: 'margin-top:4px' }, s, ' ', h('span', { class: 'muted', style: 'text-transform:none;font-weight:400' }, t('slot_' + s))),
+      h('div', { class: 'list' }, found[s].map(id => { const cb = h('input', { type: 'checkbox', value: id }); boxes.push(cb); const pr = probe[id];
+        return h('label', { class: 'item' }, cb, provTag(provOf(id)), h('span', { class: 'id mono', title: id }, plainId(id)), pr && pr.result === 'ok' && pr.ms != null ? h('span', { class: 'small muted tnum' }, fmtN(pr.ms) + ' ms') : null, pr && pr.tools === 'ok' ? h('span', { class: 'small ok' }, '✓') : null); })),
+      h('div', { class: 'row', style: 'margin-top:6px' }, btn(t('take_selected'), () => { const ids = boxes.filter(b => b.checked).map(b => b.value); if (ids.length) takeOver(s, ids); }, 'small primary'))); })));
+  card.append(h('h3', null, t('taken_title')));
+  const takenWith = SLOTS.filter(s => (taken[s] || []).length);
+  if (!takenWith.length) card.append(h('div', { class: 'muted small' }, t('no_taken')));
+  else card.append(h('div', { class: 'stack' }, takenWith.map(s => h('div', { class: 'row' }, h('b', { style: 'width:52px' }, s), taken[s].map(id => h('span', { class: 'tag' }, id, Object.assign(btn('×', () => removeTaken(s, id), 'small ghost'), { title: t('remove') })))))));
+  return card;
+}
 function renderModels(host) {
-  clear(host);
-  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('chain_hint', (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT, (S.settings && S.settings.NIMCTL_COOLDOWN) || '120') + ' ' + t('size_hint')));
+  clear(host); const rows = modelRows(); const { size } = maps();
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('chain_hint', setting('NIMCTL_STALL_TIMEOUT'), setting('NIMCTL_COOLDOWN'))));
   host.append(h('div', { class: 'grid wide' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
-    h('div', { class: 'slot-model', style: 'margin:6px 0' }, sl.model || t('none')),
-    h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sizeMarks(sl.model), sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
+    h('div', { class: 'row', style: 'margin:6px 0;gap:6px' }, sl.model ? provTag(provOf(sl.model)) : null, h('span', { class: 'slot-model' }, sl.model ? plainId(sl.model) : t('none'))),
+    h('div', { class: 'row small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · '), sl.model ? sizeCells(size[sl.model] || {}) : null),
     chainList(s, sl, true),
     h('div', { class: 'row', style: 'margin-top:8px' }, btn(t('auto'), () => run(['auto', s]), 'small'), btn(t('probe'), () => sl.model && run(['find', sl.model]), 'small'), btn(t('bench'), () => run(['bench', s]), 'small'), btn(t('test'), () => { $('test-model').value = s; $('test-prompt').focus(); }, 'small'))); })));
-  // catalog
-  const list = h('div', { class: 'list' });
-  const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
-  const allIds = [...(S.catalog || []), ...Object.entries(S.pool_catalogs || {}).flatMap(([p, ids]) => S.config.pool[p] && S.config.pool[p].key ? ids.map(i => p + ':' + i) : [])];
-  const fill = () => { clear(list); const q = catalogQuery.toLowerCase(); const ids = allIds.filter(i => !q || i.toLowerCase().includes(q)).slice(0, 200);
-    if (!ids.length) list.append(h('div', { class: 'item muted' }, t('no_data')));
-    ids.forEach(id => { const pr = probeMap[id]; list.append(h('div', { class: 'item' }, pr ? (pr.result === 'ok' ? pill('good', (pr.ms != null ? pr.ms + ' ms' : t('answers')) + (pr.tools === 'ok' ? ' · ' + t('tools_ok') : pr.tools === 'no' ? ' · ' + t('notools') : '') + (sizeMarks(id) ? ' · ' + sizeMarks(id) : '')) : pill('crit', pr.result)) : pill('', t('unprobed')), h('span', { class: 'id mono', title: id + (sizeTitle(id) ? '\n' + sizeTitle(id) : '') }, id), btn(t('probe'), () => run(['find', id]), 'small ghost'), SLOTS.map(s => btn(t('set_slot', s), () => run(['pick', s, id]), 'small')))); }); };
-  const search = h('input', { type: 'text', placeholder: t('search_ph'), value: catalogQuery, oninput: (e) => { catalogQuery = e.target.value; fill(); } });
-  fill();
-  host.append(h('div', { class: 'card', style: 'margin:12px 0' }, h('h2', null, t('catalog')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('catalog_hint')), search, h('div', { style: 'margin-top:8px' }, list)));
+  host.append(modelTableCard(rows));
+  host.append(scanCard(rows), foundCard());
+  // rankings editor
+  const cands = h('div', { class: 'card' }, h('h2', null, t('candidates')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('candidates_hint', setting('NIMCTL_CHAIN_PER_PROVIDER'), setting('NIMCTL_CHAIN_LEN'))));
+  const inputs = {}; const grid = h('div', { class: 'grid' });
+  SLOTS.forEach(s => { const eff = CANDS && CANDS[s] || ''; const cur = S.candidates && S.candidates[s] || ''; inputs[s] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(s + ' · ' + t('slot_' + s), inputs[s], t('effective') + ': ' + eff)); });
+  const saveCands = async (values) => { try { await api('/api/candidates', { candidates: values }); toast(t('saved'), 'good'); CANDS = null; await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } };
+  cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); saveCands(c); }, 'primary'), btn(t('reset'), () => { const c = {}; SLOTS.forEach(s => { c[s] = ''; }); saveCands(c); }), btn(t('auto_all'), () => run(['auto']))));
+  host.append(cands);
+  if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderPage(true); });
   // test box + bench
   const testModel = h('input', { type: 'text', id: 'test-model', value: 'code', placeholder: 'code | fast | chat | review | <id>' }); const testPrompt = h('textarea', { id: 'test-prompt', placeholder: t('prompt') });
   const benchRows = (S.bench || []).map(b => ({ id: b.id, ttft: b.ttft_ms, toks: b.tok_s, at: b.at }));
-  host.append(h('div', { class: 'grid wide' },
+  host.append(h('div', { class: 'grid wide', style: 'margin-top:12px' },
     h('div', { class: 'card' }, h('h2', null, t('test_title')), h('div', { class: 'stack' }, field(t('test_model'), testModel), field(t('prompt'), testPrompt), h('div', { class: 'row' }, btn(t('send'), () => run(['test', testModel.value.trim() || 'code', testPrompt.value.trim() || '']), 'primary')))),
     h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, t('bench_last')), btn(t('bench_all'), () => run(['bench']), 'small')), benchRows.length ? h('table', null, h('thead', null, h('tr', null, h('th', null, t('model')), h('th', { class: 'num' }, t('ttft')), h('th', { class: 'num' }, t('toks')), h('th', null, ''))), h('tbody', null, benchRows.map(r => h('tr', null, h('td', { class: 'mono' }, r.id), h('td', { class: 'num' }, r.ttft != null ? fmtN(r.ttft) + ' ms' : '–'), h('td', { class: 'num' }, r.toks != null ? fmtN(r.toks) : '–'), h('td', { class: 'small muted' }, ago(r.at)))))) : h('div', { class: 'muted small' }, t('no_data')))));
-  // candidates
-  const cands = h('div', { class: 'card', style: 'margin-top:12px' }, h('h2', null, t('candidates')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('candidates_hint')));
-  const inputs = {}; const grid = h('div', { class: 'grid' });
-  const addField = (key, label) => { const eff = CANDS && CANDS[key] || ''; const cur = S.candidates && S.candidates[key] || ''; inputs[key] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(label, inputs[key], t('effective') + ': ' + eff)); };
-  SLOTS.forEach(s => addField(s, s));
-  cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto'])), btn(t('scan_all'), () => run(['scan'])), btn(t('scan_use'), () => run(['scan', '--use']))), h('div', { class: 'small muted', style: 'margin-top:8px' }, t('scan_hint')));
-  host.append(cands);
-  if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderModels(host); });
 }
 
-function renderPool(host) {
-  clear(host);
-  const pool = S.config && S.config.pool || {};
-  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint')));
-  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('auto_all'), () => run(['pool', 'auto'])), btn(t('scan_all'), () => run(['scan'])), btn(t('scan_use'), () => run(['scan', '--use']))));
-  host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => { const c = pool[p] || {}; const keyIn = h('input', { type: 'password', placeholder: t('pool_key'), autocomplete: 'off' });
-    const probeMap = {}; (S.probes || []).forEach(x => { probeMap[x.id] = x; });
-    return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, label), c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))), h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
-      c.key ? ((c.ranks || []).length ? h('table', { style: 'margin-top:8px' }, h('tbody', null, c.ranks.map(r => { const pr = probeMap[p + ':' + r.model]; return h('tr', null, h('td', null, r.slot, ' ', h('span', { class: 'muted' }, '#' + r.rank)), h('td', { class: 'mono' }, r.model), h('td', null, pr ? (pr.result === 'ok' ? pill('good', pr.ms + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : h('div', { class: 'small muted', style: 'margin-top:8px' }, t('no_ranks'))) : null,
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null)); })));
+// ── providers page: one card per provider, NVIDIA included ────────────────────────────────────────────────
+function renderProviders(host) {
+  clear(host); const rows = modelRows(); const { probe } = maps(); const chains = S.config && S.config.chains || {};
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint', setting('NIMCTL_CHAIN_PER_PROVIDER'))));
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('auto_all'), () => run(['auto'])), btn(t('scan_all'), () => run(['scan']))));
+  host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => {
+    const c = p === 'nvidia' ? { key: !!S.config.nvidia_key, key_masked: S.config.nvidia_key } : ((S.config.pool || {})[p] || {});
+    const ranks = p === 'nvidia' ? SLOTS.flatMap(s => (chains[s] || []).map((m, i) => ({ slot: s, rank: i + 1, model: m })).filter(r => provOf(r.model) === 'nvidia')) : (c.ranks || []);
+    const mine = rows.filter(r => r.prov === p); const cat = mine.filter(r => r.chat).length, okN = mine.filter(r => r.ok).length, toolsN = mine.filter(r => r.tools === 'ok').length, last = Math.max(0, ...mine.map(r => r.probed || 0));
+    const keyIn = h('input', { type: 'password', placeholder: p === 'nvidia' ? 'nvapi-…' : t('pool_key'), autocomplete: 'off' });
+    return h('div', { class: 'card' },
+      h('div', { class: 'row between' }, h('h2', { class: 'row', style: 'gap:8px' }, h('i', { class: 'pdot', style: 'background:' + PCOL[p] }), label), p === 'nvidia' ? h('span', { class: 'row' }, keyPill(), h('span', { class: 'mono small' }, c.key_masked || '')) : c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))),
+      h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
+      c.key ? h('div', { class: 'small', style: 'margin-top:8px' }, [t('catalog_n', fmtN(cat)), t('answering_n', fmtN(okN)), t('tools_n', fmtN(toolsN)), last ? t('scan_last', ago(last)) : ''].filter(Boolean).join(' · ')) : null,
+      c.key ? (ranks.length ? h('table', { style: 'margin-top:8px' }, h('tbody', null, ranks.map(r => { const id = p === 'nvidia' ? r.model : p + ':' + r.model; const pr = probe[id]; return h('tr', null, h('td', null, r.slot, ' ', h('span', { class: 'muted' }, '#' + r.rank)), h('td', { class: 'mono' }, r.model), h('td', null, pr ? (pr.result === 'ok' ? pill('good', fmtN(pr.ms) + ' ms' + (pr.tools === 'ok' ? ' ✓' : '')) : pill('crit', pr.result)) : '')); }))) : h('div', { class: 'small muted', style: 'margin-top:8px' }, t('no_ranks'))) : null,
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('div', { style: 'flex:1;min-width:160px' }, keyIn), btn(t('pool_add'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(p === 'nvidia' ? ['key'] : ['pool', 'add', p], { stdin: k }); }, 'primary small'), c.key ? btn(t('scan_provider'), () => run(['scan', p]), 'small') : null, c.key && p !== 'nvidia' ? btn(t('pool_remove'), () => run(['pool', 'remove', p]), 'small danger') : null));
+  })));
 }
 
 let logName = 'proxy', logLive = false, logSource = null;
@@ -3444,7 +3575,7 @@ function renderServices(host) {
     svc('ide', [btn(t('install'), () => run(['ide', 'install']), 'small'), btn(t('start'), () => run(['ide', 'start']), 'small'), btn(t('stop'), () => run(['ide', 'stop']), 'small'), btn(t('disable'), () => run(['ide', 'disable']), 'small'), h('a', { class: 'btn small', href: url('ide'), target: '_blank', rel: 'noreferrer' }, t('open_ide'))]),
     svc('search', [btn(t('install'), () => run(['search', 'install']), 'small'), btn(t('start'), () => run(['search', 'start']), 'small'), btn(t('stop'), () => run(['search', 'stop']), 'small'), btn(t('disable'), () => run(['search', 'disable']), 'small'), btn(t('test'), () => run(['search', 'test']), 'small'), h('a', { class: 'btn small', href: url('search'), target: '_blank', rel: 'noreferrer' }, t('open_search'))]),
     svc('web', [btn(t('disable'), () => run(['web', 'disable']), 'small')])));
-  // IDE details
+  // IDE details, accounts, autostart
   const ws = h('input', { type: 'text', value: S.workspace || '', placeholder: '/home/…/project' });
   host.append(h('div', { class: 'grid wide', style: 'margin-top:12px' },
     h('div', { class: 'card' }, h('h2', null, t('ide')), h('div', { class: 'stack' }, field(t('workspace'), ws, t('workspace_hint')), h('div', { class: 'row' }, btn(t('save'), async () => { try { await api('/api/workspace', { dir: ws.value.trim() }); toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary small')),
@@ -3474,13 +3605,15 @@ function renderStats(host) {
   host.append(h('div', { class: 'filters' }, h('span', { class: 'muted small' }, t('range')), seg));
   const { rows, binMin } = bins(range); const xs = rows.map(r => r.t); const fx = (e) => hhmm(e);
   const req = STATS && STATS.requests || {}; const by = req.by_status || {};
+  const mrows = modelRows(); const perProv = PROVIDERS.filter(([p]) => hasKey(p)).map(([p, label]) => { const mine = mrows.filter(r => r.prov === p); return { label, value: mine.filter(r => r.ok).length, color: PCOL[p], detail: t('tools_n', mine.filter(r => r.tools === 'ok').length) + ' · ' + t('catalog_n', mine.filter(r => r.chat).length), tools: mine.filter(r => r.tools === 'ok').length, catalog: mine.filter(r => r.chat).length }; });
   host.append(h('div', { class: 'grid wide' },
     chartCard(t('req_per_min'), t('req_sub'), (b, tip) => lineChart(b, tip, { series: [{ name: t('requests') + t('per_min'), color: 'var(--s1)', values: rows.map(r => +r.rpm.toFixed(2)) }], xs, fmtX: fx }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'v', label: t('requests') + t('per_min'), num: true }], rows.map(r => ({ time: hhmm(r.t), v: r.rpm.toFixed(2) })))),
     chartCard(t('events'), t('events_sub') + ' (' + binMin + ' min)', (b, tip) => lineChart(b, tip, { series: [{ name: '429', color: 'var(--s2)', values: rows.map(r => r.c429) }, { name: t('fallbacks'), color: 'var(--s3)', values: rows.map(r => r.fb) }, { name: t('throttled'), color: 'var(--s4)', values: rows.map(r => r.thr) }], xs, fmtX: fx }), () => dataTable([{ key: 'time', label: t('time') }, { key: 'a', label: '429', num: true }, { key: 'b', label: t('fallbacks'), num: true }, { key: 'c', label: t('throttled'), num: true }], rows.map(r => ({ time: hhmm(r.t), a: r.c429, b: r.fb, c: r.thr })))),
     chartCard(t('budget_hist'), t('budget_hist_sub'), (b, tip) => { const rr = rows.filter(r => r.free != null); lineChart(b, tip, { series: [{ name: t('free'), color: 'var(--s1)', values: rr.map(r => r.free) }, { name: t('budget'), color: 'var(--s3)', values: rr.map(r => r.budget) }], xs: rr.map(r => r.t), fmtX: fx }); }, () => dataTable([{ key: 'time', label: t('time') }, { key: 'f', label: t('free'), num: true }, { key: 'b', label: t('budget'), num: true }, { key: 'w', label: t('waiting'), num: true }], rows.filter(r => r.free != null).map(r => ({ time: hhmm(r.t), f: r.free, b: r.budget, w: r.waiting })))),
     chartCard(t('status_classes'), req.total != null ? fmtN(req.total) + ' ' + t('requests') : '', (b, tip) => stackedBar(b, tip, { segments: [{ name: '2xx', value: by['2xx'] || 0, color: 'var(--s1)' }, { name: '4xx', value: by['4xx'] || 0, color: 'var(--s4)' }, { name: '429', value: by['429'] || 0, color: 'var(--s2)' }, { name: '5xx', value: by['5xx'] || 0, color: 'var(--s5)' }] }), () => dataTable([{ key: 'k', label: t('state') }, { key: 'v', label: t('count'), num: true }], ['2xx', '4xx', '429', '5xx'].map(k => ({ k, v: by[k] || 0 })))),
+    chartCard(t('by_provider'), t('by_provider_sub'), (b, tip) => hbarChart(b, tip, { rows: perProv }), () => dataTable([{ key: 'label', label: t('col_provider') }, { key: 'value', label: t('filter_answering'), num: true }, { key: 'tools', label: t('filter_tools'), num: true }, { key: 'catalog', label: t('catalog'), num: true }], perProv)),
     chartCard(t('paths'), '', (b, tip) => hbarChart(b, tip, { rows: (STATS && STATS.paths || []).slice(0, 8).map(p => ({ label: p.path, value: p.count })) }), () => dataTable([{ key: 'path', label: t('paths') }, { key: 'count', label: t('count'), num: true }], STATS && STATS.paths || [])),
-    chartCard(t('model_latency'), '', (b, tip) => hbarChart(b, tip, { rows: (S.probes || []).filter(p => p.result === 'ok' && p.ms != null).sort((a, c) => a.ms - c.ms).slice(0, 14).map(p => ({ label: p.id, value: p.ms, detail: (p.tools === 'ok' ? t('tools_ok') : p.tools === 'no' ? t('notools') : '') + ' · ' + ago(p.probed) })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ms', label: 'ms', num: true }, { key: 'tools', label: t('tools') }], (S.probes || []).filter(p => p.result === 'ok'))),
+    chartCard(t('model_latency'), '', (b, tip) => hbarChart(b, tip, { rows: (S.probes || []).filter(p => p.result === 'ok' && p.ms != null).sort((a, c) => a.ms - c.ms).slice(0, 14).map(p => ({ label: p.id, value: p.ms, color: PCOL[provOf(p.id)], detail: (p.tools === 'ok' ? t('tools_ok') : p.tools === 'no' ? t('notools') : '') + ' · ' + ago(p.probed) })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ms', label: 'ms', num: true }, { key: 'tools', label: t('tools') }], (S.probes || []).filter(p => p.result === 'ok'))),
     chartCard(t('bench_ttft'), '', (b, tip) => hbarChart(b, tip, { rows: (S.bench || []).filter(x => x.ttft_ms != null).sort((a, c) => a.ttft_ms - c.ttft_ms).map(x => ({ label: x.id, value: x.ttft_ms })), fmt: v => fmtN(v) + ' ms' }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'ttft_ms', label: 'ms', num: true }], S.bench || [])),
     chartCard(t('bench_toks'), '', (b, tip) => hbarChart(b, tip, { rows: (S.bench || []).filter(x => x.tok_s != null).sort((a, c) => c.tok_s - a.tok_s).map(x => ({ label: x.id, value: x.tok_s })), fmt: v => fmtN(v) }), () => dataTable([{ key: 'id', label: t('model') }, { key: 'tok_s', label: t('toks'), num: true }], S.bench || []))));
 }
@@ -3488,18 +3621,18 @@ function renderStats(host) {
 function renderSettings(host) {
   clear(host);
   const set = S.settings || {}; const env = new Set(S.env_overrides || []); const inputs = {};
-  const sf = (key, label, help, kind) => { const ov = env.has(key); let input; if (kind === 'select') { input = h('select', { disabled: ov }, kind === 'select' && key === 'NIMCTL_CHAT_VIA_PROXY' ? [h('option', { value: '', selected: !set[key] }, t('s_default', t('s_yes'))), h('option', { value: '1', selected: set[key] === '1' }, t('s_yes')), h('option', { value: '0', selected: set[key] === '0' }, t('s_no'))] : [h('option', { value: '', selected: !set[key] }, t('s_lang_auto')), h('option', { value: 'de', selected: set[key] === 'de' }, 'Deutsch'), h('option', { value: 'en', selected: set[key] === 'en' }, 'English')]); } else input = h('input', { type: 'text', value: set[key] || '', placeholder: DEFAULTS[key] || '', disabled: ov }); inputs[key] = input; return field(label, input, (ov ? t('s_env') : (DEFAULTS[key] ? t('s_default', DEFAULTS[key]) : '')) + (help ? ' · ' + help : '')); };
+  const sf = (key, label, help, kind) => { const ov = env.has(key); let input; if (kind === 'select') { input = h('select', { disabled: ov }, key === 'NIMCTL_CHAT_VIA_PROXY' ? [h('option', { value: '', selected: !set[key] }, t('s_default', t('s_yes'))), h('option', { value: '1', selected: set[key] === '1' }, t('s_yes')), h('option', { value: '0', selected: set[key] === '0' }, t('s_no'))] : [h('option', { value: '', selected: !set[key] }, t('s_lang_auto')), h('option', { value: 'de', selected: set[key] === 'de' }, 'Deutsch'), h('option', { value: 'en', selected: set[key] === 'en' }, 'English')]); } else input = h('input', { type: 'text', value: set[key] || '', placeholder: DEFAULTS[key] || '', disabled: ov }); inputs[key] = input; return field(label, input, [ov ? t('s_env') : (DEFAULTS[key] ? t('s_default', DEFAULTS[key]) : ''), help || ''].filter(Boolean).join(' · ')); };
   const group = (title, kids) => h('div', { class: 'card' }, h('h2', null, title), h('div', { class: 'stack' }, kids));
   const saveBtn = btn(t('save'), async () => { const v = {}; Object.entries(inputs).forEach(([k, i]) => { if (!i.disabled) v[k] = i.value; }); try { await api('/api/settings', { settings: v }); settingsSaved = true; toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary');
-  // key
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_CHAIN_PER_PROVIDER', t('s_perprov'), t('s_perprov_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_chains'), [sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_CHAIN_PER_PROVIDER', t('s_perprov'), t('s_perprov_h')), sf('NIMCTL_SCAN_RPM', t('s_scan_rpm'), t('s_scan_rpm_h'))]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
     group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n')), sf('NIMCTL_SEARCH_CONCURRENT', t('s_search_c'))]),
-    group(t('s_ui'), [sf('NIMCTL_LANG', t('s_lang'), '', 'select'), field(t('s_theme'), h('select', { onchange: (e) => setTheme(e.target.value) }, [['', 'theme_auto'], ['light', 'theme_light'], ['dark', 'theme_dark']].map(([v, k]) => h('option', { value: v, selected: (localStorage.getItem('theme') || '') === v }, t(k)))))])));
+    group(t('s_ui'), [sf('NIMCTL_LANG', t('s_lang'), '', 'select'), field(t('s_theme'), h('select', { onchange: (e) => setTheme(e.target.value) }, [['', 'theme_auto'], ['light', 'theme_light'], ['dark', 'theme_dark']].map(([v, k]) => h('option', { value: v, selected: storedTheme() === v }, t(k)))))])));
   host.append(h('div', { class: 'row', style: 'margin:12px 0' }, saveBtn));
   host.append(h('div', { class: 'grid wide' },
     group(t('s_maint'), [h('div', { class: 'row' }, btn(t('update_check'), () => run(['update', '--check']), 'small'), btn(t('update'), () => run(['update']), 'small'), btn(t('install_all'), () => run(['install', 'all']), 'small'), btn(t('alias'), () => run(['install', 'alias']), 'small'), btn(t('completion'), () => run(['install', 'completion']), 'small')), h('div', { class: 'small muted' }, t('extra_models') + ': ' + ((S.config.extra_models || []).join(', ') || '–'))]),
@@ -3507,7 +3640,8 @@ function renderSettings(host) {
 }
 
 // ── theme, nav, init ──────────────────────────────────────────────────────────────────────────────────────
-function setTheme(v) { if (v) { document.documentElement.setAttribute('data-theme', v); localStorage.setItem('theme', v); } else { document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('theme'); } if (page === 'stats' || page === 'overview') renderPage(true); }
+function storedTheme() { try { return localStorage.getItem('theme') || ''; } catch (e) { return ''; } }
+function setTheme(v) { try { if (v) { document.documentElement.setAttribute('data-theme', v); localStorage.setItem('theme', v); } else { document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('theme'); } } catch (e) { /* storage blocked */ } if (page === 'stats' || page === 'overview') renderPage(true); }
 (function init() {
   try { const th = localStorage.getItem('theme'); if (th) document.documentElement.setAttribute('data-theme', th); } catch (e) { /* storage blocked */ }
   $('theme').addEventListener('click', () => { const cur = document.documentElement.getAttribute('data-theme'); setTheme(cur === 'dark' ? 'light' : 'dark'); });
@@ -3580,6 +3714,7 @@ RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same sh
 RE_CAND_KEY = re.compile(r"^[a-z]+(\.[a-z]+)?$")
 RE_CAND_VAL = re.compile(r"^[A-Za-z0-9._*+?()|^$\[\]\\ :/-]*$")
 RE_ARG = re.compile(r"^[^\x00-\x08\x0a-\x1f\x7f]{0,2000}$")   # printable, no control characters
+RE_MODEL = re.compile(r"^[A-Za-z0-9._/:-]{1,200}$")                # a model id, namespaced for a pool provider (the shape nimctl accepts)
 RE_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")                    # LiteLLM colours its startup banner
 
 with open(os.path.join(WEB, "token")) as _f:
@@ -3744,6 +3879,16 @@ def candidates_file():
     return out
 
 
+def discovered_file():
+    """~/.nimctl/discovered: the models `nimctl scan --use` (or the page) appended to the rankings, per slot"""
+    out = {}
+    for line in read_text(os.path.join(HOME, "discovered")).splitlines():
+        m = re.match(r"^([a-z]+):\s*(.*)$", line)
+        if m and m.group(1) in SLOTS:
+            out[m.group(1)] = m.group(2).split()
+    return out
+
+
 def settings_file():
     return {k: v for k, v in read_kv(os.path.join(HOME, "settings")).items() if k in SETTINGS_KEYS}
 
@@ -3771,6 +3916,7 @@ def build_state():
     st["catalog"] = read_text(os.path.join(HOME, "models.cache")).split()
     st["pool_catalogs"] = {p: read_text(os.path.join(HOME, f"models.{p}.cache")).split() for p in PROVIDERS}
     st["candidates"] = candidates_file()
+    st["discovered"] = discovered_file()
     st["bench"] = bench_last()
     st["workspace"] = read_text(os.path.join(HOME, "ide-workspace")).strip()
     st["state_file"] = read_kv(os.path.join(HOME, "state"))
@@ -3925,6 +4071,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(200, HISTORY)
             if u.path == "/api/candidates":
                 return self.send_json(200, cached("cands", 30, lambda: nimctl_json(["web", "candidates"], 30)))
+            if u.path == "/api/discover":
+                return self.send_json(200, cached("discover", 30, lambda: nimctl_json(["web", "discover"], 90)))
             if u.path == "/api/log":
                 name = (q.get("name") or ["proxy"])[0]
                 if name not in LOGS:
@@ -3957,6 +4105,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.save_settings(body)
             if u.path == "/api/candidates":
                 return self.save_candidates(body)
+            if u.path == "/api/discovered":
+                return self.save_discovered(body)
             if u.path == "/api/workspace":
                 return self.set_workspace(body)
         except Exception as e:
@@ -4052,6 +4202,23 @@ class Handler(BaseHTTPRequestHandler):
         write_atomic(os.path.join(HOME, "candidates"), "".join(f"{k}: {v}\n" for k, v in current.items()))
         invalidate()
         return self.send_json(200, {"candidates": current})
+
+    def save_discovered(self, body):
+        """{"discovered": {"code": ["id", …]}} – replaces those slots' lines in ~/.nimctl/discovered, keeps the others; an empty list removes the line"""
+        values = body.get("discovered")
+        if not isinstance(values, dict):
+            return self.send_json(400, {"error": "discovered"})
+        current = discovered_file()
+        for slot, ids in values.items():
+            if slot not in SLOTS or not isinstance(ids, list) or len(ids) > 50 or not all(isinstance(i, str) and RE_MODEL.match(i) for i in ids):
+                return self.send_json(400, {"error": f"bad discovered {slot}"})
+            if ids:
+                current[slot] = list(dict.fromkeys(ids))
+            else:
+                current.pop(slot, None)
+        write_atomic(os.path.join(HOME, "discovered"), "".join(f"{s}: {' '.join(current[s])}\n" for s in SLOTS if current.get(s)))
+        invalidate()
+        return self.send_json(200, {"discovered": current})
 
     def set_workspace(self, body):
         d = body.get("dir")

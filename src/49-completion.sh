@@ -17,7 +17,7 @@ _nimctl() {
     test|bench) COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     code) [[ "\$prev" == --model || "\$prev" == -m ]] && COMPREPLY=(\$(compgen -W "\$slots \$models" -- "\$cur"));;
     logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide web" -- "\$cur"));;
-    web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates" -- "\$cur"));;
+    web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates discover" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     scan) COMPREPLY=(\$(compgen -W "all nvidia groq gemini cerebras openrouter mistral --sizes --use --clear" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
