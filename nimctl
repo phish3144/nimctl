@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.9.0"
+VERSION="1.10.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -17,7 +17,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_SEARCH_CONCURRENT NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAIN_PER_PROVIDER NIMCTL_SCAN_RPM NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_SEARCH_CONCURRENT NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -29,7 +29,7 @@ load_settings() {
 load_settings
 CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"; SIZES="$NIM_DIR/sizes"
 LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"; SEARX_DIR="$NIM_DIR/searxng"; WEB_DIR="$NIM_DIR/web"
-MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; LOCK_FILE="$NIM_DIR/.lock"
+MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; DISCOVERED_FILE="$NIM_DIR/discovered"; LOCK_FILE="$NIM_DIR/.lock"
 API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
 PROXY_PORT="${NIMCTL_PROXY_PORT:-4000}"; CHAT_PORT="${NIMCTL_CHAT_PORT:-3000}"; IDE_PORT="${NIMCTL_IDE_PORT:-8080}"; SEARCH_PORT="${NIMCTL_SEARCH_PORT:-8888}"; WEB_PORT="${NIMCTL_WEB_PORT:-4040}"
 BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here only (LiteLLM would default to 0.0.0.0)
@@ -63,7 +63,8 @@ CAND_FAST=(deepseek-v4-flash cerebras:llama3.1-8b 'gemini:flash-lite$' nemotron-
 CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:kimi-k2 groq:llama-3.3-70b cerebras:llama-3.3-70b nemotron-3-super deepseek-v4-flash groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
 CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 mistral:magistral-medium nemotron-3-super)
-CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets
+CHAIN_LEN="${NIMCTL_CHAIN_LEN:-8}"                    # ranks per slot the proxy gets
+CHAIN_PER_PROVIDER="${NIMCTL_CHAIN_PER_PROVIDER:-2}"  # ranks a provider gets before the others had their turn – every provider with a key takes part, then the ranking fills up
 SLOTS=(code fast chat review)
 TOOL_SLOTS=" code review "                            # slots whose model must support function calling
 # Request size (tokens) a rank must take: Claude Code sends its system prompt and tool schemas with every request (20k+
@@ -250,11 +251,12 @@ key_days_left() { # → days until the key is ~180 days old, or "" when unknown
   echo $(( 180 - ( $(date +%s) - KEY_SET_AT ) / 86400 ))
 }
 key_masked() { local k="$NVIDIA_API_KEY"; (( ${#k} > 10 )) && printf 'nvapi-…%s' "${k: -4}" || printf '%s' "$k"; }
-candidates() { # candidates <slot> → patterns, from env NIMCTL_CAND_<SLOT>, ~/.nimctl/candidates ("code: a b c") or defaults
+candidates() { # candidates <slot> → patterns: env NIMCTL_CAND_<SLOT>, ~/.nimctl/candidates ("code: a b c") or the defaults; then the ids `nimctl scan --use` added (~/.nimctl/discovered)
   local slot="$1" ev="NIMCTL_CAND_${1^^}" arr="CAND_${1^^}[@]" line
-  if [[ -n "${!ev:-}" ]]; then printf '%s\n' ${!ev}; return; fi
-  if [[ -f "$CAND_FILE" ]]; then line=$(grep -E "^${slot}:" "$CAND_FILE" 2>/dev/null | head -n1); [[ -n "$line" ]] && { printf '%s\n' ${line#*:}; return; }; fi
-  printf '%s\n' "${!arr}"
+  if [[ -n "${!ev:-}" ]]; then printf '%s\n' ${!ev}
+  elif [[ -f "$CAND_FILE" ]] && line=$(grep -E "^${slot}:" "$CAND_FILE" 2>/dev/null | head -n1) && [[ -n "$line" ]]; then printf '%s\n' ${line#*:}
+  else printf '%s\n' "${!arr}"; fi
+  [[ -f "$DISCOVERED_FILE" ]] && { line=$(grep -E "^${slot}:" "$DISCOVERED_FILE" 2>/dev/null | head -n1); [[ -n "$line" ]] && printf '%s\n' ${line#*:}; }; return 0
 }
 # Project profile: a .nimctl file in the current directory (KEY=VALUE) for `nimctl code`.
 PROFILE_MODEL=""; PROFILE_THINK=""; PROFILE_MAXOUT=""
@@ -404,7 +406,7 @@ probe_line() { # probe_line <id> → one table row from the stored result: answe
 probe_many() { # probe_many <id…> – parallel, stores results, prints rows; skips ids already OK in this run
   local tmp="$TMP_ROOT/probe.$$.$RANDOM"; mkdir -p "$tmp"; local i=0 id todo=() res
   for id in "$@"; do [[ -n "${RUN_OK[$id]:-}" ]] || todo+=("$id"); done
-  ((${#todo[@]})) && info "$(tf probing "${#todo[@]}" "$PROBE_TIMEOUT")"
+  ((${#todo[@]})) && [[ -z "${PROBE_QUIET:-}" ]] && info "$(tf probing "${#todo[@]}" "$PROBE_TIMEOUT")"   # PROBE_QUIET: no headline, no rows (scan prints its own)
   for id in "${todo[@]}"; do ( probe_one "$id" >"$tmp/$i" ) & ((i++)); done; wait
   i=0
   for id in "$@"; do
@@ -413,14 +415,14 @@ probe_many() { # probe_many <id…> – parallel, stores results, prints rows; s
       if [[ "$res" == ok* ]]; then RUN_OK[$id]="${res#ok }"; probe_set "$id" ok "${res#ok }"
       elif (( INTERRUPTED )); then probe_set "$id" "$(t aborted)"; else probe_set "$id" "${res:-$(t noanswer)}"; fi
     fi
-    probe_line "$id"
+    [[ -n "${PROBE_QUIET:-}" ]] || probe_line "$id"
   done
   rm -rf "$tmp"
 }
 probe_tools_many() { # probe_tools_many <id…> – tool-calling check for models that already answered
   local tmp="$TMP_ROOT/tools.$$.$RANDOM"; mkdir -p "$tmp"; local i=0 id todo=() res
   for id in "$@"; do [[ -n "${RUN_TOOLS[$id]:-}" ]] || todo+=("$id"); done
-  ((${#todo[@]})) && info "$(tf probing_tools "${#todo[@]}")"
+  ((${#todo[@]})) && [[ -z "${PROBE_QUIET:-}" ]] && info "$(tf probing_tools "${#todo[@]}")"
   for id in "${todo[@]}"; do ( probe_one "$id" "$PROBE_TIMEOUT" tools >"$tmp/$i" ) & ((i++)); done; wait
   i=0; local again=()
   for id in "${todo[@]}"; do res=$(cat "$tmp/$i" 2>/dev/null); ((i++))
@@ -433,7 +435,7 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
       notools*) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-${res#notools }}" no;;
       *) RUN_TOOLS[$id]=err; TOOLS_ERR[$id]="${res:-$(t noanswer)}"; probe_set "$id" ok "${RUN_OK[$id]:-0}" "";; esac
   done
-  for id in "$@"; do probe_line "$id"; done
+  [[ -n "${PROBE_QUIET:-}" ]] || for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
 }
 pat_provider() { local p="${1%%:*}"; [[ "$1" == *:* && " ${POOL_PROVIDERS[*]} " == *" $p "* ]] && printf '%s' "$p"; return 0; }   # provider of a candidate pattern, "" = NVIDIA
@@ -479,8 +481,8 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     # models that need function calling: check the responders of this slot once
     if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then local responders=(); for m in "${cands[@]}"; do [[ -n "${RUN_OK[$m]:-}" ]] && responders+=("$m"); done
       ((${#responders[@]})) && probe_tools_many "${responders[@]}"; fi
-    # the chain: patterns in ranking order, a pattern's responders by latency, until CHAIN_LEN ranks
-    local chain=() rows p re notools=" " tokens="${SLOT_TOKENS[$slot]:-0}"
+    # the ranking: patterns in order, a pattern's responders by latency (tool calling where the slot needs it)
+    local rows p re notools=" " tokens="${SLOT_TOKENS[$slot]:-0}" ordered=()
     while read -r pat; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat"); rows=()
       for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$p" ]] && echo "$m" | grep -qiE -- "$re" || continue
         probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
@@ -489,13 +491,20 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
         rows+=("$PROBE_MS $m")
       done
       ((${#rows[@]})) || continue
-      # a rank must take a request of the slot's size: probed once per model and size, in ranking order, until the chain is full
-      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] || continue
-        if (( tokens > 0 )) && ! size_ok "$m" "$tokens"; then info "$(tf auto_toolarge "$m" "$(size_k "$tokens")" "$slot")"; continue; fi
-        chain+=("$m"); (( ${#chain[@]} >= CHAIN_LEN )) && break
-      done < <(printf '%s\n' "${rows[@]}" | sort -n)
-      (( ${#chain[@]} >= CHAIN_LEN )) && break
+      while read -r _ m; do [[ -n "$m" && " ${ordered[*]} " != *" $m "* ]] && ordered+=("$m"); done < <(printf '%s\n' "${rows[@]}" | sort -n)
     done < <(candidates "$slot")
+    # the chain: first pass takes at most CHAIN_PER_PROVIDER ranks per provider (every provider with a key gets its turn), the
+    # second pass fills up with the ranks skipped for that, in ranking order; a rank must take a request of the slot's size,
+    # probed once per model and size, until the chain has CHAIN_LEN ranks
+    local chain=() skipped=() pass; declare -A percount=()
+    for pass in 1 2; do (( pass == 2 )) && ordered=("${skipped[@]}")
+      for m in "${ordered[@]}"; do (( ${#chain[@]} >= CHAIN_LEN )) && break 2
+        p=$(pool_of "$m"); p="${p:-nim}"
+        if (( pass == 1 && ${percount[$p]:-0} >= CHAIN_PER_PROVIDER )); then skipped+=("$m"); continue; fi
+        if (( tokens > 0 )) && ! size_ok "$m" "$tokens"; then info "$(tf auto_toolarge "$m" "$(size_k "$tokens")" "$slot")"; continue; fi
+        chain+=("$m"); percount[$p]=$(( ${percount[$p]:-0} + 1 ))
+      done
+    done
     if ((${#chain[@]})); then
       chain=("${chain[@]:0:CHAIN_LEN}"); set_chain "$slot" "${chain[*]}"; probe_get "${chain[0]}"
       ok "$(tf auto_pick "$slot" "${chain[0]}" "$PROBE_MS")"; (( ${#chain[@]} > 1 )) && info "$(tf auto_chain "${chain[*]:1}")"
@@ -563,6 +572,118 @@ EOF
   jq -n --argjson a "$cj" --argjson nim "[${nimg%,}]" '$a + {nim: $nim}' >"$NIM_DIR/chains.json.tmp" && mv "$NIM_DIR/chains.json.tmp" "$NIM_DIR/chains.json"
 }
 yaml_has_model() { grep -qE "^  - model_name: $(printf '%s' "$1" | sed 's/[][\.*^$/]/\\&/g')\$" "$LITELLM_YAML" 2>/dev/null; }
+
+# ══════ 21-scan.sh ══════
+# ── Scan: every model of every provider with a key ────────────────────────────────────────────────────────────────
+# `nimctl scan [provider…] [--sizes] [--use|--clear]` probes the whole catalogs – NVIDIA and the pool – at the pace each
+# free tier tolerates (SCAN_RPM, override NIMCTL_SCAN_RPM), then tool calling for the responders and, with --sizes, the
+# request sizes of the slots. Results land in ~/.nimctl/probes and sizes like every probe: the dashboard, `find`, the web
+# UI catalog and the next `nimctl auto` use them. Models no ranking names but that qualify for a slot are listed; --use
+# appends them to the slot's ranking (~/.nimctl/discovered, read by candidates()) and rebuilds the chains, --clear takes
+# them out again. OpenRouter is scanned only when named: its free tier allows 50 requests a day.
+T_de+=(
+  [h_scan]="alle Modelle aller Anbieter mit Key prüfen und passende in die Ranglisten aufnehmen: nimctl scan [anbieter…|all] [--sizes] [--use|--clear]"
+  [scan_title]="Scan – alle Modelle" [scan_provider]="%s: %d Modelle im Katalog, %d davon Chat-Modelle" [scan_pace]="%d Anfragen/min in Blöcken von %d – etwa %s"
+  [scan_skip_or]="OpenRouter wird nur geprüft, wenn es genannt wird (nimctl scan openrouter): 50 Anfragen am Tag im Free-Tier"
+  [scan_nokey]="%s: kein Key – übersprungen" [scan_tools]="Tool-Calling bei %d Modellen …" [scan_sizes]="Anfragegrößen bei %d Modellen …"
+  [scan_summary]="Ergebnis" [scan_row]="%-16s %3d von %3d antworten, %3d mit Tool-Calls" [scan_none]="nichts zu prüfen – Key setzen: nimctl key, Anbieter: nimctl pool add"
+  [scan_found]="Zusätzlich geeignet für %s (in keiner Rangliste): %s" [scan_nothing]="keine weiteren geeigneten Modelle außerhalb der Ranglisten"
+  [scan_use_q]="Diese Modelle ans Ende der Ranglisten hängen und die Ketten neu bauen?" [scan_used]="übernommen – die Ketten werden neu gebaut" [scan_hint_use]="übernehmen: nimctl scan %s --use"
+  [scan_cleared]="zusätzliche Modelle aus den Ranglisten entfernt" [scan_busy]="der Scan schickt bis zu %d Anfragen/min an NVIDIA – laufende Sitzungen sind solange langsamer"
+  [scan_secs]="%d s" [scan_mins]="%d min"
+)
+T_en+=(
+  [h_scan]="probe every model of every provider with a key and take suitable ones into the rankings: nimctl scan [provider…|all] [--sizes] [--use|--clear]"
+  [scan_title]="Scan – all models" [scan_provider]="%s: %d models in the catalog, %d of them chat models" [scan_pace]="%d requests/min in blocks of %d – about %s"
+  [scan_skip_or]="OpenRouter is scanned only when named (nimctl scan openrouter): its free tier allows 50 requests a day"
+  [scan_nokey]="%s: no key – skipped" [scan_tools]="tool calling on %d models …" [scan_sizes]="request sizes on %d models …"
+  [scan_summary]="Result" [scan_row]="%-16s %3d of %3d answer, %3d make tool calls" [scan_none]="nothing to probe – set a key: nimctl key, providers: nimctl pool add"
+  [scan_found]="Also suitable for %s (in no ranking): %s" [scan_nothing]="no further suitable models outside the rankings"
+  [scan_use_q]="Append these models to the rankings and rebuild the chains?" [scan_used]="taken over – the chains are rebuilt" [scan_hint_use]="take them over: nimctl scan %s --use"
+  [scan_cleared]="additional models removed from the rankings" [scan_busy]="the scan sends up to %d requests/min to NVIDIA – running sessions are slower meanwhile"
+  [scan_secs]="%d s" [scan_mins]="%d min"
+)
+# catalog entries that are no chat models (embeddings, rerankers, guards, speech, images, …): not worth a request
+RE_NOT_CHAT='embed|rerank|reward|guard|safety|moderation|ocr|parse|whisper|transcri|tts|speech|audio|voxtral|image|imagen|veo|video|detector|diffusion|sdxl|flux|nvclip|deplot|translate|aqa|live-|robotics|nemoretriever|riva|synthetic|calibration'
+# a size in the id below 30B: not a candidate for the tool-calling slots (code, review) when discovered by a scan
+RE_SMALL='(^|[^0-9a-z.])([0-9]|[12][0-9])(\.[0-9]+)?b([^a-z0-9]|$)'
+declare -A SCAN_RPM=([nim]=30 [groq]=25 [gemini]=8 [cerebras]=25 [openrouter]=15 [mistral]=40)   # what a free tier tolerates while a session may be running
+scan_rpm() { printf '%s' "${NIMCTL_SCAN_RPM:-${SCAN_RPM[$1]:-20}}"; }
+scan_label() { if [[ "$1" == nim ]]; then printf 'NVIDIA'; else printf '%s' "${POOL_LABEL[$1]}"; fi; }
+scan_eta() { if (( $1 >= 120 )); then tf scan_mins $(( $1 / 60 )); else tf scan_secs "$1"; fi; }
+scan_ids() { # scan_ids <nim|provider> → the chat models of the catalog, namespaced for a provider; OpenRouter: :free only
+  local p="$1" ids; if [[ "$p" == nim ]]; then ids=$(models_cached) || return 1; else ids=$(pool_catalog "$p" | sed "s/^/$p:/"); fi
+  [[ "$p" == openrouter ]] && ids=$(grep ':free$' <<<"$ids")
+  grep -viE -- "$RE_NOT_CHAT" <<<"$ids"; return 0
+}
+scan_batches() { # scan_batches <probe_many|probe_tools_many> <rpm> <id…> – in blocks the pace allows, ten seconds apart
+  local fn="$1" rpm="$2"; shift 2; local per=$(( rpm / 6 )) i=0 n=$#; (( per < 1 )) && per=1
+  while (( i < n )); do (( i > 0 )) && sleep 10; (( INTERRUPTED )) && return 1; PROBE_QUIET=1 "$fn" "${@:$(( i + 1 )):$per}"; i=$(( i + per )); done; return 0
+}
+SCAN_ROWS=()
+scan_provider() { # scan_provider <nim|provider> <sizes 0|1> – probes the catalog, tool calling for the responders, sizes when asked; prints the rows
+  local p="$1" sizes="$2" ids=() resp=() m all n rpm per ok=0 tools=0; rpm=$(scan_rpm "$p")
+  if [[ "$p" != nim ]] && ! pool_configured "$p"; then info "$(tf scan_nokey "$(scan_label "$p")")"; return 0; fi
+  if [[ "$p" == nim ]]; then all=$(models_cached | wc -l); else all=$(pool_catalog "$p" | wc -l); fi
+  mapfile -t ids < <(scan_ids "$p"); n=${#ids[@]}
+  printf "\n  ${B}%s${R}\n" "$(tf scan_provider "$(scan_label "$p")" "$all" "$n")"; (( n )) || return 0
+  per=$(( rpm / 6 )); (( per < 1 )) && per=1; info "$(tf scan_pace "$rpm" "$per" "$(scan_eta $(( (n + per - 1) / per * 10 )))")"
+  scan_batches probe_many "$rpm" "${ids[@]}" || return 1
+  for m in "${ids[@]}"; do probe_get "$m"; [[ "$PROBE_RES" == ok ]] && resp+=("$m"); done; ok=${#resp[@]}
+  if (( ok )); then info "$(tf scan_tools "$ok")"; scan_batches probe_tools_many "$rpm" "${resp[@]}" || return 1; fi
+  if (( sizes && ok )); then info "$(tf scan_sizes "$ok")"   # tool-capable models at the code size, the others at the chat size, one at a time
+    for m in "${resp[@]}"; do (( INTERRUPTED )) && return 1; probe_get "$m"
+      if [[ "$PROBE_TOOLS" == ok ]]; then size_ok "$m" "${SLOT_TOKENS[code]}" || true; else size_ok "$m" "${SLOT_TOKENS[chat]}" || true; fi; sleep $(( 60 / rpm + 1 )); done
+  fi
+  for m in "${ids[@]}"; do probe_get "$m"; [[ "$PROBE_RES" == ok && "$PROBE_TOOLS" == ok ]] && ((tools++)); [[ "$PROBE_RES" == ok ]] && probe_line "$m"; done   # responders first …
+  for m in "${ids[@]}"; do probe_get "$m"; [[ "$PROBE_RES" == ok ]] || probe_line "$m"; done                                                      # … then the rest
+  SCAN_ROWS+=("$(tf scan_row "$(scan_label "$p")" "$ok" "$n" "$tools")")
+}
+scan_use() { # scan_use <slot> <id…> – append to the slot's line in ~/.nimctl/discovered
+  local slot="$1" cur="" m; shift; [[ -f "$DISCOVERED_FILE" ]] && cur=$(grep -E "^${slot}:" "$DISCOVERED_FILE" | head -n1); cur="${cur#*:}"
+  for m in "$@"; do [[ " $cur " == *" $m "* ]] || cur+=" $m"; done
+  { [[ -f "$DISCOVERED_FILE" ]] && grep -vE "^${slot}:" "$DISCOVERED_FILE"; printf '%s:%s\n' "$slot" "${cur# }"; } >"$DISCOVERED_FILE.tmp" && mv "$DISCOVERED_FILE.tmp" "$DISCOVERED_FILE"
+}
+scan_discover() { # scan_discover <use 0|1> <nim|provider…> – responders of the scanned providers that qualify for a slot but sit in no ranking
+  local use="$1"; shift; local scanned=" $* " slot m res tools p listed any=0 found=() line; [[ -s "$PROBES" ]] || return 0
+  printf '\n'
+  for slot in "${SLOTS[@]}"; do listed=" $(slot_candidates "$slot" | tr '\n' ' ') "; found=()
+    while IFS=$'\t' read -r m res _ _ tools; do
+      [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
+      [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue
+      echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
+      if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi
+      found+=("$m")
+    done < <(sort -t$'\t' -k3,3n "$PROBES")
+    ((${#found[@]})) || continue; any=1; line="${found[*]}"; info "$(tf scan_found "$slot" "$line")"
+    (( use )) && scan_use "$slot" "${found[@]}"
+  done
+  if (( ! any )); then info "$(t scan_nothing)"; return 0; fi
+  if (( ! use )) && (( INTERACTIVE )) && ask "$(t scan_use_q)" n; then use=1
+    for slot in "${SLOTS[@]}"; do listed=" $(slot_candidates "$slot" | tr '\n' ' ') "; found=()
+      while IFS=$'\t' read -r m res _ _ tools; do [[ "$res" == ok && "$listed" != *" $m "* ]] || continue; p=$(pool_of "$m"); [[ "$scanned" == *" ${p:-nim} "* ]] || continue
+        [[ -z "$p" || -n "$(pool_key "$p")" ]] || continue; [[ "$p" == openrouter && "$m" != *:free ]] && continue; echo "${m#*:}" | grep -qiE -- "$RE_NOT_CHAT" && continue
+        if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then [[ "$tools" == ok ]] || continue; echo "${m#*:}" | grep -qiE -- "$RE_SMALL" && continue; fi; found+=("$m"); done < <(sort -t$'\t' -k3,3n "$PROBES")
+      ((${#found[@]})) && scan_use "$slot" "${found[@]}"; done
+  fi
+  if (( use )); then ok "$(t scan_used)"; auto_all || true; restart_if_running; else info "$(tf scan_hint_use "${*//nim/nvidia}")"; fi
+}
+cmd_scan() { # cmd_scan [provider…|all|nvidia] [--sizes] [--use] [--clear]
+  local sizes=0 use=0 provs=() a p
+  for a in "$@"; do case "$a" in
+    --sizes) sizes=1;; --use) use=1;;
+    --clear) rm -f "$DISCOVERED_FILE"; ok "$(t scan_cleared)"; auto_all || true; restart_if_running; return 0;;
+    all) provs=(nim); for p in $(pool_active); do provs+=("$p"); done;;
+    nvidia|nim) provs+=(nim);;
+    *) pool_valid "$a" || return 64; provs+=("$a");;
+  esac; done
+  if ((${#provs[@]} == 0)); then provs=(nim); for p in $(pool_active); do [[ "$p" == openrouter ]] && { info "$(t scan_skip_or)"; continue; }; provs+=("$p"); done; fi
+  sect "$(t scan_title)"; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t scan_none)"; return 1; }
+  [[ " ${provs[*]} " == *" nim "* ]] && { models_cached >/dev/null || return 1; info "$(tf scan_busy "$(scan_rpm nim)")"; }
+  SCAN_ROWS=(); for p in "${provs[@]}"; do scan_provider "$p" "$sizes" || { info "$(t aborted)"; break; }; done
+  printf "\n  ${B}%s${R}\n" "$(t scan_summary)"; for a in "${SCAN_ROWS[@]}"; do out "  $a"; done
+  scan_discover "$use" "${provs[@]}"
+}
 
 # ══════ 22-pool.sh ══════
 # ── Provider pool: other free APIs next to NVIDIA ─────────────────────────────────────────────────────────────
@@ -2068,6 +2189,7 @@ _nimctl() {
     logs) COMPREPLY=(\$(compgen -W "proxy chat watch ide web" -- "\$cur"));;
     web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
+    scan) COMPREPLY=(\$(compgen -W "all nvidia groq gemini cerebras openrouter mistral --sizes --use --clear" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
     install) COMPREPLY=(\$(compgen -W "all alias systemd nosystemd completion watch_timer" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;
@@ -2742,7 +2864,7 @@ T_en+=(
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )
-COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide search pool web env key doctor logs install update models version help)
+COMMANDS=(setup start stop restart status check auto scan pick find test proxy code chat ide search pool web env key doctor logs install update models version help)
 usage() {
   local c w=10 extra=()
   printf '%s\n\n' "$(t usage)"
@@ -3043,16 +3165,16 @@ en: {
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
   tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
 }};
-Object.assign(T.de, { s_cooldown_rl:'Pause nach 429 (s)', s_cooldown_rl_h:'erste Pause nach einem Rate-Limit – kürzer als nach Timeout/5xx, danach ebenfalls verdoppelt', s_search_c:'Parallele Seitenabrufe je Suche', size_hint:'Jeder Rang muss außerdem eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens) – Modelle, die sie ablehnen (✗ hinter der Größe, Grund im Tooltip), bleiben draußen; Groqs Free-Tier nimmt höchstens 6–12k Tokens je Anfrage.', s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
+Object.assign(T.de, { scan_all:'Alle Modelle scannen', scan_use:'Scannen und passende übernehmen', scan_hint:'Scan prüft jeden Chat-Eintrag aller Anbieter mit Key im Tempo ihres Free-Tiers (OpenRouter nur auf Nennung) und listet Modelle, die für einen Slot taugen, aber in keiner Rangliste stehen; „übernehmen“ hängt sie ans Ende der Ranglisten.', s_perprov:'Ränge je Anbieter zuerst', s_perprov_h:'so viele Ränge bekommt ein Anbieter, bevor die anderen dran sind – jeder Anbieter mit Key kommt in die Kette, danach füllt die Rangliste auf', s_cooldown_rl:'Pause nach 429 (s)', s_cooldown_rl_h:'erste Pause nach einem Rate-Limit – kürzer als nach Timeout/5xx, danach ebenfalls verdoppelt', s_search_c:'Parallele Seitenabrufe je Suche', size_hint:'Jeder Rang muss außerdem eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens) – Modelle, die sie ablehnen (✗ hinter der Größe, Grund im Tooltip), bleiben draußen; Groqs Free-Tier nimmt höchstens 6–12k Tokens je Anfrage.', s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
   pool_hint:'Anbieter mit Key nehmen an der Rangliste teil – ihre Modelle stehen dort, wo die Kandidatenliste sie einordnet, nicht automatisch hinter NVIDIA. Die Ketten werden nach jedem Hinzufügen neu gebaut.', no_ranks:'in keiner Kette', ranks:'Ränge',
   candidates_hint:'Die Rangliste je Slot: reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette. Leer = Standard.' });
-Object.assign(T.en, { s_cooldown_rl:'Pause after 429 (s)', s_cooldown_rl_h:'first pause after a rate limit – shorter than after a timeout/5xx, doubling afterwards as well', s_search_c:'Parallel page fetches per search', size_hint:'Every rank must also take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens) – models that reject it (✗ after the size, reason in the tooltip) stay out; Groq\'s free tier takes at most 6–12k tokens per request.', s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
+Object.assign(T.en, { scan_all:'Scan all models', scan_use:'Scan and take over suitable ones', scan_hint:'Scan probes every chat entry of every provider with a key at the pace of its free tier (OpenRouter only when named) and lists models that qualify for a slot but sit in no ranking; “take over” appends them to the rankings.', s_perprov:'Ranks per provider first', s_perprov_h:'how many ranks a provider gets before the others have their turn – every provider with a key enters the chain, then the ranking fills up', s_cooldown_rl:'Pause after 429 (s)', s_cooldown_rl_h:'first pause after a rate limit – shorter than after a timeout/5xx, doubling afterwards as well', s_search_c:'Parallel page fetches per search', size_hint:'Every rank must also take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens) – models that reject it (✗ after the size, reason in the tooltip) stay out; Groq\'s free tier takes at most 6–12k tokens per request.', s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
   pool_hint:'Providers with a key take part in the ranking – their models sit where the candidate list places them, not automatically behind NVIDIA. The chains are rebuilt after every addition.', no_ranks:'in no chain', ranks:'Ranks',
   candidates_hint:'The ranking per slot: regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain. Empty = default.' });
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
 const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
-const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
+const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'8', NIMCTL_CHAIN_PER_PROVIDER:'2', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -3293,7 +3415,7 @@ function renderModels(host) {
   const inputs = {}; const grid = h('div', { class: 'grid' });
   const addField = (key, label) => { const eff = CANDS && CANDS[key] || ''; const cur = S.candidates && S.candidates[key] || ''; inputs[key] = h('input', { type: 'text', value: cur, placeholder: eff }); grid.append(field(label, inputs[key], t('effective') + ': ' + eff)); };
   SLOTS.forEach(s => addField(s, s));
-  cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto']))));
+  cands.append(grid, h('div', { class: 'row', style: 'margin-top:10px' }, btn(t('save'), async () => { const c = {}; Object.entries(inputs).forEach(([k, i]) => { c[k] = i.value; }); try { await api('/api/candidates', { candidates: c }); toast(t('saved'), 'good'); await loadCandidates(); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary'), btn(t('auto_all'), () => run(['auto'])), btn(t('scan_all'), () => run(['scan'])), btn(t('scan_use'), () => run(['scan', '--use']))), h('div', { class: 'small muted', style: 'margin-top:8px' }, t('scan_hint')));
   host.append(cands);
   if (!CANDS) loadCandidates().then(() => { if (page === 'models') renderModels(host); });
 }
@@ -3302,7 +3424,7 @@ function renderPool(host) {
   clear(host);
   const pool = S.config && S.config.pool || {};
   host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('pool_hint')));
-  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('auto_all'), () => run(['pool', 'auto']))));
+  host.append(h('div', { class: 'row', style: 'margin-bottom:12px' }, btn(t('pool_test'), () => run(['pool', 'test'])), btn(t('auto_all'), () => run(['pool', 'auto'])), btn(t('scan_all'), () => run(['scan'])), btn(t('scan_use'), () => run(['scan', '--use']))));
   host.append(h('div', { class: 'grid wide' }, PROVIDERS.map(([p, label, url]) => { const c = pool[p] || {}; const keyIn = h('input', { type: 'password', placeholder: t('pool_key'), autocomplete: 'off' });
     const probeMap = {}; (S.probes || []).forEach(x => { probeMap[x.id] = x; });
     return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, label), c.key ? pill('good', c.key_masked) : pill('', t('pool_none'))), h('div', { class: 'small muted' }, t('note_' + p), ' · ', h('a', { href: url, target: '_blank', rel: 'noreferrer' }, t('pool_key_url'))),
@@ -3373,7 +3495,7 @@ function renderSettings(host) {
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_CHAIN_PER_PROVIDER', t('s_perprov'), t('s_perprov_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
     group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n')), sf('NIMCTL_SEARCH_CONCURRENT', t('s_search_c'))]),
@@ -3451,7 +3573,7 @@ HISTORY_MAX = 2880          # 24 h of samples
 SAMPLE_EVERY = 30.0
 STATE_TTL = 3.0
 # nimctl commands the page may run (first argument). Interactive ones (code, setup, _fg) and the shell completion are out.
-COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "pick", "find", "test", "proxy", "pool", "ide", "search",
+COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "scan", "pick", "find", "test", "proxy", "pool", "ide", "search",
             "key", "doctor", "install", "update", "watch", "bench", "stats", "chat", "models", "web"}
 RUN_ENV_KEYS = {"NIMCTL_CHAT_PASSWORD"}          # secrets a command may receive through its environment
 RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same shape nimctl accepts when it reads the file)

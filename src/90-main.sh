@@ -37,7 +37,7 @@ T_en+=(
   [h_install]="tools, PATH, autostart, completion" [h_update]="self-update from GitHub (--check only reports)" [h_models]="print the catalog (one id per line)"
   [h_version]="version" [h_help]="this help" [h_quit]="leave the dashboard (services keep running)"
 )
-COMMANDS=(setup start stop restart status check auto pick find test proxy code chat ide search pool web env key doctor logs install update models version help)
+COMMANDS=(setup start stop restart status check auto scan pick find test proxy code chat ide search pool web env key doctor logs install update models version help)
 usage() {
   local c w=10 extra=()
   printf '%s\n\n' "$(t usage)"

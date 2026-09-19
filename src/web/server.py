@@ -42,7 +42,7 @@ HISTORY_MAX = 2880          # 24 h of samples
 SAMPLE_EVERY = 30.0
 STATE_TTL = 3.0
 # nimctl commands the page may run (first argument). Interactive ones (code, setup, _fg) and the shell completion are out.
-COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "pick", "find", "test", "proxy", "pool", "ide", "search",
+COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "scan", "pick", "find", "test", "proxy", "pool", "ide", "search",
             "key", "doctor", "install", "update", "watch", "bench", "stats", "chat", "models", "web"}
 RUN_ENV_KEYS = {"NIMCTL_CHAT_PASSWORD"}          # secrets a command may receive through its environment
 RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same shape nimctl accepts when it reads the file)
