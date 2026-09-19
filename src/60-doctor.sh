@@ -51,7 +51,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     perm) chmod 700 "$NIM_DIR" && ok "chmod 700 $NIM_DIR" || remaining+=("$i");;
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
     model:*) auto_select "${i#model:}" || remaining+=("$i");;
-    pool:*) pool_auto_one "${i#pool:}" || remaining+=("$i");;
+    pool:*) auto_select "${SLOTS[@]}" || remaining+=("$i");;
     restart) restart_all || remaining+=("$i");;
     unit:*) systemctl --user reset-failed "nimctl-${i#unit:}" 2>/dev/null; systemctl --user restart "nimctl-${i#unit:}" 2>/dev/null || remaining+=("$i");;
     *) remaining+=("$i");;

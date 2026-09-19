@@ -11,9 +11,10 @@ KEY = "nvapi-testkey"
 MODELS = ["deepseek-ai/deepseek-v4-pro-0813", "deepseek-ai/deepseek-v4-flash-0731", "moonshotai/kimi-k3",
           "moonshotai/kimi-k2.6", "nvidia/nemotron-3-super-120b", "nvidia/nemotron-3.5-lightning-30b-a3b",
           "poolside/laguna-xs-2.1", "nvidia/nemotron-3-ultra-550b-a55b", "zai-org/glm-5.3",
-          "meta/llama-4-maverick-17b-128e-instruct", "mistralai/mistral-medium-3-notools"]
+          "meta/llama-4-maverick-17b-128e-instruct", "mistralai/mistral-medium-3-notools", "nvidia/nemotron-stall-headers"]
 DEAD = {"moonshotai/kimi-k2.6"}
-SLOW = {"moonshotai/kimi-k3": 40, "nvidia/nemotron-3-ultra-550b-a55b": 1.5}
+SLOW = {"moonshotai/kimi-k3": 40, "nvidia/nemotron-3-ultra-550b-a55b": 1.5, "nvidia/nemotron-stall-headers": 40}
+STALL_HEADERS = {"nvidia/nemotron-stall-headers"}   # streaming: headers first, then 40 s of silence before the first chunk
 COLD = {"deepseek-ai/deepseek-v4-pro-0813": 5}   # first call sleeps this long, later calls are fast
 OVERLOADED = {"poolside/laguna-xs-2.1"}
 NO_TOOLS = {"mistralai/mistral-medium-3-notools", "nvidia/nemotron-3.5-lightning-30b-a3b"}  # answer in prose, never call tools
@@ -46,8 +47,10 @@ class H(BaseHTTPRequestHandler):
         if m not in MODELS: return self._send(404, {"error": {"message": f"model {m} not found"}})
         if m in OVERLOADED: return self._send(429, {"error": {"message": "ResourceExhausted: Worker local total request limit reached (32/32)"}})
         if m in COLD and m not in seen: seen.add(m); time.sleep(COLD[m])
-        time.sleep(SLOW.get(m, 0.05))
         wants_tools = bool(body.get("tools")) and m not in NO_TOOLS
+        if body.get("stream") and m in STALL_HEADERS:
+            return self._stream(m, wants_tools, stall=SLOW[m])
+        time.sleep(SLOW.get(m, 0.05))
         if body.get("stream"):
             return self._stream(m, wants_tools)
         if wants_tools:
@@ -56,9 +59,10 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"choices": [{"message": msg, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42}})
         self._send(200, {"choices": [{"message": {"role": "assistant", "content": f"Moin from {m}."}, "finish_reason": "stop"}],
                          "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42}})
-    def _stream(self, m, wants_tools):
+    def _stream(self, m, wants_tools, stall=0):
         try:
-            self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers(); self.wfile.flush()
+            if stall: time.sleep(stall)
             words = f"Moin from {m}. This is a streamed answer with a few tokens.".split()
             for i, w in enumerate(words):
                 chunk = {"choices": [{"delta": {"content": w + " "}, "index": 0, "finish_reason": None}]}

@@ -34,7 +34,7 @@ BENCH_TTFT=""; BENCH_TOKS=""; BENCH_TOKENS=""; BENCH_ERR=""
 bench_stream() { # bench_stream <id> → 0 + BENCH_TTFT/BENCH_TOKS/BENCH_TOKENS, or 1 + BENCH_ERR
   local id="$1" json line first=1 err_body="" ttft_ms="" delta_count=0 completion_tokens=0 last_ms=0 t0 payload delta u
   BENCH_TTFT=""; BENCH_TOKS=""; BENCH_TOKENS=""; BENCH_ERR=""
-  json=$(jq -n --arg m "$id" '{model:$m, stream:true, stream_options:{include_usage:true}, max_tokens:160,
+  json=$(jq -n --arg m "$(plain_id "$id")" '{model:$m, stream:true, stream_options:{include_usage:true}, max_tokens:160,
     messages:[{role:"user", content:"Explain in about 100 words what a reverse proxy does."}]}')
   t0=$(now_ms)
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -50,7 +50,7 @@ bench_stream() { # bench_stream <id> → 0 + BENCH_TTFT/BENCH_TOKS/BENCH_TOKENS,
     u=$(printf '%s' "$payload" | jq -r '.usage.completion_tokens // empty' 2>/dev/null)
     [[ -n "$u" ]] && completion_tokens="$u"
     last_ms=$(( $(now_ms) - t0 ))
-  done < <(curl -sN -m 120 -K "$HDR_FILE" "$API_BASE/chat/completions" --data-binary @- <<<"$json" 2>/dev/null)
+  done < <(curl -sN -m 120 -K "$(model_hdr "$id")" "$(model_base "$id")/chat/completions" --data-binary @- <<<"$json" 2>/dev/null)
   if [[ -z "$ttft_ms" ]]; then BENCH_ERR=$(probe_err_text "$err_body" 120); return 1; fi
   (( completion_tokens > 0 )) || completion_tokens=$delta_count
   local denom=$(( last_ms - ttft_ms )) tps="0.0"
