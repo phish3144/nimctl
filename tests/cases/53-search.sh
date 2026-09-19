@@ -41,6 +41,56 @@ for k in ("web.search.searxng_query_url", "web.search.engine", "web.search.enabl
 PY
 )
 check "chat: Open WebUI gets the SearXNG query url" "search=http://127.0.0.1:$SP/search\?q=<query>&format=json" < <(timeout 90 "$N" start; cat "$TMP/home/logs/open-webui.log")
+# Open WebUI keeps connection, default model and search in its database once it has started; the environment only seeds them.
+# nimctl aligns what it owns before every chat start – both storage schemas – and leaves everything else alone.
+timeout 30 "$N" stop >/dev/null
+DB="$TMP/home/webui-data/webui.db"; mkdir -p "$(dirname "$DB")"
+python3 - "$DB" <<'PY'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1]); con.execute("DROP TABLE IF EXISTS config")
+con.execute("CREATE TABLE config (id INTEGER PRIMARY KEY, data JSON, version INTEGER, created_at DATETIME, updated_at DATETIME)")
+data = {"version": 0, "ui": {"default_models": "nvidia/nemotron-3-super-120b", "enable_signup": False},
+        "openai": {"enable": True, "api_base_urls": ["https://integrate.api.nvidia.com/v1"], "api_keys": ["nvapi-old"], "api_configs": {"0": {}}},
+        "rag": {"web": {"search": {"enable": True, "engine": "searxng", "searxng_query_url": "https://searx.example.org/search?q=<query>&format=json"}}}}
+con.execute("INSERT INTO config (id, data, version) VALUES (1, ?, 0)", (json.dumps(data),)); con.commit()
+PY
+check "chat start: stored Open WebUI settings aligned (json blob schema)" "Open-WebUI-Einstellungen angeglichen: connection → http://127.0.0.1:$PP/v1, search → searxng http://127.0.0.1:$SP/search\?q=<query>&format=json, default model → nim-chat" < <(timeout 90 "$N" start)
+python3 - "$DB" "$PP" "$SP" <<'PY'
+import json, sqlite3, sys
+d = json.loads(sqlite3.connect(sys.argv[1]).execute("SELECT data FROM config").fetchone()[0])
+ok = (d["openai"]["api_base_urls"] == [f"http://127.0.0.1:{sys.argv[2]}/v1"] and d["openai"]["api_keys"][0].startswith("sk-nimctl-")
+      and d["rag"]["web"]["search"]["searxng_query_url"] == f"http://127.0.0.1:{sys.argv[3]}/search?q=<query>&format=json" and d["rag"]["web"]["search"]["enable"] is True
+      and d["ui"]["default_models"] == "nim-chat" and d["ui"]["enable_signup"] is False and d["openai"]["api_configs"] == {"0": {}})
+sys.exit(0 if ok else 1)
+PY
+assert "chat start: connection, key, search url and default model written, other settings untouched" [ $? -eq 0 ]
+timeout 30 "$N" stop >/dev/null
+nocheck "chat start: nothing to align the second time" "angeglichen" < <(timeout 90 "$N" start)
+timeout 30 "$N" stop >/dev/null
+python3 - "$DB" <<'PY'
+import json, sqlite3, sys, time
+con = sqlite3.connect(sys.argv[1]); con.execute("DROP TABLE IF EXISTS config")
+con.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value JSON NOT NULL, updated_at BIGINT)")
+rows = {"openai.api_base_urls": ["https://api.example.org/v1", "https://integrate.api.nvidia.com/v1"], "openai.api_keys": ["sk-other", "nvapi-old"], "openai.enable": False,
+        "web.search.enable": True, "web.search.engine": "searxng", "web.search.searxng_query_url": "https://searx.example.org/search?q=<query>&format=json", "ui.default_models": "nvidia/nemotron-3-super-120b"}
+for k, v in rows.items(): con.execute("INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)", (k, json.dumps(v), int(time.time())))
+con.commit()
+PY
+check "chat start: stored settings aligned (one row per key schema)" "angeglichen: connection → http://127.0.0.1:$PP/v1, connection on, search → searxng http://127.0.0.1:$SP/search.*default model → nim-chat" < <(timeout 90 "$N" start)
+python3 - "$DB" "$PP" <<'PY'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1]); g = lambda k: json.loads(con.execute("SELECT value FROM config WHERE key=?", (k,)).fetchone()[0])
+ok = (g("openai.api_base_urls") == ["https://api.example.org/v1", f"http://127.0.0.1:{sys.argv[2]}/v1"] and g("openai.api_keys")[0] == "sk-other"
+      and g("openai.api_keys")[1].startswith("sk-nimctl-") and g("openai.enable") is True and g("ui.default_models") == "nim-chat" and g("web.search.engine") == "searxng")
+sys.exit(0 if ok else 1)
+PY
+assert "chat start: only nimctl's connection replaced, the other one kept" [ $? -eq 0 ]
+python3 - "$DB" <<'PY'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1]); con.execute("UPDATE config SET value=? WHERE key='openai.api_base_urls'", (json.dumps(["https://integrate.api.nvidia.com/v1"]),)); con.commit()
+PY
+check "doctor: reports a chat that still talks to NVIDIA directly" "Chat spricht mit https://integrate.api.nvidia.com/v1 statt http://127.0.0.1:$PP/v1" < <(timeout 180 "$N" doctor 2>&1)
+check "doctor --fix: restarts the chat, which aligns the connection" "angeglichen: connection → http://127.0.0.1:$PP/v1" < <(timeout 180 "$N" doctor --fix 2>&1)
 timeout 10 "$N" ide config --force >/dev/null
 grep -q "NIMCTL_SEARCH_URL: \"http://127.0.0.1:$SP\"" "$CONT" && grep -q 'web_search' "$CONT" && pass "ide: Continue gets the search url and the rule" || fail "ide: Continue gets the search url and the rule"
 grep -q 'def web_search' "$TMP/home/mcp/shell.py" && python3 -m py_compile "$TMP/home/mcp/shell.py" 2>/dev/null && pass "ide: web_search tool in the MCP server" || fail "ide: web_search tool in the MCP server"

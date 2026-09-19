@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.8.2"
+VERSION="1.9.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -27,7 +27,7 @@ load_settings() {
   done <"$SETTINGS_FILE"
 }
 load_settings
-CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"
+CONF="$NIM_DIR/config"; STATE="$NIM_DIR/state"; PROBES="$NIM_DIR/probes"; SIZES="$NIM_DIR/sizes"
 LITELLM_YAML="$NIM_DIR/litellm.yaml"; LOG_DIR="$NIM_DIR/logs"; PID_DIR="$NIM_DIR/run"; SEARX_DIR="$NIM_DIR/searxng"; WEB_DIR="$NIM_DIR/web"
 MODEL_CACHE="$NIM_DIR/models.cache"; CAND_FILE="$NIM_DIR/candidates"; LOCK_FILE="$NIM_DIR/.lock"
 API_BASE="${NIMCTL_API_BASE:-https://integrate.api.nvidia.com/v1}"
@@ -36,7 +36,7 @@ BIND="${NIMCTL_BIND:-127.0.0.1}"                      # services listen here onl
 PROBE_TIMEOUT="${NIMCTL_PROBE_TIMEOUT:-45}"
 REPROBE_HOURS="${NIMCTL_REPROBE_HOURS:-6}"            # dashboard re-probes slots older than this
 KEY_WARN_DAYS="${NIMCTL_KEY_WARN_DAYS:-165}"          # NVIDIA keys expire after ~180 days
-STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-120}"         # seconds without a byte (reasoning models need headroom before fallback)
+STALL_TIMEOUT="${NIMCTL_STALL_TIMEOUT:-120}"         # seconds without a byte from the model (next chunk, or a whole non-streamed answer) before the proxy hands the request to the next rank; reasoning models need headroom
 # LiteLLM provider prefix. "openai/" would route Anthropic-format requests (Claude Code) to OpenAI's
 # Responses API, which NVIDIA does not serve (404). "custom_openai/" translates via /chat/completions.
 PROVIDER="${NIMCTL_PROVIDER:-custom_openai}"
@@ -46,23 +46,30 @@ RE_KEY='^nvapi-[A-Za-z0-9_-]+$'
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # Candidate patterns per slot: the ranking. `provider:regex` names a pool provider's catalog (src/22-pool.sh), a bare
-# regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a responding model (tool
-# calling for code/review) adds it to the slot's chain – the first is the slot's model, the others take over one after
-# another when it fails (LiteLLM order + cooldown, see write_litellm_yaml). Quality first, placed by what the free
-# tiers carry: small daily quotas (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; chat prefers
-# Gemini Flash / Groq ahead of nemotron-3-super (NVIDIA 503 mid-stream is common on free tier). Override:
-# NIMCTL_CAND_<SLOT> or ~/.nimctl/candidates.
+# regex NVIDIA's. They are matched against the live catalogs in order; every pattern with a model that answers, makes
+# tool calls where the slot needs them (code/review) and takes a request of the slot's size (SLOT_TOKENS below) adds it
+# to the slot's chain – the first is the slot's model, the others take over one after another when it fails (LiteLLM
+# order + cooldown, see write_litellm_yaml). Quality first, placed by what the free tiers carry: small daily quotas
+# (Gemini Pro, OpenRouter) sit late in the busy slots and early in `review`; NVIDIA is not first by default where a
+# provider is as good and more reliable – `chat` prefers Gemini Flash, Groq and Cerebras ahead of nemotron-3-super, whose
+# mid-stream 503s are common on the free tier. Groq's free tier caps a single request at 6–12k tokens (its per-minute token
+# limit), far below what Claude Code sends, so Groq models are chat candidates only. Override: NIMCTL_CAND_<SLOT> or
+# ~/.nimctl/candidates.
 # shellcheck disable=SC2034
-CAND_CODE=(groq:kimi-k2 deepseek-v4-pro 'gemini:gemini-[0-9.]+-pro$' laguna-xs groq:gpt-oss-120b glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra groq:llama-3.3-70b nemotron-3-super)
+CAND_CODE=(deepseek-v4-pro kimi-k2 'gemini:gemini-[0-9.]+-pro$' laguna-xs glm-5 qwen3-coder 'openrouter:qwen3-coder.*:free' mistral:devstral-medium 'gemini:gemini-[0-9.]+-flash$' kimi-k3 cerebras:gpt-oss-120b nemotron-3-ultra nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_FAST=(deepseek-v4-flash groq:llama-3.1-8b-instant cerebras:llama3.1-8b 'gemini:flash-lite$' groq:gpt-oss-20b nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
+CAND_FAST=(deepseek-v4-flash cerebras:llama3.1-8b 'gemini:flash-lite$' nemotron-3.5-lightning nemotron-3-nano mistral:mistral-small-latest cerebras:llama-3.3-70b 'glm-5.*flash' 'openrouter:gpt-oss-20b:free' nemotron-3-super)
 # shellcheck disable=SC2034
-CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:llama-3.3-70b groq:gpt-oss-120b cerebras:llama-3.3-70b nemotron-3-super deepseek-v4-flash nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
+CAND_CHAT=('gemini:gemini-[0-9.]+-flash$' groq:kimi-k2 groq:llama-3.3-70b cerebras:llama-3.3-70b nemotron-3-super deepseek-v4-flash groq:gpt-oss-120b nemotron-3-ultra mistral:mistral-medium-latest 'openrouter:deepseek-chat.*:free' llama-4-maverick)
 # shellcheck disable=SC2034
-CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro groq:kimi-k2 nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 groq:gpt-oss-120b mistral:magistral-medium nemotron-3-super)
+CAND_REVIEW=('gemini:gemini-[0-9.]+-pro$' kimi-k3 deepseek-v4-pro nemotron-3-ultra 'openrouter:deepseek-r1.*:free' glm-5 mistral:magistral-medium nemotron-3-super)
 CHAIN_LEN="${NIMCTL_CHAIN_LEN:-6}"                    # ranks per slot the proxy gets
 SLOTS=(code fast chat review)
 TOOL_SLOTS=" code review "                            # slots whose model must support function calling
+# Request size (tokens) a rank must take: Claude Code sends its system prompt and tool schemas with every request (20k+
+# tokens), the fast model gets whole pages to summarise, the chat short turns. auto_select sends one request of this size
+# per model and size (cached for a day in ~/.nimctl/sizes) and leaves a model that rejects it out of the slot.
+declare -A SLOT_TOKENS=([code]=32000 [review]=32000 [fast]=12000 [chat]=8000)
 
 # ── Temp files & signals ──────────────────────────────────────────────────────
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nimctl.XXXXXX"); chmod 700 "$TMP_ROOT"
@@ -267,6 +274,8 @@ T_de+=(
   [auto_title]="Automatische Modellwahl" [auto_slot]="Slot %s: %d Kandidaten" [auto_pick]="%s → %s (%s ms)" [auto_none]="kein Kandidat antwortet – Slot %s bleibt: %s"
   [auto_notools]="%s antwortet, kann aber keine Tool-Calls – für Slot %s ungeeignet" [auto_done]="Fertig. Ergebnis:" [auto_progress]="Slot %d/%d"
   [auto_chain]="Ausweich in dieser Reihenfolge: %s" [chain_more]="Ausweich"
+  [probing_size]="prüfe %s-Anfrage bei %s … " [size_no]="%s: %s-Anfrage abgelehnt (%s) %s" [auto_toolarge]="%s nimmt keine %s-Anfrage – für Slot %s ungeeignet"
+  [auto_toolsfail]="%s: Tool-Calling-Prüfung fehlgeschlagen (%s) – für Slot %s diesmal übersprungen" [pick_toolarge]="%s nimmt keine %s-Anfrage (%s) – Claude Code schickt größere; trotzdem gesetzt"
 )
 T_en+=(
   [probing]="probing %d model(s) with a real request (max %ss) …" [probing_tools]="probing tool calling on %d model(s) …"
@@ -276,6 +285,8 @@ T_en+=(
   [auto_title]="Automatic model selection" [auto_slot]="Slot %s: %d candidates" [auto_pick]="%s → %s (%s ms)" [auto_none]="no candidate responds – slot %s stays: %s"
   [auto_notools]="%s responds but cannot make tool calls – unsuitable for slot %s" [auto_done]="Done. Result:" [auto_progress]="slot %d/%d"
   [auto_chain]="fallback in this order: %s" [chain_more]="fallback"
+  [probing_size]="probing a %s request at %s … " [size_no]="%s: %s request rejected (%s) %s" [auto_toolarge]="%s takes no %s request – unsuitable for slot %s"
+  [auto_toolsfail]="%s: tool-calling check failed (%s) – skipped for slot %s this time" [pick_toolarge]="%s takes no %s request (%s) – Claude Code sends bigger ones; set anyway"
 )
 
 write_hdr() { # the Authorization header lives in a 600 file inside a 700 tmp dir; curl reads it with -K
@@ -329,9 +340,40 @@ probe_set() { # probe_set <id> <ok|error> [ms] [tools ok|no] – the tools colum
 probe_age() { probe_get "$1"; [[ "$PROBE_T" =~ ^[0-9]+$ ]] && echo $(( $(date +%s) - PROBE_T )) || echo 999999; }
 probe_ok_models() { local re; re="^($(IFS='|'; printf '%s' "${POOL_PROVIDERS[*]}")):"; awk -F'\t' -v re="$re" '$2=="ok" && $1 !~ re {print $1}' "$PROBES" | sort -u; }   # NVIDIA ids only – pool ids are namespaced
 
+# ── Request sizes: ~/.nimctl/sizes, tab-separated: id  tokens  result  epoch. A rank must take a request of its slot's size ──
+# (SLOT_TOKENS, src/05-core.sh): free tiers cap a single request at their per-minute token limit (Groq: 6–12k), a model's
+# context window is what it is – neither shows in a 5-token probe. Probed once per model and size, kept for a day.
+SIZE_TTL=86400; SIZE_RES=""; SIZE_T=0
+size_k() { printf '%sk' "$(( $1 / 1000 ))"; }   # 32000 → 32k
+size_get() { # size_get <id> <tokens> → SIZE_RES (ok|error text|""), SIZE_T (epoch)
+  local rec; rec=$(awk -F'\t' -v id="$1" -v n="$2" '$1==id && $2==n {l=$3"\x1f"$4} END{print l}' "$SIZES" 2>/dev/null)
+  SIZE_RES="${rec%%$'\x1f'*}"; SIZE_T="${rec#*$'\x1f'}"; [[ "$SIZE_T" =~ ^[0-9]+$ ]] || SIZE_T=0
+}
+_size_write() { { awk -F'\t' -v id="$1" -v n="$2" '!($1==id && $2==n)' "$SIZES" 2>/dev/null; printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date +%s)"; } >"$SIZES.tmp" && mv "$SIZES.tmp" "$SIZES"; }
+size_set() { valid_model "$1" || return 1; with_lock _size_write "$1" "$2" "${3//$'\t'/ }"; }   # size_set <id> <tokens> <ok|error>
+size_probe() { # size_probe <id> <tokens> → "ok <ms>" | error text: one request of about that many tokens, 5 tokens back
+  local id="$1" n="$2" to=$((PROBE_TIMEOUT * 2)) body out t0 i; local pad="$TMP_ROOT/pad.$n"
+  # ~10 tokens a sentence; a file, not an argument (128 KB limit); no pipe – a runner that ignores SIGPIPE would print "Broken pipe" into the probe line
+  [[ -s "$pad" ]] || { for ((i = 0; i < n / 10; i++)); do printf 'The quick brown fox jumps over the lazy dog. '; done; } >"$pad"
+  body=$(jq -n --arg m "$(plain_id "$id")" --rawfile pad "$pad" '{model:$m,max_tokens:5,messages:[{role:"user",content:("Reply with the single word OK. Ignore the text below.\n\n"+$pad)}]}')
+  t0=$(now_ms); out=$(model_api "$id" POST /chat/completions "$to" "$body")
+  if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then echo "ok $(( $(now_ms) - t0 ))"; return; fi
+  probe_err_text "$out" "$to"
+}
+size_ok() { # size_ok <id> <tokens> → 0 when the model takes a request of that size; probes when unknown or older than a day, prints the probe or the cached rejection
+  local id="$1" n="$2" res; size_get "$id" "$n"
+  if [[ -z "$SIZE_RES" ]] || (( $(date +%s) - SIZE_T > SIZE_TTL )); then
+    printf "  %s" "$(tf probing_size "$(size_k "$n")" "$(trunc "$id" 46)")"; res=$(size_probe "$id" "$n")
+    (( INTERRUPTED )) && { printf "%s\n" "$(t aborted)"; return 1; }
+    if [[ "$res" == ok* ]]; then size_set "$id" "$n" ok; printf "%s %s ms\n" "$OK" "${res#ok }"; else size_set "$id" "$n" "$res"; printf "%s %s\n" "$NO" "$res"; fi
+    size_get "$id" "$n"
+  elif [[ "$SIZE_RES" != ok ]]; then out "  $NO $(tf size_no "$(trunc "$id" 46)" "$(size_k "$n")" "$SIZE_RES" "$(t cached)")"; fi
+  [[ "$SIZE_RES" == ok ]]
+}
+
 probe_err_text() { # probe_err_text <raw body> <timeout> → readable error
   local out="$1" to="$2" err
-  err=$(echo "$out" | jq -r '.error.message // .detail // .message // .' 2>/dev/null | tr '\n' ' ' | head -c 140)
+  err=$(echo "$out" | jq -r '.error.message // .detail // .message // .' 2>/dev/null | tr '\n\t' '  ' | head -c 200)
   [[ -z "$out" ]] && err="$(tf timeout "$to")"
   case "$err" in *"Not found for account"*|*Function*) err="$(t no_endpoint)";; *429*|*"Too Many"*) err="$(t ratelimit)";;
     *ResourceExhausted*|*"request limit"*|*"limit reached"*) err="$(t overloaded)";; esac
@@ -351,11 +393,12 @@ probe_one() { # probe_one <id> [timeout] [tools] → "ok <ms>" | "notools <ms>" 
   fi
   probe_err_text "$out" "$to"
 }
-declare -A RUN_OK=() RUN_TOOLS=()  # answers in this process: id → ms / ok|no (never downgraded within a run)
-probe_line() { # probe_line <id> → one table row from the stored result
-  probe_get "$1"; local tools=""
+declare -A RUN_OK=() RUN_TOOLS=() TOOLS_ERR=()  # answers in this process: id → ms / ok|no|err (never downgraded within a run); TOOLS_ERR: why a check failed
+probe_line() { # probe_line <id> → one table row from the stored result: answer, latency, tool calling, request sizes (32k ✓ · 8k ✗)
+  probe_get "$1"; local tools="" sizes="" n
   case "$PROBE_TOOLS" in ok) tools="${D}$(t tools_ok)${R}";; no) tools="${YEL}$(t tools_no)${R}";; esac
-  if [[ "$PROBE_RES" == ok ]]; then out "  $OK $(printf '%-46s' "$(trunc "$1" 46)") $(t answers) ${PROBE_MS} ms  $tools"
+  for n in $(printf '%s\n' "${SLOT_TOKENS[@]}" | sort -nru); do size_get "$1" "$n"; case "$SIZE_RES" in ok) sizes+="  ${D}$(size_k "$n")${R} $OK";; "") ;; *) sizes+="  ${D}$(size_k "$n")${R} $NO";; esac; done
+  if [[ "$PROBE_RES" == ok ]]; then out "  $OK $(printf '%-46s' "$(trunc "$1" 46)") $(t answers) ${PROBE_MS} ms  $tools$sizes"
   else out "  $NO $(printf '%-46s' "$(trunc "$1" 46)") ${RED}$PROBE_RES${R}"; fi
 }
 probe_many() { # probe_many <id…> – parallel, stores results, prints rows; skips ids already OK in this run
@@ -379,11 +422,16 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
   for id in "$@"; do [[ -n "${RUN_TOOLS[$id]:-}" ]] || todo+=("$id"); done
   ((${#todo[@]})) && info "$(tf probing_tools "${#todo[@]}")"
   for id in "${todo[@]}"; do ( probe_one "$id" "$PROBE_TIMEOUT" tools >"$tmp/$i" ) & ((i++)); done; wait
-  i=0
+  i=0; local again=()
   for id in "${todo[@]}"; do res=$(cat "$tmp/$i" 2>/dev/null); ((i++))
     case "$res" in ok*) RUN_TOOLS[$id]=ok; probe_set "$id" ok "${RUN_OK[$id]:-${res#ok }}" ok;;
       notools*) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-${res#notools }}" no;;
-      *) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-0}" no;; esac
+      *) again+=("$id");; esac
+  done
+  for id in "${again[@]}"; do res=$(probe_one "$id" $((PROBE_TIMEOUT * 2)) tools)   # a timeout or 429 says nothing about tools: one more try, then undecided
+    case "$res" in ok*) RUN_TOOLS[$id]=ok; probe_set "$id" ok "${RUN_OK[$id]:-${res#ok }}" ok;;
+      notools*) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-${res#notools }}" no;;
+      *) RUN_TOOLS[$id]=err; TOOLS_ERR[$id]="${res:-$(t noanswer)}"; probe_set "$id" ok "${RUN_OK[$id]:-0}" "";; esac
   done
   for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
@@ -432,15 +480,20 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then local responders=(); for m in "${cands[@]}"; do [[ -n "${RUN_OK[$m]:-}" ]] && responders+=("$m"); done
       ((${#responders[@]})) && probe_tools_many "${responders[@]}"; fi
     # the chain: patterns in ranking order, a pattern's responders by latency, until CHAIN_LEN ranks
-    local chain=() rows p re notools=" "
+    local chain=() rows p re notools=" " tokens="${SLOT_TOKENS[$slot]:-0}"
     while read -r pat; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat"); rows=()
       for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$p" ]] && echo "$m" | grep -qiE -- "$re" || continue
         probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
-        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then [[ "$notools" == *" $m "* ]] || { notools+="$m "; info "$(tf auto_notools "$m" "$slot")"; }; continue; fi
+        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then
+          [[ "$notools" == *" $m "* ]] || { notools+="$m "; if [[ "$PROBE_TOOLS" == no ]]; then info "$(tf auto_notools "$m" "$slot")"; else info "$(tf auto_toolsfail "$m" "${TOOLS_ERR[$m]:-?}" "$slot")"; fi; }; continue; fi
         rows+=("$PROBE_MS $m")
       done
       ((${#rows[@]})) || continue
-      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] && chain+=("$m"); done < <(printf '%s\n' "${rows[@]}" | sort -n)
+      # a rank must take a request of the slot's size: probed once per model and size, in ranking order, until the chain is full
+      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] || continue
+        if (( tokens > 0 )) && ! size_ok "$m" "$tokens"; then info "$(tf auto_toolarge "$m" "$(size_k "$tokens")" "$slot")"; continue; fi
+        chain+=("$m"); (( ${#chain[@]} >= CHAIN_LEN )) && break
+      done < <(printf '%s\n' "${rows[@]}" | sort -n)
       (( ${#chain[@]} >= CHAIN_LEN )) && break
     done < <(candidates "$slot")
     if ((${#chain[@]})); then
@@ -531,7 +584,7 @@ T_de+=(
   [pool_added]="%s ist dabei – die Ketten wurden neu gebaut" [pool_removed]="%s entfernt – die Ketten wurden neu gebaut" [pool_not_conf]="%s ist nicht im Pool" [pool_noranks]="in keiner Kette"
   [pool_empty]="Pool leer – nimctl pool add <anbieter> <key>" [pool_empty_dash]="– keiner · m: kostenlose Anbieter hinzufügen"
   [pool_which]="Anbieter hinzufügen (%s; Enter = zurück)"
-  [pool_note_groq]="~30 Anfragen/min, ~1.000/Tag, keine Karte nötig" [pool_note_gemini]="10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen"
+  [pool_note_groq]="~30 Anfragen/min, ~1.000/Tag, keine Karte nötig; höchstens 6–12k Tokens pro Anfrage – nur für den Chat" [pool_note_gemini]="10–15 Anfragen/min, 250–1.000/Tag; Google darf Free-Tier-Daten zum Training nutzen"
   [pool_note_cerebras]="~30 Anfragen/min, 1 Mio. Tokens/Tag, sehr schnell" [pool_note_openrouter]="20 Anfragen/min, 50/Tag (1.000 ab 10 \$ Guthaben), nur :free-Modelle"
   [pool_note_mistral]="Experiment-Tier: ~1 Anfrage/s, 1 Mrd. Tokens/Monat; Daten dürfen zum Training genutzt werden"
   [pool_wz_q]="Weitere Anbieter mit kostenlosen Kontingenten hinzufügen (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral)?"
@@ -545,7 +598,7 @@ T_en+=(
   [pool_added]="%s is in – the chains were rebuilt" [pool_removed]="%s removed – the chains were rebuilt" [pool_not_conf]="%s is not in the pool" [pool_noranks]="in no chain"
   [pool_empty]="pool empty – nimctl pool add <provider> <key>" [pool_empty_dash]="– none · m: add free providers"
   [pool_which]="add a provider (%s; Enter = back)"
-  [pool_note_groq]="~30 requests/min, ~1,000/day, no card needed" [pool_note_gemini]="10–15 requests/min, 250–1,000/day; Google may train on free-tier data"
+  [pool_note_groq]="~30 requests/min, ~1,000/day, no card needed; at most 6–12k tokens per request – chat only" [pool_note_gemini]="10–15 requests/min, 250–1,000/day; Google may train on free-tier data"
   [pool_note_cerebras]="~30 requests/min, 1M tokens/day, very fast" [pool_note_openrouter]="20 requests/min, 50/day (1,000 with \$10 credit), :free models only"
   [pool_note_mistral]="experiment tier: ~1 request/s, 1B tokens/month; data may be used for training"
   [pool_wz_q]="Add providers with free quotas (Groq, Google AI Studio, Cerebras, OpenRouter, Mistral)?"
@@ -673,7 +726,8 @@ dash_register m cmd_pool k_m use
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
 #     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (15 s), timeouts/5xx at
-#     NIMCTL_COOLDOWN (90 s), doubling per consecutive failure up to 30 min, cleared by a success.
+#     NIMCTL_COOLDOWN (90 s), doubling per consecutive failure up to 30 min, cleared by a success; a request the rank
+#     cannot take by size (413, "Request too large", context length) pauses it for the full 30 min at once.
 # State for the dashboard and the web UI: $NIM_DIR/rpm.json (budget) and $NIM_DIR/health.json (cooldowns).
 T_de+=(
   [thr_line]="Budget   %s/min · %s frei · %s wartend · %s gebremst%s" [thr_avg]=" (Ø %s s)" [thr_penalty]=" · gedrosselt nach 429 bis %s"
@@ -846,11 +900,16 @@ class Throttle(CustomLogger):
         self.fails[group] = n
         reason = type(exc).__name__ if exc is not None else "error"
         code = getattr(exc, "status_code", None) if exc is not None else None
+        msg = " ".join(str(exc).split())[:160] if exc is not None else ""
+        too_large = code == 413 or "too large" in msg.lower() or "maximum context length" in msg.lower()
         base = COOLDOWN_RATELIMIT if (code == 429 or "RateLimit" in reason) else COOLDOWN
-        seconds = min(base * (2 ** (n - 1)), COOLDOWN_MAX)
+        # a request the rank cannot take by size (free-tier tokens per minute, context window) will not fit in a few minutes either
+        seconds = COOLDOWN_MAX if too_large else min(base * (2 ** (n - 1)), COOLDOWN_MAX)
+        if too_large:
+            reason = "TooLarge"
         self.cool[group] = (time.monotonic() + seconds, reason)
         self._tell_router(model_id, exc if isinstance(exc, Exception) else Exception(reason), seconds)
-        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})", flush=True)
+        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})" + (f" – {msg}" if msg else ""), flush=True)
         self._save()
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
@@ -996,6 +1055,8 @@ start_proxy() {
   _start_result proxy "$(cat "$PID_DIR/proxy.pid")" 90
 }
 
+T_de+=( [chat_synced]="Open-WebUI-Einstellungen angeglichen: %s" [chat_sync_fail]="Open-WebUI-Datenbank nicht angepasst (%s) – Verbindung im Admin-Panel prüfen" )
+T_en+=( [chat_synced]="Open WebUI settings aligned: %s" [chat_sync_fail]="Open WebUI database not adjusted (%s) – check the connection in its admin panel" )
 chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM (throttle, retries, fallbacks); NIMCTL_CHAT_VIA_PROXY=0 talks to NVIDIA directly
   if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then export OPENAI_API_BASE_URL="http://127.0.0.1:$PROXY_PORT/v1" OPENAI_API_KEY="$MASTER_KEY" DEFAULT_MODELS="nim-chat"
   else export OPENAI_API_BASE_URL="$API_BASE" OPENAI_API_KEY="$NVIDIA_API_KEY" DEFAULT_MODELS="$MODEL_CHAT"; fi
@@ -1005,12 +1066,137 @@ chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM
     export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-10}" WEB_SEARCH_CONCURRENT_REQUESTS="${NIMCTL_SEARCH_CONCURRENT:-8}" BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
   fi
 }
+chat_sync_db() { # Open WebUI keeps connection, default model and web search in its database once it has started – the environment only seeds
+  # them (an install from before 1.1.0 still talked to NVIDIA directly, past the chain; a public SearXNG saved once stayed). Align what
+  # nimctl owns before every chat start and when the search is switched on, both storage schemas (one JSON blob, one row per key);
+  # other connections and settings stay as they are.
+  local db py out base key default; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then base="http://127.0.0.1:$PROXY_PORT/v1"; key="$MASTER_KEY"; default="nim-chat"; else base="$API_BASE"; key="$NVIDIA_API_KEY"; default="$MODEL_CHAT"; fi
+  out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_BASE="$base" NIMCTL_CHAT_KEY="$key" NIMCTL_CHAT_DEFAULT="$default" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" \
+       NIMCTL_CHAT_SEARX="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json" NIMCTL_CHAT_RESULTS="${NIMCTL_SEARCH_RESULTS:-10}" NIMCTL_CHAT_CONCURRENT="${NIMCTL_SEARCH_CONCURRENT:-8}" "$py" - <<'PY' 2>&1
+import json, os, re, sqlite3, sys, time
+db = os.environ["NIMCTL_CHAT_DB"]
+base, key, default = os.environ.get("NIMCTL_CHAT_BASE", ""), os.environ.get("NIMCTL_CHAT_KEY", ""), os.environ.get("NIMCTL_CHAT_DEFAULT", "")
+searx, search_on = os.environ.get("NIMCTL_CHAT_SEARX", ""), os.environ.get("NIMCTL_CHAT_SEARCH") == "1"
+extras = {"result_count": int(os.environ.get("NIMCTL_CHAT_RESULTS") or 10), "concurrent_requests": int(os.environ.get("NIMCTL_CHAT_CONCURRENT") or 8),
+          "bypass_embedding_and_retrieval": True, "confirmation.enable": False}   # what chat_env exports for a first start, for a database that already holds them
+OURS = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/v1/?$|integrate\.api\.nvidia\.com")   # nimctl's connection: the proxy, or NVIDIA directly
+LOCAL = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/")
+changed = []
+
+def connection(urls, keys):
+    urls = [str(u) for u in (urls or [])]; keys = [str(k) for k in (keys or [])]
+    keys += [""] * (len(urls) - len(keys))
+    i = next((i for i, u in enumerate(urls) if OURS.search(u)), None)
+    if i is None:
+        urls.append(base); keys.append(key); changed.append("connection +" + base)
+    elif urls[i] != base or keys[i] != key:
+        urls[i] = base; keys[i] = key; changed.append("connection → " + base)
+    return urls, keys
+
+def search(cfg):
+    """cfg: the stored search settings; returns what to change"""
+    if search_on:
+        new = {"enable": True, "engine": "searxng", "searxng_query_url": searx}
+        new.update({k: v for k, v in extras.items() if k in cfg})
+    elif cfg.get("engine") == "searxng" and cfg.get("enable") and LOCAL.match(str(cfg.get("searxng_query_url", ""))):
+        new = {"enable": False}                       # nimctl's search is off and would not answer
+    else:
+        return {}
+    diff = {k: v for k, v in new.items() if cfg.get(k) != v}
+    if diff:
+        changed.append("search → " + ("searxng " + searx if search_on else "off"))
+    return diff
+
+con = sqlite3.connect(db, timeout=5)
+cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+if not cols:
+    sys.exit(0)                                        # never started: the environment seeds everything
+if "key" in cols and "value" in cols:                  # one row per key
+    def get(k):
+        r = con.execute("SELECT value FROM config WHERE key=?", (k,)).fetchone()
+        if r is None:
+            return None
+        try:
+            return json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0]
+        except ValueError:
+            return r[0]
+    def put(k, v):
+        con.execute("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, ?)", (k, json.dumps(v), int(time.time())))
+    urls, keys = get("openai.api_base_urls"), get("openai.api_keys")
+    if urls is not None or keys is not None:
+        u, k = connection(urls, keys); put("openai.api_base_urls", u); put("openai.api_keys", k)
+        if get("openai.enable") is False:
+            put("openai.enable", True); changed.append("connection on")
+    cfg = {n: get("web.search." + n) for n in ("enable", "engine", "searxng_query_url", *extras)}
+    if any(cfg[n] is not None for n in ("enable", "engine", "searxng_query_url")):
+        for k, v in search({k: v for k, v in cfg.items() if v is not None}).items():
+            put("web.search." + k, v)
+    d = get("ui.default_models")
+    if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
+        put("ui.default_models", default); changed.append("default model → " + default)
+elif "data" in cols:                                   # one JSON blob (older versions)
+    row = con.execute("SELECT id, data FROM config ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None:
+        sys.exit(0)
+    data = json.loads(row[1]) if isinstance(row[1], (str, bytes)) else (row[1] or {})
+    oa = data.get("openai")
+    if isinstance(oa, dict):
+        oa["api_base_urls"], oa["api_keys"] = connection(oa.get("api_base_urls"), oa.get("api_keys"))
+        if oa.get("enable") is False:
+            oa["enable"] = True; changed.append("connection on")
+    ws = None
+    for path in (("web", "search"), ("rag", "web", "search")):
+        node = data
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+        if isinstance(node, dict):
+            ws = node; break
+    if ws is not None:
+        flat = dict(ws); flat["confirmation.enable"] = (ws.get("confirmation") or {}).get("enable") if isinstance(ws.get("confirmation"), dict) else None
+        for k, v in search({k: v for k, v in flat.items() if v is not None}).items():
+            if k == "confirmation.enable":
+                ws.setdefault("confirmation", {})["enable"] = v
+            else:
+                ws[k] = v
+    ui = data.get("ui")
+    if isinstance(ui, dict):
+        d = ui.get("default_models")
+        if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
+            ui["default_models"] = default; changed.append("default model → " + default)
+    if changed:
+        con.execute("UPDATE config SET data=? WHERE id=?", (json.dumps(data), row[0]))
+if changed:
+    con.commit()
+print(", ".join(changed))
+PY
+  ) || { warn "$(tf chat_sync_fail "$(printf '%s' "$out" | tail -n 1)")"; return 0; }
+  [[ -n "$out" ]] && info "$(tf chat_synced "$out")"; return 0
+}
+chat_db_bases() { # the OpenAI-compatible connections Open WebUI has stored, one url per line (nothing when there is no database yet)
+  local db py; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
+  NIMCTL_CHAT_DB="$db" "$py" - <<'PY' 2>/dev/null
+import json, os, sqlite3
+con = sqlite3.connect(os.environ["NIMCTL_CHAT_DB"], timeout=5)
+cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+urls = []
+if "key" in cols:
+    r = con.execute("SELECT value FROM config WHERE key='openai.api_base_urls'").fetchone()
+    if r: urls = json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0]
+elif "data" in cols:
+    r = con.execute("SELECT data FROM config ORDER BY id DESC LIMIT 1").fetchone()
+    if r:
+        d = json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0]
+        urls = ((d or {}).get("openai") or {}).get("api_base_urls") or []
+for u in urls or []: print(u)
+PY
+  return 0
+}
 start_chat() {
   if svc_state chat; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign chat; return 1; }; info "$(tf svc_already "$(t chat)")"; return 0; fi
   has open-webui || { bad "$(tf svc_missing open-webui)"; return 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }
   [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && { svc_running proxy || start_proxy || return 1; }
-  declare -F chat_sync_searxng >/dev/null && chat_sync_searxng
-  ( chat_env; nohup open-webui serve --host "$BIND" --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 & echo $! >"$PID_DIR/chat.pid" )
+  ( chat_env; chat_sync_db; nohup open-webui serve --host "$BIND" --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 & echo $! >"$PID_DIR/chat.pid" )
   date +%s >"$PID_DIR/chat.started"
   _start_result chat "$(cat "$PID_DIR/chat.pid")" 150
 }
@@ -1073,8 +1259,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
     proxy) has litellm || { echo "nimctl: litellm missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" ]] || { echo "nimctl: not configured – run nimctl setup" >&2; exit 1; }
            write_litellm_yaml; write_litellm_hooks; throttle_env; pool_env; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
-           declare -F chat_sync_searxng >/dev/null && chat_sync_searxng
-           chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
+           chat_env; chat_sync_db; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
     ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }
            ide_write_config || exit 1; date +%s >"$PID_DIR/ide.started"
            exec code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry;;
@@ -1222,6 +1407,7 @@ act_pick() { # act_pick <slot> [search] – choose a slot's model from a list; p
   sel=$(echo "$list" | sed -n "${choice}p"); probe_get "$sel"
   if [[ "$PROBE_RES" != ok ]]; then probe_many "$sel"; probe_get "$sel"; fi
   if [[ "$PROBE_RES" == ok && "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then probe_tools_many "$sel"; probe_get "$sel"; [[ "$PROBE_TOOLS" == ok ]] || warn "$(tf auto_notools "$sel" "$slot")"; fi
+  if [[ "$PROBE_RES" == ok && "${SLOT_TOKENS[$slot]:-0}" -gt 0 ]] && ! size_ok "$sel" "${SLOT_TOKENS[$slot]}"; then warn "$(tf pick_toolarge "$sel" "$(size_k "${SLOT_TOKENS[$slot]}")" "$SIZE_RES")"; fi
   if [[ "$PROBE_RES" != ok ]]; then ask "$(t force)" n || { info "$(t unchanged)"; return 1; }; fi
   set_slot "$slot" "$sel"; save_conf; write_litellm_yaml; ok "$(tf set_ok "$slot" "$sel")"; restart_if_running
 }
@@ -2221,7 +2407,7 @@ T_de+=(
   [search_disabled]="Websuche deaktiviert – start/stop/restart lassen sie aus; wieder an: nimctl search start"
   [search_git_missing]="git fehlt – nötig, um SearXNG zu holen" [search_settings]="SearXNG-Konfiguration: %s" [search_url]="Suche: http://localhost:%s  · nimctl search \"Suchbegriff\""
   [search_none]="keine Treffer" [search_chat_hint]="Chat neu starten, damit die Websuche dort erscheint: nimctl restart"
-  [search_persist]="nimctl schreibt die lokale SearXNG-URL bei start/restart in die Open-WebUI-Datenbank (andere Admin-Engines bleiben möglich)"
+  [search_persist]="Open WebUI merkt sich Einstellungen aus dem Admin-Panel; Verbindung, Standardmodell und die lokale SearXNG-URL gleicht nimctl bei jedem Chat-Start und beim Einschalten der Suche an"
 )
 T_en+=(
   [k_o]="Search" [h_search]="web search (SearXNG) for the chat and the IDE: nimctl search [\"query\"|start|stop|disable|install|test]"
@@ -2229,7 +2415,7 @@ T_en+=(
   [search_disabled]="web search disabled – start/stop/restart leave it out; back on: nimctl search start"
   [search_git_missing]="git missing – needed to fetch SearXNG" [search_settings]="SearXNG configuration: %s" [search_url]="search: http://localhost:%s  · nimctl search \"query\""
   [search_none]="no results" [search_chat_hint]="restart the chat so web search shows up there: nimctl restart"
-  [search_persist]="nimctl writes the local SearXNG URL into Open WebUI's database on start/restart (other admin engines remain possible)"
+  [search_persist]="Open WebUI remembers settings made in its admin panel; nimctl aligns the connection, the default model and the local SearXNG URL at every chat start and when the search is switched on"
 )
 search_python() { local p="$SEARX_DIR/venv/bin/python"; [[ -x "$p" ]] && printf '%s' "$p"; }
 search_secret() { # one secret per installation, kept out of settings.yml diffs
@@ -2240,109 +2426,28 @@ search_write_settings() { # settings.yml: loopback only, html+json (Open WebUI n
   printf 'use_default_settings: true\ngeneral: { debug: false, instance_name: "nimctl search", enable_metrics: false }\nsearch: { formats: [html, json], safe_search: 0 }\nserver: { secret_key: "%s", bind_address: "%s", port: %s, limiter: false, image_proxy: false, public_instance: false }\nvalkey: { url: false }\noutgoing: { request_timeout: 10.0, max_request_timeout: 20.0 }\n' \
     "$(search_secret)" "$BIND" "$SEARCH_PORT" >"$SEARX_DIR/settings.yml.tmp"
   chmod 600 "$SEARX_DIR/settings.yml.tmp"; mv "$SEARX_DIR/settings.yml.tmp" "$SEARX_DIR/settings.yml"
+  [[ -f "$SEARX_DIR/limiter.toml" ]] || : >"$SEARX_DIR/limiter.toml"   # the bot-detection module looks for it even with the limiter off
 }
-inst_searxng() { # git clone (or pull) + uv venv + requirements + editable install; sets SEARCH_ENABLED
+inst_searxng() { # git clone (or pull) + uv venv (kept when it exists) + requirements + editable install + frozen version (no git calls at run time); sets SEARCH_ENABLED
   has git || { bad "$(t search_git_missing)"; return 1; }
   declare -F inst_uv >/dev/null && ! has uv && inst_uv; has uv || { bad "$(tf inst_fail uv)"; return 1; }
   local repo="${NIMCTL_SEARXNG_REPO:-https://github.com/searxng/searxng}" log="$LOG_DIR/searxng-install.log" py="$SEARX_DIR/venv/bin/python"
   mkdir -p "$SEARX_DIR"; printf "  %s" "$(t search_installing)"
   if { if [[ -d "$SEARX_DIR/src/.git" ]]; then git -C "$SEARX_DIR/src" pull --ff-only; else git clone --depth 1 "$repo" "$SEARX_DIR/src"; fi &&
-       uv venv --clear --python '>=3.11' "$SEARX_DIR/venv" &&
+       { [[ -x "$py" ]] || uv venv --python '>=3.11' "$SEARX_DIR/venv"; } &&
        uv pip install --python "$py" setuptools wheel -r "$SEARX_DIR/src/requirements.txt" &&
-       uv pip install --python "$py" --no-build-isolation -e "$SEARX_DIR/src"; } >"$log" 2>&1 && [[ -x "$py" ]]; then printf "%s\n" "$OK"
+       uv pip install --python "$py" --no-build-isolation -e "$SEARX_DIR/src" &&
+       { "$py" -m searx.version freeze || true; }; } >"$log" 2>&1 && [[ -x "$py" ]]; then printf "%s\n" "$OK"
   else printf "%s\n" "$NO"; bad "$(tf inst_fail SearXNG) → $log"; return 1; fi
   search_write_settings
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; svc_running chat && info "$(t search_chat_hint)"; }
   ok "$(t search_enabled)"
 }
-chat_sync_searxng() { # point Open WebUI's persisted search settings at the local instance (DB wins over env after first save)
-  [[ "$SEARCH_ENABLED" == 1 ]] || return 0
-  local db="$NIM_DIR/webui-data/webui.db"
-  [[ -f "$db" ]] || return 0
-  local url="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json"
-  local nres="${NIMCTL_SEARCH_RESULTS:-10}" nconc="${NIMCTL_SEARCH_CONCURRENT:-8}"
-  if has python3; then
-    NIMCTL_WEBUI_DB="$db" NIMCTL_SEARXNG_URL="$url" NIMCTL_SEARCH_RESULTS="$nres" NIMCTL_SEARCH_CONCURRENT="$nconc" python3 - <<'PY' 2>/dev/null || true
-import json, os, sqlite3, time
-db, url = os.environ["NIMCTL_WEBUI_DB"], os.environ["NIMCTL_SEARXNG_URL"]
-nres = int(os.environ.get("NIMCTL_SEARCH_RESULTS") or 10)
-nconc = int(os.environ.get("NIMCTL_SEARCH_CONCURRENT") or 8)
-try:
-    con = sqlite3.connect(db, timeout=5)
-except sqlite3.Error:
-    raise SystemExit(0)
-try:
-    cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
-except sqlite3.Error:
-    con.close(); raise SystemExit(0)
-now = int(time.time())
-rows = {
-    "web.search.searxng_query_url": url,
-    "web.search.engine": "searxng",
-    "web.search.enable": True,
-    "web.search.result_count": nres,
-    "web.search.concurrent_requests": nconc,
-    "web.search.bypass_web_search_embedding_and_retrieval": True,
-    "web.search.bypass_embedding_and_retrieval": True,
-    "web.search.confirmation.enable": False,
-}
-try:
-    if "key" in cols and "value" in cols:
-        for k, v in rows.items():
-            con.execute(
-                "INSERT INTO config(key, value, updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                (k, json.dumps(v), now),
-            )
-    elif "data" in cols:
-        row = con.execute("SELECT id, data FROM config ORDER BY id LIMIT 1").fetchone()
-        if row:
-            data = row[1]
-            if isinstance(data, str):
-                data = json.loads(data)
-            if not isinstance(data, dict):
-                data = {}
-            web = data.setdefault("web", {})
-            if not isinstance(web, dict):
-                web = {}; data["web"] = web
-            search = web.setdefault("search", {})
-            if not isinstance(search, dict):
-                search = {}; web["search"] = search
-            search["searxng_query_url"] = url
-            search["engine"] = "searxng"
-            search["enable"] = True
-            search["result_count"] = nres
-            search["concurrent_requests"] = nconc
-            search["bypass_web_search_embedding_and_retrieval"] = True
-            conf = search.setdefault("confirmation", {})
-            if isinstance(conf, dict):
-                conf["enable"] = False
-            payload = json.dumps(data)
-            if "updated_at" in cols:
-                con.execute("UPDATE config SET data=?, updated_at=? WHERE id=?", (payload, now, row[0]))
-            else:
-                con.execute("UPDATE config SET data=? WHERE id=?", (payload, row[0]))
-    con.commit()
-except sqlite3.Error:
-    pass
-finally:
-    con.close()
-PY
-  elif has sqlite3; then
-    local esc="${url//\\/\\\\}"; esc="${esc//\"/\\\"}"
-    sqlite3 "$db" "INSERT INTO config(key,value,updated_at) VALUES('web.search.searxng_query_url','\"$esc\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
-INSERT INTO config(key,value,updated_at) VALUES('web.search.engine','\"searxng\"',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
-INSERT INTO config(key,value,updated_at) VALUES('web.search.enable','true',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
-INSERT INTO config(key,value,updated_at) VALUES('web.search.result_count','$nres',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
-INSERT INTO config(key,value,updated_at) VALUES('web.search.concurrent_requests','$nconc',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;
-INSERT INTO config(key,value,updated_at) VALUES('web.search.confirmation.enable','false',strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;" 2>/dev/null || true
-  fi
-}
 search_ensure() { # installed, running, enabled
   search_python >/dev/null || { bad "$(tf svc_missing SearXNG)"; info "→ nimctl search install"; return 1; }
   svc_running search || start_search || return 1
   [[ "$SEARCH_ENABLED" == 1 ]] || { SEARCH_ENABLED=1; save_conf; ok "$(t search_enabled)"; svc_running chat && info "$(t search_chat_hint)"; }
-  chat_sync_searxng
+  chat_sync_db   # a running chat reads the search settings from its database (src/30-services.sh)
 }
 search_query() { # search_query <query> [count] → title and url per result
   local n="${2:-${NIMCTL_SEARCH_RESULTS:-10}}" out
@@ -2433,11 +2538,13 @@ T_de+=(
   [doc_title]="Doctor – Diagnose" [doc_fix]="Beheben?" [doc_ok]="Alles in Ordnung" [doc_issues]="%d Problem(e): %s"
   [doc_net]="NVIDIA erreichbar" [doc_net_no]="NVIDIA nicht erreichbar (%s)" [doc_perm]="Dateirechte auf %s: %s (sollte 700 sein)" [doc_perm_ok]="Dateirechte %s 700"
   [doc_awk]="awk fehlt" [doc_bash]="bash %s" [doc_svc_foreign]="Port %s belegt von %s" [doc_fixing]="Behebe …" [doc_remaining]="Verbleibend: %s"
+  [doc_chat_db]="Chat spricht mit %s statt %s – Open WebUI hat die Verbindung einer älteren Version gespeichert; ein Chat-Neustart gleicht sie an"
 )
 T_en+=(
   [doc_title]="Doctor – diagnosis" [doc_fix]="Fix it?" [doc_ok]="All good" [doc_issues]="%d issue(s): %s"
   [doc_net]="NVIDIA reachable" [doc_net_no]="NVIDIA unreachable (%s)" [doc_perm]="permissions on %s: %s (should be 700)" [doc_perm_ok]="permissions %s 700"
   [doc_awk]="awk missing" [doc_bash]="bash %s" [doc_svc_foreign]="port %s taken by %s" [doc_fixing]="Fixing …" [doc_remaining]="remaining: %s"
+  [doc_chat_db]="chat talks to %s instead of %s – Open WebUI kept the connection of an older version; a chat restart aligns it"
 )
 DOC_ISSUES=()
 doc_issue() { DOC_ISSUES+=("$1"); }
@@ -2461,6 +2568,8 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     unit_failed "$s" && { warn "$(tf unit_failed "nimctl-$s" "nimctl-$s")"; doc_issue "unit:$s"; }
   done
   config_newer_than_proxy && { warn "$(t config_changed)"; doc_issue restart; }
+  if svc_running chat; then local want bases; want="http://127.0.0.1:$PROXY_PORT/v1"; [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] || want="$API_BASE"
+    bases=$(chat_db_bases); [[ -z "$bases" ]] || grep -qxF -- "$want" <<<"$bases" || { warn "$(tf doc_chat_db "$(head -n1 <<<"$bases")" "$want")"; doc_issue chat:db; }; fi
   if [[ "$KEY_STATE" == ok ]] && configured; then
     act_probe >/dev/null 2>&1 || true
     for s in "${SLOTS[@]}"; do local m; m=$(slot_model "$s"); [[ -n "$m" ]] || continue; probe_get "$m"
@@ -2482,6 +2591,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
     key) (( INTERACTIVE )) && act_key; [[ "$KEY_STATE" == ok ]] || remaining+=("$i");;
     model:*) auto_select "${i#model:}" || remaining+=("$i");;
     pool:*) auto_select "${SLOTS[@]}" || remaining+=("$i");;
+    chat:db) restart_svc chat || remaining+=("$i");;
     restart) restart_all || remaining+=("$i");;
     unit:*) systemctl --user reset-failed "nimctl-${i#unit:}" 2>/dev/null; systemctl --user restart "nimctl-${i#unit:}" 2>/dev/null || remaining+=("$i");;
     *) remaining+=("$i");;
@@ -2933,16 +3043,16 @@ en: {
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
   tool_present:'present', tool_missing:'missing', tools_row:'Tools', show:'Show', hide:'Hide', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', master_key:'Proxy master key', env_lines:'Export lines for other tools',
 }};
-Object.assign(T.de, { s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
+Object.assign(T.de, { s_cooldown_rl:'Pause nach 429 (s)', s_cooldown_rl_h:'erste Pause nach einem Rate-Limit – kürzer als nach Timeout/5xx, danach ebenfalls verdoppelt', s_search_c:'Parallele Seitenabrufe je Suche', size_hint:'Jeder Rang muss außerdem eine Anfrage in der Größe des Slots annehmen (code/review 32k, fast 12k, chat 8k Tokens) – Modelle, die sie ablehnen (✗ hinter der Größe, Grund im Tooltip), bleiben draußen; Groqs Free-Tier nimmt höchstens 6–12k Tokens je Anfrage.', s_cooldown:'Pause nach Ausfall (s)', s_cooldown_h:'ein ausgefallener Rang wird so lange übersprungen, bei Wiederholung doppelt so lange (max. 30 min)', s_chainlen:'Ränge je Slot', s_chainlen_h:'wie viele Modelle eine Kette höchstens bekommt', chain:'Kette', rank:'Rang', paused:'pausiert bis %s (%s)', make_rank1:'→ Rang 1', paused_notice:'%s Rang %s (%s) pausiert bis %s – Grund: %s. Solange übernimmt der nächste Rang.', chain_hint:'Rang 1 bekommt jede Anfrage; fällt er aus (keine Antwort für %s s, 429, 5xx), übernimmt der nächste. Ein ausgefallener Rang pausiert %s s, bei Wiederholung doppelt so lange, und wird danach wieder versucht.',
   pool_hint:'Anbieter mit Key nehmen an der Rangliste teil – ihre Modelle stehen dort, wo die Kandidatenliste sie einordnet, nicht automatisch hinter NVIDIA. Die Ketten werden nach jedem Hinzufügen neu gebaut.', no_ranks:'in keiner Kette', ranks:'Ränge',
   candidates_hint:'Die Rangliste je Slot: reguläre Ausdrücke gegen die Kataloge, in Reihenfolge; ein Muster ohne Präfix trifft NVIDIA, anbieter:muster den Anbieter (groq, gemini, cerebras, openrouter, mistral). Jedes Muster mit antwortendem Modell wird ein Rang der Kette. Leer = Standard.' });
-Object.assign(T.en, { s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
+Object.assign(T.en, { s_cooldown_rl:'Pause after 429 (s)', s_cooldown_rl_h:'first pause after a rate limit – shorter than after a timeout/5xx, doubling afterwards as well', s_search_c:'Parallel page fetches per search', size_hint:'Every rank must also take a request of the slot\'s size (code/review 32k, fast 12k, chat 8k tokens) – models that reject it (✗ after the size, reason in the tooltip) stay out; Groq\'s free tier takes at most 6–12k tokens per request.', s_cooldown:'Pause after a failure (s)', s_cooldown_h:'a failed rank is skipped this long, twice as long on repetition (max 30 min)', s_chainlen:'Ranks per slot', s_chainlen_h:'how many models a chain gets at most', chain:'Chain', rank:'Rank', paused:'paused until %s (%s)', make_rank1:'→ rank 1', paused_notice:'%s rank %s (%s) paused until %s – reason: %s. The next rank takes over meanwhile.', chain_hint:'Rank 1 gets every request; when it fails (no answer for %s s, 429, 5xx) the next one takes over. A failed rank pauses %s s, twice as long on repetition, and is tried again afterwards.',
   pool_hint:'Providers with a key take part in the ranking – their models sit where the candidate list places them, not automatically behind NVIDIA. The chains are rebuilt after every addition.', no_ranks:'in no chain', ranks:'Ranks',
   candidates_hint:'The ranking per slot: regular expressions against the catalogs, in order; a pattern without prefix matches NVIDIA, provider:pattern the provider (groq, gemini, cerebras, openrouter, mistral). Every pattern with a responding model becomes a rank of the chain. Empty = default.' });
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
 const PROVIDERS = [['groq','Groq','https://console.groq.com/keys'],['gemini','Google AI Studio','https://aistudio.google.com/apikey'],['cerebras','Cerebras','https://cloud.cerebras.ai'],['openrouter','OpenRouter','https://openrouter.ai/settings/keys'],['mistral','Mistral','https://console.mistral.ai/api-keys']];
-const DEFAULTS = { NIMCTL_RPM:'36', NIMCTL_RPM_MAX_WAIT:'30', NIMCTL_STALL_TIMEOUT:'90', NIMCTL_COOLDOWN:'120', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'8192', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'5', NIMCTL_LANG:'' };
+const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'6', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -3114,6 +3224,8 @@ function svcMeta(s) { const v = S[s] || {}; const parts = [t('port', v.port)]; i
 function slotInfo(slot) { const sl = (S.slots || {})[slot] || {}; return sl; }
 function groupName(slot, i) { return i === 0 ? 'nim-' + slot : 'nim-' + slot + '-r' + (i + 1); }
 function pausedInfo(slot, i) { const c = S.health && S.health.cooldown || {}; const e = c[groupName(slot, i)]; return e && e.until > S.now ? e : null; }
+function sizeMarks(id) { const rows = (S.sizes || []).filter(x => x.id === id).sort((a, b) => b.tokens - a.tokens); return rows.map(x => Math.round(x.tokens / 1000) + 'k ' + (x.result === 'ok' ? '✓' : '✗')).join(' · '); }
+function sizeTitle(id) { return (S.sizes || []).filter(x => x.id === id && x.result !== 'ok').map(x => Math.round(x.tokens / 1000) + 'k: ' + x.result).join('\n'); }
 function chainList(slot, sl, withButtons) { const chain = sl.chain || []; if (chain.length <= 1 && !withButtons) return null; const probeMap = {}; (S.probes || []).forEach(p => { probeMap[p.id] = p; });
   return h('ul', { class: 'chain' }, chain.map((m, i) => { const pi = pausedInfo(slot, i); const pr = probeMap[m]; const prov = m.includes(':') ? m.split(':')[0] : 'nvidia';
     return h('li', { class: pi ? 'paused' : '' }, h('span', { class: 'rk' }, (i + 1) + '.'), h('span', { class: 'id', title: m + ' (' + prov + ')' }, m), h('span', { class: 'meta' }, pr && pr.result === 'ok' ? h('span', { class: 'small muted tnum' }, pr.ms + ' ms') : pr && pr.result ? pill('crit', pr.result) : null, pi ? pill('warn', t('paused', hhmm(pi.until), pi.reason)) : null, withButtons && i > 0 ? btn(t('make_rank1'), () => run(['pick', slot, m]), 'small ghost') : null)); })); }
@@ -3154,10 +3266,10 @@ function renderOverview(host) {
 let catalogQuery = '';
 function renderModels(host) {
   clear(host);
-  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('chain_hint', (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT, (S.settings && S.settings.NIMCTL_COOLDOWN) || '120')));
+  host.append(h('div', { class: 'notice good', style: 'border-left-color:var(--accent)' }, t('chain_hint', (S.settings && S.settings.NIMCTL_STALL_TIMEOUT) || DEFAULTS.NIMCTL_STALL_TIMEOUT, (S.settings && S.settings.NIMCTL_COOLDOWN) || '120') + ' ' + t('size_hint')));
   host.append(h('div', { class: 'grid wide' }, SLOTS.map(s => { const sl = slotInfo(s); return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('h2', null, s, ' ', h('span', { class: 'muted small', style: 'font-weight:400' }, t('slot_' + s))), slotState(sl)),
     h('div', { class: 'slot-model', style: 'margin:6px 0' }, sl.model || t('none')),
-    h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
+    h('div', { class: 'small muted' }, [sl.ms != null ? fmtN(sl.ms) + ' ms' : '', sl.tools === 'ok' ? t('tools_ok') : sl.tools === 'no' ? t('notools') : '', sizeMarks(sl.model), sl.probed ? ago(sl.probed) : ''].filter(Boolean).join(' · ')),
     chainList(s, sl, true),
     h('div', { class: 'row', style: 'margin-top:8px' }, btn(t('auto'), () => run(['auto', s]), 'small'), btn(t('probe'), () => sl.model && run(['find', sl.model]), 'small'), btn(t('bench'), () => run(['bench', s]), 'small'), btn(t('test'), () => { $('test-model').value = s; $('test-prompt').focus(); }, 'small'))); })));
   // catalog
@@ -3166,7 +3278,7 @@ function renderModels(host) {
   const allIds = [...(S.catalog || []), ...Object.entries(S.pool_catalogs || {}).flatMap(([p, ids]) => S.config.pool[p] && S.config.pool[p].key ? ids.map(i => p + ':' + i) : [])];
   const fill = () => { clear(list); const q = catalogQuery.toLowerCase(); const ids = allIds.filter(i => !q || i.toLowerCase().includes(q)).slice(0, 200);
     if (!ids.length) list.append(h('div', { class: 'item muted' }, t('no_data')));
-    ids.forEach(id => { const pr = probeMap[id]; list.append(h('div', { class: 'item' }, pr ? (pr.result === 'ok' ? pill('good', (pr.ms != null ? pr.ms + ' ms' : t('answers')) + (pr.tools === 'ok' ? ' · ' + t('tools_ok') : pr.tools === 'no' ? ' · ' + t('notools') : '')) : pill('crit', pr.result)) : pill('', t('unprobed')), h('span', { class: 'id mono', title: id }, id), btn(t('probe'), () => run(['find', id]), 'small ghost'), SLOTS.map(s => btn(t('set_slot', s), () => run(['pick', s, id]), 'small')))); }); };
+    ids.forEach(id => { const pr = probeMap[id]; list.append(h('div', { class: 'item' }, pr ? (pr.result === 'ok' ? pill('good', (pr.ms != null ? pr.ms + ' ms' : t('answers')) + (pr.tools === 'ok' ? ' · ' + t('tools_ok') : pr.tools === 'no' ? ' · ' + t('notools') : '') + (sizeMarks(id) ? ' · ' + sizeMarks(id) : '')) : pill('crit', pr.result)) : pill('', t('unprobed')), h('span', { class: 'id mono', title: id + (sizeTitle(id) ? '\n' + sizeTitle(id) : '') }, id), btn(t('probe'), () => run(['find', id]), 'small ghost'), SLOTS.map(s => btn(t('set_slot', s), () => run(['pick', s, id]), 'small')))); }); };
   const search = h('input', { type: 'text', placeholder: t('search_ph'), value: catalogQuery, oninput: (e) => { catalogQuery = e.target.value; fill(); } });
   fill();
   host.append(h('div', { class: 'card', style: 'margin:12px 0' }, h('h2', null, t('catalog')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('catalog_hint')), search, h('div', { style: 'margin-top:8px' }, list)));
@@ -3261,10 +3373,10 @@ function renderSettings(host) {
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
-    group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n'))]),
+    group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n')), sf('NIMCTL_SEARCH_CONCURRENT', t('s_search_c'))]),
     group(t('s_ui'), [sf('NIMCTL_LANG', t('s_lang'), '', 'select'), field(t('s_theme'), h('select', { onchange: (e) => setTheme(e.target.value) }, [['', 'theme_auto'], ['light', 'theme_light'], ['dark', 'theme_dark']].map(([v, k]) => h('option', { value: v, selected: (localStorage.getItem('theme') || '') === v }, t(k)))))])));
   host.append(h('div', { class: 'row', style: 'margin:12px 0' }, saveBtn));
   host.append(h('div', { class: 'grid wide' },
@@ -3473,6 +3585,17 @@ def probes():
     return rows
 
 
+def sizes():
+    """~/.nimctl/sizes: which request sizes a model takes (id, tokens, ok/error, time)"""
+    rows = []
+    for line in read_text(os.path.join(HOME, "sizes")).splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4 or not parts[1].isdigit():
+            continue
+        rows.append({"id": parts[0], "tokens": int(parts[1]), "result": parts[2], "probed": int(parts[3]) if parts[3].isdigit() else None})
+    return rows
+
+
 def bench_last():
     last = {}
     for line in read_text(os.path.join(HOME, "bench")).splitlines():
@@ -3522,6 +3645,7 @@ def build_state():
     st["env_overrides"] = sorted(k for k in SETTINGS_KEYS if k in os.environ)
     st["rpm"] = read_json(os.path.join(HOME, "rpm.json"), {})
     st["probes"] = probes()
+    st["sizes"] = sizes()
     st["catalog"] = read_text(os.path.join(HOME, "models.cache")).split()
     st["pool_catalogs"] = {p: read_text(os.path.join(HOME, f"models.{p}.cache")).split() for p in PROVIDERS}
     st["candidates"] = candidates_file()

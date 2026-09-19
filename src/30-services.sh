@@ -70,6 +70,8 @@ start_proxy() {
   _start_result proxy "$(cat "$PID_DIR/proxy.pid")" 90
 }
 
+T_de+=( [chat_synced]="Open-WebUI-Einstellungen angeglichen: %s" [chat_sync_fail]="Open-WebUI-Datenbank nicht angepasst (%s) – Verbindung im Admin-Panel prüfen" )
+T_en+=( [chat_synced]="Open WebUI settings aligned: %s" [chat_sync_fail]="Open WebUI database not adjusted (%s) – check the connection in its admin panel" )
 chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM (throttle, retries, fallbacks); NIMCTL_CHAT_VIA_PROXY=0 talks to NVIDIA directly
   if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then export OPENAI_API_BASE_URL="http://127.0.0.1:$PROXY_PORT/v1" OPENAI_API_KEY="$MASTER_KEY" DEFAULT_MODELS="nim-chat"
   else export OPENAI_API_BASE_URL="$API_BASE" OPENAI_API_KEY="$NVIDIA_API_KEY" DEFAULT_MODELS="$MODEL_CHAT"; fi
@@ -79,12 +81,137 @@ chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM
     export WEB_SEARCH_RESULT_COUNT="${NIMCTL_SEARCH_RESULTS:-10}" WEB_SEARCH_CONCURRENT_REQUESTS="${NIMCTL_SEARCH_CONCURRENT:-8}" BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=true
   fi
 }
+chat_sync_db() { # Open WebUI keeps connection, default model and web search in its database once it has started – the environment only seeds
+  # them (an install from before 1.1.0 still talked to NVIDIA directly, past the chain; a public SearXNG saved once stayed). Align what
+  # nimctl owns before every chat start and when the search is switched on, both storage schemas (one JSON blob, one row per key);
+  # other connections and settings stay as they are.
+  local db py out base key default; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then base="http://127.0.0.1:$PROXY_PORT/v1"; key="$MASTER_KEY"; default="nim-chat"; else base="$API_BASE"; key="$NVIDIA_API_KEY"; default="$MODEL_CHAT"; fi
+  out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_BASE="$base" NIMCTL_CHAT_KEY="$key" NIMCTL_CHAT_DEFAULT="$default" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" \
+       NIMCTL_CHAT_SEARX="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json" NIMCTL_CHAT_RESULTS="${NIMCTL_SEARCH_RESULTS:-10}" NIMCTL_CHAT_CONCURRENT="${NIMCTL_SEARCH_CONCURRENT:-8}" "$py" - <<'PY' 2>&1
+import json, os, re, sqlite3, sys, time
+db = os.environ["NIMCTL_CHAT_DB"]
+base, key, default = os.environ.get("NIMCTL_CHAT_BASE", ""), os.environ.get("NIMCTL_CHAT_KEY", ""), os.environ.get("NIMCTL_CHAT_DEFAULT", "")
+searx, search_on = os.environ.get("NIMCTL_CHAT_SEARX", ""), os.environ.get("NIMCTL_CHAT_SEARCH") == "1"
+extras = {"result_count": int(os.environ.get("NIMCTL_CHAT_RESULTS") or 10), "concurrent_requests": int(os.environ.get("NIMCTL_CHAT_CONCURRENT") or 8),
+          "bypass_embedding_and_retrieval": True, "confirmation.enable": False}   # what chat_env exports for a first start, for a database that already holds them
+OURS = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/v1/?$|integrate\.api\.nvidia\.com")   # nimctl's connection: the proxy, or NVIDIA directly
+LOCAL = re.compile(r"^https?://(127\.0\.0\.1|localhost)(:\d+)?/")
+changed = []
+
+def connection(urls, keys):
+    urls = [str(u) for u in (urls or [])]; keys = [str(k) for k in (keys or [])]
+    keys += [""] * (len(urls) - len(keys))
+    i = next((i for i, u in enumerate(urls) if OURS.search(u)), None)
+    if i is None:
+        urls.append(base); keys.append(key); changed.append("connection +" + base)
+    elif urls[i] != base or keys[i] != key:
+        urls[i] = base; keys[i] = key; changed.append("connection → " + base)
+    return urls, keys
+
+def search(cfg):
+    """cfg: the stored search settings; returns what to change"""
+    if search_on:
+        new = {"enable": True, "engine": "searxng", "searxng_query_url": searx}
+        new.update({k: v for k, v in extras.items() if k in cfg})
+    elif cfg.get("engine") == "searxng" and cfg.get("enable") and LOCAL.match(str(cfg.get("searxng_query_url", ""))):
+        new = {"enable": False}                       # nimctl's search is off and would not answer
+    else:
+        return {}
+    diff = {k: v for k, v in new.items() if cfg.get(k) != v}
+    if diff:
+        changed.append("search → " + ("searxng " + searx if search_on else "off"))
+    return diff
+
+con = sqlite3.connect(db, timeout=5)
+cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+if not cols:
+    sys.exit(0)                                        # never started: the environment seeds everything
+if "key" in cols and "value" in cols:                  # one row per key
+    def get(k):
+        r = con.execute("SELECT value FROM config WHERE key=?", (k,)).fetchone()
+        if r is None:
+            return None
+        try:
+            return json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0]
+        except ValueError:
+            return r[0]
+    def put(k, v):
+        con.execute("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, ?)", (k, json.dumps(v), int(time.time())))
+    urls, keys = get("openai.api_base_urls"), get("openai.api_keys")
+    if urls is not None or keys is not None:
+        u, k = connection(urls, keys); put("openai.api_base_urls", u); put("openai.api_keys", k)
+        if get("openai.enable") is False:
+            put("openai.enable", True); changed.append("connection on")
+    cfg = {n: get("web.search." + n) for n in ("enable", "engine", "searxng_query_url", *extras)}
+    if any(cfg[n] is not None for n in ("enable", "engine", "searxng_query_url")):
+        for k, v in search({k: v for k, v in cfg.items() if v is not None}).items():
+            put("web.search." + k, v)
+    d = get("ui.default_models")
+    if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
+        put("ui.default_models", default); changed.append("default model → " + default)
+elif "data" in cols:                                   # one JSON blob (older versions)
+    row = con.execute("SELECT id, data FROM config ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None:
+        sys.exit(0)
+    data = json.loads(row[1]) if isinstance(row[1], (str, bytes)) else (row[1] or {})
+    oa = data.get("openai")
+    if isinstance(oa, dict):
+        oa["api_base_urls"], oa["api_keys"] = connection(oa.get("api_base_urls"), oa.get("api_keys"))
+        if oa.get("enable") is False:
+            oa["enable"] = True; changed.append("connection on")
+    ws = None
+    for path in (("web", "search"), ("rag", "web", "search")):
+        node = data
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+        if isinstance(node, dict):
+            ws = node; break
+    if ws is not None:
+        flat = dict(ws); flat["confirmation.enable"] = (ws.get("confirmation") or {}).get("enable") if isinstance(ws.get("confirmation"), dict) else None
+        for k, v in search({k: v for k, v in flat.items() if v is not None}).items():
+            if k == "confirmation.enable":
+                ws.setdefault("confirmation", {})["enable"] = v
+            else:
+                ws[k] = v
+    ui = data.get("ui")
+    if isinstance(ui, dict):
+        d = ui.get("default_models")
+        if isinstance(d, str) and d and default and d != default and d.startswith("nim-") != default.startswith("nim-"):
+            ui["default_models"] = default; changed.append("default model → " + default)
+    if changed:
+        con.execute("UPDATE config SET data=? WHERE id=?", (json.dumps(data), row[0]))
+if changed:
+    con.commit()
+print(", ".join(changed))
+PY
+  ) || { warn "$(tf chat_sync_fail "$(printf '%s' "$out" | tail -n 1)")"; return 0; }
+  [[ -n "$out" ]] && info "$(tf chat_synced "$out")"; return 0
+}
+chat_db_bases() { # the OpenAI-compatible connections Open WebUI has stored, one url per line (nothing when there is no database yet)
+  local db py; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
+  NIMCTL_CHAT_DB="$db" "$py" - <<'PY' 2>/dev/null
+import json, os, sqlite3
+con = sqlite3.connect(os.environ["NIMCTL_CHAT_DB"], timeout=5)
+cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+urls = []
+if "key" in cols:
+    r = con.execute("SELECT value FROM config WHERE key='openai.api_base_urls'").fetchone()
+    if r: urls = json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0]
+elif "data" in cols:
+    r = con.execute("SELECT data FROM config ORDER BY id DESC LIMIT 1").fetchone()
+    if r:
+        d = json.loads(r[0]) if isinstance(r[0], (str, bytes)) else r[0]
+        urls = ((d or {}).get("openai") or {}).get("api_base_urls") or []
+for u in urls or []: print(u)
+PY
+  return 0
+}
 start_chat() {
   if svc_state chat; then [[ "$SVC_BY" == foreign ]] && { refuse_foreign chat; return 1; }; info "$(tf svc_already "$(t chat)")"; return 0; fi
   has open-webui || { bad "$(tf svc_missing open-webui)"; return 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { bad "$(t svc_nokey)"; return 1; }
   [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]] && { svc_running proxy || start_proxy || return 1; }
-  declare -F chat_sync_searxng >/dev/null && chat_sync_searxng
-  ( chat_env; nohup open-webui serve --host "$BIND" --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 & echo $! >"$PID_DIR/chat.pid" )
+  ( chat_env; chat_sync_db; nohup open-webui serve --host "$BIND" --port "$CHAT_PORT" >"$LOG_DIR/open-webui.log" 2>&1 & echo $! >"$PID_DIR/chat.pid" )
   date +%s >"$PID_DIR/chat.started"
   _start_result chat "$(cat "$PID_DIR/chat.pid")" 150
 }
@@ -147,8 +274,7 @@ fg_service() { # fg_service <proxy|chat> – ExecStart target of the units; same
     proxy) has litellm || { echo "nimctl: litellm missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" && -n "$MODEL_CODE" ]] || { echo "nimctl: not configured – run nimctl setup" >&2; exit 1; }
            write_litellm_yaml; write_litellm_hooks; throttle_env; pool_env; date +%s >"$PID_DIR/proxy.started"; exec litellm --config "$LITELLM_YAML" --host "$BIND" --port "$PROXY_PORT";;
     chat)  has open-webui || { echo "nimctl: open-webui missing" >&2; exit 1; }; [[ -n "$NVIDIA_API_KEY" ]] || { echo "nimctl: no API key – run nimctl setup" >&2; exit 1; }
-           declare -F chat_sync_searxng >/dev/null && chat_sync_searxng
-           chat_env; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
+           chat_env; chat_sync_db; date +%s >"$PID_DIR/chat.started"; exec open-webui serve --host "$BIND" --port "$CHAT_PORT";;
     ide)   has code-server || { echo "nimctl: code-server missing" >&2; exit 1; }; [[ -n "$IDE_PASSWORD" ]] || { echo "nimctl: IDE not set up – run nimctl ide" >&2; exit 1; }
            ide_write_config || exit 1; date +%s >"$PID_DIR/ide.started"
            exec code-server --config "$NIM_DIR/code-server.yaml" --user-data-dir "$NIM_DIR/ide-data" --extensions-dir "$NIM_DIR/ide-data/extensions" --disable-telemetry;;

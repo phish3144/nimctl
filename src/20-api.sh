@@ -7,6 +7,8 @@ T_de+=(
   [auto_title]="Automatische Modellwahl" [auto_slot]="Slot %s: %d Kandidaten" [auto_pick]="%s → %s (%s ms)" [auto_none]="kein Kandidat antwortet – Slot %s bleibt: %s"
   [auto_notools]="%s antwortet, kann aber keine Tool-Calls – für Slot %s ungeeignet" [auto_done]="Fertig. Ergebnis:" [auto_progress]="Slot %d/%d"
   [auto_chain]="Ausweich in dieser Reihenfolge: %s" [chain_more]="Ausweich"
+  [probing_size]="prüfe %s-Anfrage bei %s … " [size_no]="%s: %s-Anfrage abgelehnt (%s) %s" [auto_toolarge]="%s nimmt keine %s-Anfrage – für Slot %s ungeeignet"
+  [auto_toolsfail]="%s: Tool-Calling-Prüfung fehlgeschlagen (%s) – für Slot %s diesmal übersprungen" [pick_toolarge]="%s nimmt keine %s-Anfrage (%s) – Claude Code schickt größere; trotzdem gesetzt"
 )
 T_en+=(
   [probing]="probing %d model(s) with a real request (max %ss) …" [probing_tools]="probing tool calling on %d model(s) …"
@@ -16,6 +18,8 @@ T_en+=(
   [auto_title]="Automatic model selection" [auto_slot]="Slot %s: %d candidates" [auto_pick]="%s → %s (%s ms)" [auto_none]="no candidate responds – slot %s stays: %s"
   [auto_notools]="%s responds but cannot make tool calls – unsuitable for slot %s" [auto_done]="Done. Result:" [auto_progress]="slot %d/%d"
   [auto_chain]="fallback in this order: %s" [chain_more]="fallback"
+  [probing_size]="probing a %s request at %s … " [size_no]="%s: %s request rejected (%s) %s" [auto_toolarge]="%s takes no %s request – unsuitable for slot %s"
+  [auto_toolsfail]="%s: tool-calling check failed (%s) – skipped for slot %s this time" [pick_toolarge]="%s takes no %s request (%s) – Claude Code sends bigger ones; set anyway"
 )
 
 write_hdr() { # the Authorization header lives in a 600 file inside a 700 tmp dir; curl reads it with -K
@@ -69,9 +73,40 @@ probe_set() { # probe_set <id> <ok|error> [ms] [tools ok|no] – the tools colum
 probe_age() { probe_get "$1"; [[ "$PROBE_T" =~ ^[0-9]+$ ]] && echo $(( $(date +%s) - PROBE_T )) || echo 999999; }
 probe_ok_models() { local re; re="^($(IFS='|'; printf '%s' "${POOL_PROVIDERS[*]}")):"; awk -F'\t' -v re="$re" '$2=="ok" && $1 !~ re {print $1}' "$PROBES" | sort -u; }   # NVIDIA ids only – pool ids are namespaced
 
+# ── Request sizes: ~/.nimctl/sizes, tab-separated: id  tokens  result  epoch. A rank must take a request of its slot's size ──
+# (SLOT_TOKENS, src/05-core.sh): free tiers cap a single request at their per-minute token limit (Groq: 6–12k), a model's
+# context window is what it is – neither shows in a 5-token probe. Probed once per model and size, kept for a day.
+SIZE_TTL=86400; SIZE_RES=""; SIZE_T=0
+size_k() { printf '%sk' "$(( $1 / 1000 ))"; }   # 32000 → 32k
+size_get() { # size_get <id> <tokens> → SIZE_RES (ok|error text|""), SIZE_T (epoch)
+  local rec; rec=$(awk -F'\t' -v id="$1" -v n="$2" '$1==id && $2==n {l=$3"\x1f"$4} END{print l}' "$SIZES" 2>/dev/null)
+  SIZE_RES="${rec%%$'\x1f'*}"; SIZE_T="${rec#*$'\x1f'}"; [[ "$SIZE_T" =~ ^[0-9]+$ ]] || SIZE_T=0
+}
+_size_write() { { awk -F'\t' -v id="$1" -v n="$2" '!($1==id && $2==n)' "$SIZES" 2>/dev/null; printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date +%s)"; } >"$SIZES.tmp" && mv "$SIZES.tmp" "$SIZES"; }
+size_set() { valid_model "$1" || return 1; with_lock _size_write "$1" "$2" "${3//$'\t'/ }"; }   # size_set <id> <tokens> <ok|error>
+size_probe() { # size_probe <id> <tokens> → "ok <ms>" | error text: one request of about that many tokens, 5 tokens back
+  local id="$1" n="$2" to=$((PROBE_TIMEOUT * 2)) body out t0 i; local pad="$TMP_ROOT/pad.$n"
+  # ~10 tokens a sentence; a file, not an argument (128 KB limit); no pipe – a runner that ignores SIGPIPE would print "Broken pipe" into the probe line
+  [[ -s "$pad" ]] || { for ((i = 0; i < n / 10; i++)); do printf 'The quick brown fox jumps over the lazy dog. '; done; } >"$pad"
+  body=$(jq -n --arg m "$(plain_id "$id")" --rawfile pad "$pad" '{model:$m,max_tokens:5,messages:[{role:"user",content:("Reply with the single word OK. Ignore the text below.\n\n"+$pad)}]}')
+  t0=$(now_ms); out=$(model_api "$id" POST /chat/completions "$to" "$body")
+  if echo "$out" | jq -e '.choices[0]' >/dev/null 2>&1; then echo "ok $(( $(now_ms) - t0 ))"; return; fi
+  probe_err_text "$out" "$to"
+}
+size_ok() { # size_ok <id> <tokens> → 0 when the model takes a request of that size; probes when unknown or older than a day, prints the probe or the cached rejection
+  local id="$1" n="$2" res; size_get "$id" "$n"
+  if [[ -z "$SIZE_RES" ]] || (( $(date +%s) - SIZE_T > SIZE_TTL )); then
+    printf "  %s" "$(tf probing_size "$(size_k "$n")" "$(trunc "$id" 46)")"; res=$(size_probe "$id" "$n")
+    (( INTERRUPTED )) && { printf "%s\n" "$(t aborted)"; return 1; }
+    if [[ "$res" == ok* ]]; then size_set "$id" "$n" ok; printf "%s %s ms\n" "$OK" "${res#ok }"; else size_set "$id" "$n" "$res"; printf "%s %s\n" "$NO" "$res"; fi
+    size_get "$id" "$n"
+  elif [[ "$SIZE_RES" != ok ]]; then out "  $NO $(tf size_no "$(trunc "$id" 46)" "$(size_k "$n")" "$SIZE_RES" "$(t cached)")"; fi
+  [[ "$SIZE_RES" == ok ]]
+}
+
 probe_err_text() { # probe_err_text <raw body> <timeout> → readable error
   local out="$1" to="$2" err
-  err=$(echo "$out" | jq -r '.error.message // .detail // .message // .' 2>/dev/null | tr '\n' ' ' | head -c 140)
+  err=$(echo "$out" | jq -r '.error.message // .detail // .message // .' 2>/dev/null | tr '\n\t' '  ' | head -c 200)
   [[ -z "$out" ]] && err="$(tf timeout "$to")"
   case "$err" in *"Not found for account"*|*Function*) err="$(t no_endpoint)";; *429*|*"Too Many"*) err="$(t ratelimit)";;
     *ResourceExhausted*|*"request limit"*|*"limit reached"*) err="$(t overloaded)";; esac
@@ -91,11 +126,12 @@ probe_one() { # probe_one <id> [timeout] [tools] → "ok <ms>" | "notools <ms>" 
   fi
   probe_err_text "$out" "$to"
 }
-declare -A RUN_OK=() RUN_TOOLS=()  # answers in this process: id → ms / ok|no (never downgraded within a run)
-probe_line() { # probe_line <id> → one table row from the stored result
-  probe_get "$1"; local tools=""
+declare -A RUN_OK=() RUN_TOOLS=() TOOLS_ERR=()  # answers in this process: id → ms / ok|no|err (never downgraded within a run); TOOLS_ERR: why a check failed
+probe_line() { # probe_line <id> → one table row from the stored result: answer, latency, tool calling, request sizes (32k ✓ · 8k ✗)
+  probe_get "$1"; local tools="" sizes="" n
   case "$PROBE_TOOLS" in ok) tools="${D}$(t tools_ok)${R}";; no) tools="${YEL}$(t tools_no)${R}";; esac
-  if [[ "$PROBE_RES" == ok ]]; then out "  $OK $(printf '%-46s' "$(trunc "$1" 46)") $(t answers) ${PROBE_MS} ms  $tools"
+  for n in $(printf '%s\n' "${SLOT_TOKENS[@]}" | sort -nru); do size_get "$1" "$n"; case "$SIZE_RES" in ok) sizes+="  ${D}$(size_k "$n")${R} $OK";; "") ;; *) sizes+="  ${D}$(size_k "$n")${R} $NO";; esac; done
+  if [[ "$PROBE_RES" == ok ]]; then out "  $OK $(printf '%-46s' "$(trunc "$1" 46)") $(t answers) ${PROBE_MS} ms  $tools$sizes"
   else out "  $NO $(printf '%-46s' "$(trunc "$1" 46)") ${RED}$PROBE_RES${R}"; fi
 }
 probe_many() { # probe_many <id…> – parallel, stores results, prints rows; skips ids already OK in this run
@@ -119,11 +155,16 @@ probe_tools_many() { # probe_tools_many <id…> – tool-calling check for model
   for id in "$@"; do [[ -n "${RUN_TOOLS[$id]:-}" ]] || todo+=("$id"); done
   ((${#todo[@]})) && info "$(tf probing_tools "${#todo[@]}")"
   for id in "${todo[@]}"; do ( probe_one "$id" "$PROBE_TIMEOUT" tools >"$tmp/$i" ) & ((i++)); done; wait
-  i=0
+  i=0; local again=()
   for id in "${todo[@]}"; do res=$(cat "$tmp/$i" 2>/dev/null); ((i++))
     case "$res" in ok*) RUN_TOOLS[$id]=ok; probe_set "$id" ok "${RUN_OK[$id]:-${res#ok }}" ok;;
       notools*) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-${res#notools }}" no;;
-      *) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-0}" no;; esac
+      *) again+=("$id");; esac
+  done
+  for id in "${again[@]}"; do res=$(probe_one "$id" $((PROBE_TIMEOUT * 2)) tools)   # a timeout or 429 says nothing about tools: one more try, then undecided
+    case "$res" in ok*) RUN_TOOLS[$id]=ok; probe_set "$id" ok "${RUN_OK[$id]:-${res#ok }}" ok;;
+      notools*) RUN_TOOLS[$id]=no; probe_set "$id" ok "${RUN_OK[$id]:-${res#notools }}" no;;
+      *) RUN_TOOLS[$id]=err; TOOLS_ERR[$id]="${res:-$(t noanswer)}"; probe_set "$id" ok "${RUN_OK[$id]:-0}" "";; esac
   done
   for id in "$@"; do probe_line "$id"; done
   rm -rf "$tmp"
@@ -172,15 +213,20 @@ auto_select() { # auto_select <slot…> – probes the union of all candidates o
     if [[ "$TOOL_SLOTS" == *" $slot "* ]]; then local responders=(); for m in "${cands[@]}"; do [[ -n "${RUN_OK[$m]:-}" ]] && responders+=("$m"); done
       ((${#responders[@]})) && probe_tools_many "${responders[@]}"; fi
     # the chain: patterns in ranking order, a pattern's responders by latency, until CHAIN_LEN ranks
-    local chain=() rows p re notools=" "
+    local chain=() rows p re notools=" " tokens="${SLOT_TOKENS[$slot]:-0}"
     while read -r pat; do [[ -n "$pat" ]] || continue; p=$(pat_provider "$pat"); re=$(pat_regex "$pat"); rows=()
       for m in "${cands[@]}"; do [[ "$(pool_of "$m")" == "$p" ]] && echo "$m" | grep -qiE -- "$re" || continue
         probe_get "$m"; [[ "$PROBE_RES" == ok ]] || continue
-        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then [[ "$notools" == *" $m "* ]] || { notools+="$m "; info "$(tf auto_notools "$m" "$slot")"; }; continue; fi
+        if [[ "$TOOL_SLOTS" == *" $slot "* && "$PROBE_TOOLS" != ok ]]; then
+          [[ "$notools" == *" $m "* ]] || { notools+="$m "; if [[ "$PROBE_TOOLS" == no ]]; then info "$(tf auto_notools "$m" "$slot")"; else info "$(tf auto_toolsfail "$m" "${TOOLS_ERR[$m]:-?}" "$slot")"; fi; }; continue; fi
         rows+=("$PROBE_MS $m")
       done
       ((${#rows[@]})) || continue
-      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] && chain+=("$m"); done < <(printf '%s\n' "${rows[@]}" | sort -n)
+      # a rank must take a request of the slot's size: probed once per model and size, in ranking order, until the chain is full
+      while read -r _ m; do [[ -n "$m" && " ${chain[*]} " != *" $m "* ]] || continue
+        if (( tokens > 0 )) && ! size_ok "$m" "$tokens"; then info "$(tf auto_toolarge "$m" "$(size_k "$tokens")" "$slot")"; continue; fi
+        chain+=("$m"); (( ${#chain[@]} >= CHAIN_LEN )) && break
+      done < <(printf '%s\n' "${rows[@]}" | sort -n)
       (( ${#chain[@]} >= CHAIN_LEN )) && break
     done < <(candidates "$slot")
     if ((${#chain[@]})); then

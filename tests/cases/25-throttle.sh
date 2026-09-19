@@ -35,7 +35,7 @@ PY
 check "throttle: bucket waits, refuses beyond max wait, shrinks after 429, writes state" "throttle ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=120 NIMCTL_RPM_MAX_WAIT=0.6 NIMCTL_RPM_STATE="$TMP/rpm-test.json" timeout 30 python3 "$TMP/throttle_test.py" 2>&1)
 printf '{"code":["nim-code","nim-code-r2","nim-code-r3"],"fast":["nim-fast"],"nim":["nim-code","nim-code-r3","nim-fast"],"models":{"nim-code":"a","nim-code-r2":"groq:b","nim-code-r3":"c","nim-fast":"d"}}' >"$TMP/chains-test.json"
 cat >"$TMP/chain_test.py" <<'PY'
-import asyncio, json, os
+import asyncio, json, os, time
 import nimctl_hooks as h
 t = h.throttle
 def kw(group): return {"litellm_params": {"metadata": {"model_group": group}, "model_info": {"id": "dep-" + group}}, "exception": TimeoutError("stall")}
@@ -55,13 +55,20 @@ async def main():
     d = await t.async_pre_call_hook(None, None, {"model": "nim-code"}, "completion"); assert d["model"] == "nim-code", d
     d = await t.async_pre_call_hook(None, None, {"model": "nim-fast"}, "completion"); assert d["model"] == "nim-fast"
     d = await t.async_pre_call_hook(None, None, {"model": "something-else"}, "completion"); assert d["model"] == "something-else"
+    class TooBig(Exception): status_code = 413
+    kw2 = kw("nim-code"); kw2["exception"] = TooBig("litellm.RateLimitError: GroqException - Request too large for model `x` on tokens per minute (TPM): Limit 8000, Requested 21042")
+    t.recent.pop("nim-code", None)
+    await t.async_log_failure_event(kw2, None, 0, 0)
+    until, reason = t.cool["nim-code"]; assert reason == "TooLarge" and until - time.monotonic() > 1700, (reason, until - time.monotonic())
+    d = await t.async_pre_call_hook(None, None, {"model": "nim-code"}, "completion"); assert d["model"] == "nim-code-r3", d
+    await t.async_log_success_event(kw("nim-code"), None, 0, 0)
     s = json.load(open(os.environ["NIMCTL_HEALTH"]))
     assert "nim-code-r2" in s["cooldown"] and s["cooldown"]["nim-code-r2"]["rank"] == 2 and s["cooldown"]["nim-code-r2"]["model"] == "groq:b", s
     assert "nim-code" not in s["cooldown"] and s["routed"] >= 3, s
     print("chain ok", json.dumps(s["cooldown"]))
 asyncio.run(main())
 PY
-check "hook: chain routing – a failed rank is paused, requests go to the next healthy rank, success clears it, pool ranks skip the budget" "chain ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=120 NIMCTL_RPM_MAX_WAIT=0.6 NIMCTL_RPM_STATE="$TMP/rpm-test2.json" NIMCTL_CHAINS="$TMP/chains-test.json" NIMCTL_HEALTH="$TMP/health-test.json" timeout 30 python3 "$TMP/chain_test.py" 2>&1)
+check "hook: chain routing – a failed rank is paused, requests go to the next healthy rank, success clears it, pool ranks skip the budget, an oversized request pauses for the maximum" "chain ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=120 NIMCTL_RPM_MAX_WAIT=0.6 NIMCTL_RPM_STATE="$TMP/rpm-test2.json" NIMCTL_CHAINS="$TMP/chains-test.json" NIMCTL_HEALTH="$TMP/health-test.json" timeout 30 python3 "$TMP/chain_test.py" 2>&1)
 cat >"$TMP/cooldown_rl_test.py" <<'PY'
 import asyncio, os, time
 import nimctl_hooks as h
@@ -86,7 +93,6 @@ async def main():
 asyncio.run(main())
 PY
 check "hook: RateLimit cooldown starts short, timeout keeps NIMCTL_COOLDOWN" "cooldown bases ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=120 NIMCTL_RPM_MAX_WAIT=0.6 NIMCTL_RPM_STATE="$TMP/rpm-rl.json" NIMCTL_CHAINS="$TMP/chains-test.json" NIMCTL_HEALTH="$TMP/health-rl.json" NIMCTL_COOLDOWN=120 NIMCTL_COOLDOWN_RATELIMIT=20 timeout 30 python3 "$TMP/cooldown_rl_test.py" 2>&1)
-
 printf '{"cooldown":{"nim-code":{"model":"deepseek-ai/deepseek-v4-pro-0813","slot":"code","rank":1,"reason":"Timeout","until":%s,"fails":1}},"routed":1,"updated":%s}\n' "$(( $(date +%s) + 300 ))" "$(date +%s)" >"$TMP/home/health.json"
 check "dashboard: paused ranks from health.json" "Pausiert +code #1 deepseek-ai/deepseek-v4-pro-0813 \(Timeout, bis [0-9]{2}:[0-9]{2}\)" < <(timeout 20 "$N" status)
 check "status --json: health block" '"cooldown":\{"nim-code":\{' < <(timeout 20 "$N" status --json | jq -c .health)

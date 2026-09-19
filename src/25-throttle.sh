@@ -9,7 +9,8 @@
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
 #     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (15 s), timeouts/5xx at
-#     NIMCTL_COOLDOWN (90 s), doubling per consecutive failure up to 30 min, cleared by a success.
+#     NIMCTL_COOLDOWN (90 s), doubling per consecutive failure up to 30 min, cleared by a success; a request the rank
+#     cannot take by size (413, "Request too large", context length) pauses it for the full 30 min at once.
 # State for the dashboard and the web UI: $NIM_DIR/rpm.json (budget) and $NIM_DIR/health.json (cooldowns).
 T_de+=(
   [thr_line]="Budget   %s/min · %s frei · %s wartend · %s gebremst%s" [thr_avg]=" (Ø %s s)" [thr_penalty]=" · gedrosselt nach 429 bis %s"
@@ -182,11 +183,16 @@ class Throttle(CustomLogger):
         self.fails[group] = n
         reason = type(exc).__name__ if exc is not None else "error"
         code = getattr(exc, "status_code", None) if exc is not None else None
+        msg = " ".join(str(exc).split())[:160] if exc is not None else ""
+        too_large = code == 413 or "too large" in msg.lower() or "maximum context length" in msg.lower()
         base = COOLDOWN_RATELIMIT if (code == 429 or "RateLimit" in reason) else COOLDOWN
-        seconds = min(base * (2 ** (n - 1)), COOLDOWN_MAX)
+        # a request the rank cannot take by size (free-tier tokens per minute, context window) will not fit in a few minutes either
+        seconds = COOLDOWN_MAX if too_large else min(base * (2 ** (n - 1)), COOLDOWN_MAX)
+        if too_large:
+            reason = "TooLarge"
         self.cool[group] = (time.monotonic() + seconds, reason)
         self._tell_router(model_id, exc if isinstance(exc, Exception) else Exception(reason), seconds)
-        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})", flush=True)
+        print(f"nimctl chain: {group} ({self.models.get(group, '?')}) failed with {reason}, paused {int(seconds)}s (failure {n})" + (f" – {msg}" if msg else ""), flush=True)
         self._save()
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
