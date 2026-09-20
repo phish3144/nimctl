@@ -20,6 +20,7 @@ _nimctl() {
     web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates discover" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     scan) COMPREPLY=(\$(compgen -W "all nvidia groq gemini cerebras openrouter mistral --sizes --use --clear" -- "\$cur"));;
+    autopilot|watch) COMPREPLY=(\$(compgen -W "--quiet" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
     install) COMPREPLY=(\$(compgen -W "all alias systemd nosystemd completion watch_timer" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;

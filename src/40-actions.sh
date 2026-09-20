@@ -156,14 +156,14 @@ proxy_roundtrip() { # proxy_roundtrip <model-name> [tools] – Anthropic-format 
   if echo "$out" | jq -e '.content[0]' >/dev/null 2>&1; then ok "$(tf proxy_rt "$name ($mode) → $(( $(now_ms) - t0 )) ms")"; return 0; fi
   bad "$(tf proxy_rt_fail "$(echo "$out" | jq -r '.error.message // .detail // .' 2>/dev/null | tr '\n' ' ' | head -c 300)")"; return 1
 }
-act_proxy() { local rc=0 s; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
+act_proxy() { local rc=0 s; proxy_roundtrip nim-auto || rc=1; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
 act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args…]
   local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-16384}" name
   load_profile; [[ -n "$PROFILE_MODEL" ]] && { model="$PROFILE_MODEL"; info "$(tf code_profile "MODEL=$PROFILE_MODEL")"; }
   [[ "$PROFILE_THINK" == 1 ]] && think=1; [[ "$PROFILE_MAXOUT" =~ ^[0-9]+$ ]] && maxout="$PROFILE_MAXOUT"
   while (( $# )); do case "$1" in --model|-m) model="${2:-}"; shift 2;; --model=*) model="${1#*=}"; shift;; --think) think=1; shift;; --no-check) check=0; shift;; --) shift; break;; *) break;; esac; done
   has claude || { bad "$(t claude_missing)"; return 1; }
-  case "$model" in ""|code) name="nim-code"; model="$MODEL_CODE";; fast|chat|review) name="nim-$model"; model=$(slot_model "$model"); [[ -n "$model" ]] || { bad "$(tf slot_unconfigured "$name")"; return 1; };;
+  case "$model" in ""|auto) name="nim-auto"; model="$MODEL_CODE";; code) name="nim-code"; model="$MODEL_CODE";; fast|chat|review) name="nim-$model"; model=$(slot_model "$model"); [[ -n "$model" ]] || { bad "$(tf slot_unconfigured "$name")"; return 1; };;
     *) valid_model "$model" || { bad "$(t invalid): $model"; return 1; }; name="$model";; esac
   if [[ "$name" != nim-* ]] && ! yaml_has_model "$name"; then # an id that is not in the proxy yet: probe, add, restart
     probe_get "$model"; [[ "$PROBE_RES" == ok ]] || { info "$(tf code_model_unknown "$model")"; probe_many "$model" >/dev/null; probe_get "$model"; }
@@ -176,7 +176,7 @@ act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args�
   svc_running proxy || { info "$(t proxy_starting)"; start_proxy || return 1; }
   if config_newer_than_proxy; then info "$(t restart_hint)"; fi
   (( check )) && { proxy_roundtrip "$name" || { info "→ nimctl logs proxy"; return 1; }; }
-  ok "$(tf claude_start "$model" "$MODEL_FAST")"; info "$(tf code_cwd "$PWD")"; [[ -n "$think" ]] && info "$(t code_think)"
+  ok "$(tf claude_start "$([[ "$name" == nim-auto ]] && printf 'auto → %s' "$model" || printf '%s' "$model")" "$MODEL_FAST")"; info "$(tf code_cwd "$PWD")"; [[ -n "$think" ]] && info "$(t code_think)"
   # Open models behind an OpenAI-compatible endpoint reject Anthropic-only features with 400: extended thinking
   # and very large max_tokens. Off by default; --think or THINK=1 in .nimctl switches thinking back on.
   ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT" ANTHROPIC_AUTH_TOKEN="$MASTER_KEY" ANTHROPIC_MODEL="$name" \
@@ -187,14 +187,14 @@ act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args�
 act_env() { # prints export lines for other tools; eval "$(nimctl env)"
   local base="http://127.0.0.1:$PROXY_PORT"
   echo "$(t env_hint)"; svc_running proxy || echo "$(t env_proxy_down)"
-  printf 'export ANTHROPIC_BASE_URL=%q\nexport ANTHROPIC_AUTH_TOKEN=%q\nexport ANTHROPIC_MODEL=nim-code\nexport ANTHROPIC_SMALL_FAST_MODEL=nim-fast\n' "$base" "$MASTER_KEY"
-  printf 'export OPENAI_BASE_URL=%q\nexport OPENAI_API_KEY=%q\nexport OPENAI_MODEL=nim-code\n' "$base/v1" "$MASTER_KEY"
+  printf 'export ANTHROPIC_BASE_URL=%q\nexport ANTHROPIC_AUTH_TOKEN=%q\nexport ANTHROPIC_MODEL=nim-auto\nexport ANTHROPIC_SMALL_FAST_MODEL=nim-fast\n' "$base" "$MASTER_KEY"
+  printf 'export OPENAI_BASE_URL=%q\nexport OPENAI_API_KEY=%q\nexport OPENAI_MODEL=nim-auto\n' "$base/v1" "$MASTER_KEY"
   printf 'export NIMCTL_MODEL_CODE=%q NIMCTL_MODEL_FAST=%q NIMCTL_MODEL_CHAT=%q NIMCTL_MODEL_REVIEW=%q\n' "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW"
 }
 
 # ── Chat & logs ───────────────────────────────────────────────────────────────
 act_chat_open() { svc_running chat || start_chat || return 1; ok "$(tf browser "$CHAT_PORT")"; open_url "http://localhost:$CHAT_PORT" || info "→ http://localhost:$CHAT_PORT"; }
-log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; web|5) echo "$LOG_DIR/web.log";; *) return 1;; esac; }
+log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; autopilot) echo "$LOG_DIR/autopilot.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; web|5) echo "$LOG_DIR/web.log";; *) return 1;; esac; }
 act_logs() { # act_logs [proxy|chat|watch|ide] [-f|f]
   local which="${1:-}" follow="${2:-}" f
   [[ "$which" == -f ]] && { follow=-f; which="${2:-}"; }

@@ -4,7 +4,7 @@
 #
 # This file is generated from src/*.sh by build.sh. Edit the sources, then run ./build.sh.
 set -u
-VERSION="1.11.1"
+VERSION="1.12.0"
 NIMCTL_REPO="${NIMCTL_REPO:-phish3144/nimctl}"
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -17,7 +17,7 @@ NIM_DIR="${NIMCTL_HOME:-$HOME/.nimctl}"
 # $NIM_DIR/settings: NIMCTL_* values chosen in the web UI (KEY=VALUE, parsed, never sourced). Only the names below are
 # read, values are limited to plain characters, and a variable already present in the environment wins.
 SETTINGS_FILE="$NIM_DIR/settings"
-SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAIN_PER_PROVIDER NIMCTL_SCAN_RPM NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_SEARCH_CONCURRENT NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
+SETTINGS_KEYS="NIMCTL_LANG NIMCTL_PROXY_PORT NIMCTL_CHAT_PORT NIMCTL_IDE_PORT NIMCTL_SEARCH_PORT NIMCTL_WEB_PORT NIMCTL_BIND NIMCTL_PROBE_TIMEOUT NIMCTL_REPROBE_HOURS NIMCTL_KEY_WARN_DAYS NIMCTL_RPM NIMCTL_RPM_MAX_WAIT NIMCTL_STALL_TIMEOUT NIMCTL_COOLDOWN NIMCTL_COOLDOWN_RATELIMIT NIMCTL_CHAIN_LEN NIMCTL_CHAIN_PER_PROVIDER NIMCTL_SCAN_RPM NIMCTL_AUTOPILOT NIMCTL_AUTOPILOT_HOUR NIMCTL_AUTOPILOT_UPDATE NIMCTL_AUTO_REVIEW_TOKENS NIMCTL_CHAT_VIA_PROXY NIMCTL_SEARCH_RESULTS NIMCTL_SEARCH_CONCURRENT NIMCTL_MAX_OUTPUT_TOKENS NIMCTL_IDE_CONTEXT NIMCTL_IDE_EXTENSIONS"
 load_settings() {
   [[ -f "$SETTINGS_FILE" ]] || return 0
   local line k v
@@ -551,6 +551,10 @@ EOF
       n=${#groups[@]}; for ((i = 0; i < n; i++)); do local list=""; local j; for ((j = i + 1; j < n; j++)); do list+="${list:+, }\"${groups[j]}\""; done
         [[ -n "$tail" ]] && list+="${list:+, }$tail"; [[ -n "$list" ]] && fbs+=("{ ${groups[i]}: [$list] }"); done
     done
+    # nim-auto: the model every client may ask for – nimctl_hooks decides per request which chain answers (src/25-throttle.sh);
+    # the deployment here only makes it a listed model and gives LiteLLM a fallback
+    m=$(slot_model chat); { [[ -n "$m" ]] && { [[ -z "$(pool_of "$m")" ]] || pool_configured "$(pool_of "$m")"; }; } || m="$MODEL_CODE"
+    entry nim-auto "${m:-none}" "${NIMCTL_MAX_OUTPUT_TOKENS:-16384}"; fbs+=('{ nim-auto: ["nim-chat", "nim-fast"] }')
     # every model that answered a probe is reachable by its own id, so `nimctl code --model <id>` needs no restart
     for m in $(probe_ok_models) $EXTRA_MODELS $CHAIN_CODE $CHAIN_FAST $CHAIN_CHAT $CHAIN_REVIEW; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
     fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
@@ -842,6 +846,9 @@ dash_register m cmd_pool k_m use
 #     upstream 429 shrinks the budget for five minutes. Requests routed to a pool provider do not touch the bucket.
 #  2. Chain routing: every slot is a chain of ranks (model groups nim-<slot>, nim-<slot>-r2, …, see write_litellm_yaml);
 #     a request for nim-<slot> is sent to the best rank that is not cooling down.
+#  4. nim-auto: the one model every client may ask for; the hook decides per request which chain answers – Open WebUI's
+#     side tasks (title, tags, queries; system prompt "### Task:") → fast, tool calling → code, more than
+#     NIMCTL_AUTO_REVIEW_TOKENS (6000) of input → review, everything else → chat. Counted per slot in health.json.
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
 #     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (15 s), timeouts/5xx at
@@ -858,7 +865,7 @@ T_en+=(
 )
 throttle_env() { # the hook's settings, exported for the proxy process
   export NIMCTL_RPM="${NIMCTL_RPM:-40}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-45}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
-  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-15}"
+  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-15}" NIMCTL_AUTO_REVIEW_TOKENS="${NIMCTL_AUTO_REVIEW_TOKENS:-6000}"
   export PYTHONPATH="$NIM_DIR${PYTHONPATH:+:$PYTHONPATH}"
 }
 write_litellm_hooks() { # $NIM_DIR/nimctl_hooks.py – rewritten on every proxy start
@@ -887,6 +894,35 @@ COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "90") or 90)   # first timeou
 COOLDOWN_RATELIMIT = float(os.environ.get("NIMCTL_COOLDOWN_RATELIMIT", "15") or 15)  # first 429 / RateLimitError
 COOLDOWN_MAX = 1800.0
 PENALTY_SECONDS = 300.0
+AUTO_REVIEW_TOKENS = int(os.environ.get("NIMCTL_AUTO_REVIEW_TOKENS", "6000") or 6000)   # nim-auto: input beyond this (estimated) goes to the review chain
+AUTO_FALLBACK = {"review": ("code", "chat"), "code": ("chat",), "fast": ("chat", "code"), "chat": ("code",)}
+
+
+def _text_len(x):
+    """Characters of text in a message, a content list or a block – OpenAI or Anthropic shape."""
+    if isinstance(x, str):
+        return len(x)
+    if isinstance(x, list):
+        return sum(_text_len(i) for i in x)
+    if isinstance(x, dict):
+        return sum(_text_len(x.get(k)) for k in ("content", "text") if x.get(k) is not None)
+    return 0
+
+
+def _as_text(c):
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(str(b.get("text", "")) for b in c if isinstance(b, dict))
+    return ""
+
+
+def _first_system(data):
+    """The system prompt, from the first system message (OpenAI) or the system field (Anthropic)."""
+    for m in data.get("messages") or []:
+        if isinstance(m, dict) and m.get("role") == "system":
+            return _as_text(m.get("content"))
+    return _as_text(data.get("system"))
 
 
 def _load_chains():
@@ -924,7 +960,30 @@ class Throttle(CustomLogger):
         self.fails = {}     # group → consecutive failures
         self.recent = {}    # group → monotonic time of the last counted failure
         self.routed = 0
+        self.auto = {}      # slot → requests nim-auto sent there
+        self.auto_last = {}
         self._save()
+
+    # ── nim-auto: which chain answers a request ───────────────────────────────────────────────────
+    def _classify(self, data):
+        """(slot, why): side tasks → fast, tool calling → code, long input → review, everything else → chat."""
+        if _first_system(data).lstrip().startswith("### Task:"):
+            return "fast", "side task"                     # Open WebUI's title, tags, query and follow-up generation
+        tokens = (_text_len(data.get("messages")) + _text_len(data.get("system"))) // 4
+        if data.get("tools") or data.get("functions") or data.get("tool_choice"):
+            return "code", f"tool calling, ~{tokens} tokens"
+        if tokens > AUTO_REVIEW_TOKENS:
+            return "review", f"~{tokens} tokens of input"
+        return "chat", f"~{tokens} tokens"
+
+    def _available(self, slot):
+        """The slot when its chain exists, else the nearest one that does."""
+        if slot in self.chains:
+            return slot
+        for alt in AUTO_FALLBACK.get(slot, ()):
+            if alt in self.chains:
+                return alt
+        return slot
 
     # ── routing ───────────────────────────────────────────────────────────────────────────────────
     def _route(self, model):
@@ -959,6 +1018,14 @@ class Throttle(CustomLogger):
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         model = str((data or {}).get("model", "?"))
+        if model == "nim-auto":
+            slot, why = self._classify(data or {})
+            slot = self._available(slot)
+            model = "nim-" + slot
+            data["model"] = model
+            self.auto[slot] = self.auto.get(slot, 0) + 1
+            self.auto_last = {"slot": slot, "why": why, "at": int(time.time())}
+            print(f"nimctl auto: → {model} ({why})", flush=True)
         target = self._route(model)
         if target != model:
             data["model"] = target
@@ -1068,7 +1135,7 @@ class Throttle(CustomLogger):
             cool = {g: {"model": self.models.get(g, ""), "slot": self.rank[g][0], "rank": self.rank[g][1] + 1, "reason": r,
                         "until": int(time.time() + (u - now)), "fails": self.fails.get(g, 0)}
                     for g, (u, r) in self.cool.items() if u > now and g in self.rank}
-            self._write(HEALTH, {"cooldown": cool, "routed": self.routed, "updated": int(time.time())})
+            self._write(HEALTH, {"cooldown": cool, "routed": self.routed, "auto": self.auto, "auto_last": self.auto_last, "updated": int(time.time())})
 
     @staticmethod
     def _write(path, obj):
@@ -1177,7 +1244,7 @@ start_proxy() {
 T_de+=( [chat_synced]="Open-WebUI-Einstellungen angeglichen: %s" [chat_sync_fail]="Open-WebUI-Datenbank nicht angepasst (%s) – Verbindung im Admin-Panel prüfen" )
 T_en+=( [chat_synced]="Open WebUI settings aligned: %s" [chat_sync_fail]="Open WebUI database not adjusted (%s) – check the connection in its admin panel" )
 chat_env() { # exports the Open WebUI environment; the chat goes through LiteLLM (throttle, retries, fallbacks); NIMCTL_CHAT_VIA_PROXY=0 talks to NVIDIA directly
-  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then export OPENAI_API_BASE_URL="http://127.0.0.1:$PROXY_PORT/v1" OPENAI_API_KEY="$MASTER_KEY" DEFAULT_MODELS="nim-chat"
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then export OPENAI_API_BASE_URL="http://127.0.0.1:$PROXY_PORT/v1" OPENAI_API_KEY="$MASTER_KEY" DEFAULT_MODELS="nim-auto"
   else export OPENAI_API_BASE_URL="$API_BASE" OPENAI_API_KEY="$NVIDIA_API_KEY" DEFAULT_MODELS="$MODEL_CHAT"; fi
   export ENABLE_OLLAMA_API=false DATA_DIR="$NIM_DIR/webui-data" WEBUI_AUTH=true
   if [[ "$SEARCH_ENABLED" == 1 ]]; then   # SearXNG (src/53-search.sh); pages go straight into the context, no local embedding model
@@ -1190,7 +1257,7 @@ chat_sync_db() { # Open WebUI keeps connection, default model and web search in 
   # nimctl owns before every chat start and when the search is switched on, both storage schemas (one JSON blob, one row per key);
   # other connections and settings stay as they are.
   local db py out base key default; db=$(acc_db); [[ -s "$db" ]] || return 0; py=$(acc_python) || return 0
-  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then base="http://127.0.0.1:$PROXY_PORT/v1"; key="$MASTER_KEY"; default="nim-chat"; else base="$API_BASE"; key="$NVIDIA_API_KEY"; default="$MODEL_CHAT"; fi
+  if [[ "${NIMCTL_CHAT_VIA_PROXY:-1}" == 1 ]]; then base="http://127.0.0.1:$PROXY_PORT/v1"; key="$MASTER_KEY"; default="nim-auto"; else base="$API_BASE"; key="$NVIDIA_API_KEY"; default="$MODEL_CHAT"; fi
   out=$(NIMCTL_CHAT_DB="$db" NIMCTL_CHAT_BASE="$base" NIMCTL_CHAT_KEY="$key" NIMCTL_CHAT_DEFAULT="$default" NIMCTL_CHAT_SEARCH="${SEARCH_ENABLED:-0}" \
        NIMCTL_CHAT_SEARX="http://127.0.0.1:$SEARCH_PORT/search?q=<query>&format=json" NIMCTL_CHAT_RESULTS="${NIMCTL_SEARCH_RESULTS:-10}" NIMCTL_CHAT_CONCURRENT="${NIMCTL_SEARCH_CONCURRENT:-8}" "$py" - <<'PY' 2>&1
 import json, os, re, sqlite3, sys, time
@@ -1398,8 +1465,10 @@ inst_systemd() {
   systemctl --user daemon-reload && systemctl --user enable --now "${units[@]/#/nimctl-}" && ok "$(t inst_sysd)" || { bad "$(tf inst_fail systemd)"; return 1; }
 }
 uninst_systemd() {
-  has systemctl || return 0; systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-search nimctl-web nimctl-watch.timer 2>/dev/null
-  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide,search,web}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null; ok "$(t inst_sysd_off)"
+  has systemctl || has launchctl || return 0; has systemctl && systemctl --user disable --now nimctl-proxy nimctl-chat nimctl-ide nimctl-search nimctl-web nimctl-watch.timer 2>/dev/null
+  rm -f "$(unit_dir)"/nimctl-{proxy,chat,ide,search,web}.service "$(unit_dir)"/nimctl-watch.{service,timer}; systemctl --user daemon-reload 2>/dev/null
+  if declare -F launchd_plist >/dev/null && [[ -f "$(launchd_plist)" ]]; then launchctl unload "$(launchd_plist)" >/dev/null 2>&1; rm -f "$(launchd_plist)"; fi
+  ok "$(t inst_sysd_off)"
 }
 
 # ══════ 40-actions.sh ══════
@@ -1561,14 +1630,14 @@ proxy_roundtrip() { # proxy_roundtrip <model-name> [tools] – Anthropic-format 
   if echo "$out" | jq -e '.content[0]' >/dev/null 2>&1; then ok "$(tf proxy_rt "$name ($mode) → $(( $(now_ms) - t0 )) ms")"; return 0; fi
   bad "$(tf proxy_rt_fail "$(echo "$out" | jq -r '.error.message // .detail // .' 2>/dev/null | tr '\n' ' ' | head -c 300)")"; return 1
 }
-act_proxy() { local rc=0 s; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
+act_proxy() { local rc=0 s; proxy_roundtrip nim-auto || rc=1; proxy_roundtrip nim-code || rc=1; proxy_roundtrip nim-code tools || rc=1; proxy_roundtrip nim-fast || rc=1; proxy_roundtrip nim-chat || rc=1; [[ -n "$MODEL_REVIEW" ]] && { proxy_roundtrip nim-review || rc=1; }; return $rc; }
 act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args…]
   local model="" think="" check=1 maxout="${NIMCTL_MAX_OUTPUT_TOKENS:-16384}" name
   load_profile; [[ -n "$PROFILE_MODEL" ]] && { model="$PROFILE_MODEL"; info "$(tf code_profile "MODEL=$PROFILE_MODEL")"; }
   [[ "$PROFILE_THINK" == 1 ]] && think=1; [[ "$PROFILE_MAXOUT" =~ ^[0-9]+$ ]] && maxout="$PROFILE_MAXOUT"
   while (( $# )); do case "$1" in --model|-m) model="${2:-}"; shift 2;; --model=*) model="${1#*=}"; shift;; --think) think=1; shift;; --no-check) check=0; shift;; --) shift; break;; *) break;; esac; done
   has claude || { bad "$(t claude_missing)"; return 1; }
-  case "$model" in ""|code) name="nim-code"; model="$MODEL_CODE";; fast|chat|review) name="nim-$model"; model=$(slot_model "$model"); [[ -n "$model" ]] || { bad "$(tf slot_unconfigured "$name")"; return 1; };;
+  case "$model" in ""|auto) name="nim-auto"; model="$MODEL_CODE";; code) name="nim-code"; model="$MODEL_CODE";; fast|chat|review) name="nim-$model"; model=$(slot_model "$model"); [[ -n "$model" ]] || { bad "$(tf slot_unconfigured "$name")"; return 1; };;
     *) valid_model "$model" || { bad "$(t invalid): $model"; return 1; }; name="$model";; esac
   if [[ "$name" != nim-* ]] && ! yaml_has_model "$name"; then # an id that is not in the proxy yet: probe, add, restart
     probe_get "$model"; [[ "$PROBE_RES" == ok ]] || { info "$(tf code_model_unknown "$model")"; probe_many "$model" >/dev/null; probe_get "$model"; }
@@ -1581,7 +1650,7 @@ act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args�
   svc_running proxy || { info "$(t proxy_starting)"; start_proxy || return 1; }
   if config_newer_than_proxy; then info "$(t restart_hint)"; fi
   (( check )) && { proxy_roundtrip "$name" || { info "→ nimctl logs proxy"; return 1; }; }
-  ok "$(tf claude_start "$model" "$MODEL_FAST")"; info "$(tf code_cwd "$PWD")"; [[ -n "$think" ]] && info "$(t code_think)"
+  ok "$(tf claude_start "$([[ "$name" == nim-auto ]] && printf 'auto → %s' "$model" || printf '%s' "$model")" "$MODEL_FAST")"; info "$(tf code_cwd "$PWD")"; [[ -n "$think" ]] && info "$(t code_think)"
   # Open models behind an OpenAI-compatible endpoint reject Anthropic-only features with 400: extended thinking
   # and very large max_tokens. Off by default; --think or THINK=1 in .nimctl switches thinking back on.
   ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT" ANTHROPIC_AUTH_TOKEN="$MASTER_KEY" ANTHROPIC_MODEL="$name" \
@@ -1592,14 +1661,14 @@ act_code() { # act_code [--model <slot|id>] [--think] [--no-check] [claude args�
 act_env() { # prints export lines for other tools; eval "$(nimctl env)"
   local base="http://127.0.0.1:$PROXY_PORT"
   echo "$(t env_hint)"; svc_running proxy || echo "$(t env_proxy_down)"
-  printf 'export ANTHROPIC_BASE_URL=%q\nexport ANTHROPIC_AUTH_TOKEN=%q\nexport ANTHROPIC_MODEL=nim-code\nexport ANTHROPIC_SMALL_FAST_MODEL=nim-fast\n' "$base" "$MASTER_KEY"
-  printf 'export OPENAI_BASE_URL=%q\nexport OPENAI_API_KEY=%q\nexport OPENAI_MODEL=nim-code\n' "$base/v1" "$MASTER_KEY"
+  printf 'export ANTHROPIC_BASE_URL=%q\nexport ANTHROPIC_AUTH_TOKEN=%q\nexport ANTHROPIC_MODEL=nim-auto\nexport ANTHROPIC_SMALL_FAST_MODEL=nim-fast\n' "$base" "$MASTER_KEY"
+  printf 'export OPENAI_BASE_URL=%q\nexport OPENAI_API_KEY=%q\nexport OPENAI_MODEL=nim-auto\n' "$base/v1" "$MASTER_KEY"
   printf 'export NIMCTL_MODEL_CODE=%q NIMCTL_MODEL_FAST=%q NIMCTL_MODEL_CHAT=%q NIMCTL_MODEL_REVIEW=%q\n' "$MODEL_CODE" "$MODEL_FAST" "$MODEL_CHAT" "$MODEL_REVIEW"
 }
 
 # ── Chat & logs ───────────────────────────────────────────────────────────────
 act_chat_open() { svc_running chat || start_chat || return 1; ok "$(tf browser "$CHAT_PORT")"; open_url "http://localhost:$CHAT_PORT" || info "→ http://localhost:$CHAT_PORT"; }
-log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; web|5) echo "$LOG_DIR/web.log";; *) return 1;; esac; }
+log_file() { case "$1" in proxy|litellm|1) echo "$LOG_DIR/litellm.log";; chat|webui|open-webui|2) echo "$LOG_DIR/open-webui.log";; watch|3) echo "$LOG_DIR/watch.log";; autopilot) echo "$LOG_DIR/autopilot.log";; ide|code-server|4) echo "$LOG_DIR/code-server.log";; web|5) echo "$LOG_DIR/web.log";; *) return 1;; esac; }
 act_logs() { # act_logs [proxy|chat|watch|ide] [-f|f]
   local which="${1:-}" follow="${2:-}" f
   [[ "$which" == -f ]] && { follow=-f; which="${2:-}"; }
@@ -2107,6 +2176,106 @@ cmd_accounts() {
 }
 dash_register n cmd_accounts k_n use
 
+# ══════ 47-autopilot.sh ══════
+# ── Autopilot: the nightly run that keeps everything current without anyone at the keyboard ─────────────────
+# `nimctl autopilot` updates nimctl (NIMCTL_AUTOPILOT_UPDATE=0 skips that), fetches fresh catalogs, scans every provider
+# with a key at its pace (OpenRouter once a week – its free tier allows 50 requests a day), takes the finds into the
+# rankings, rebuilds the chains, restarts the proxy when they changed and aligns the chat. `nimctl watch` (the hourly
+# timer) starts it once a day in the hour NIMCTL_AUTOPILOT_HOUR (local time, default 3) or the two hours after it;
+# NIMCTL_AUTOPILOT=0 leaves it to `nimctl autopilot` by hand. Report: $NIM_DIR/autopilot.json and logs/autopilot.log;
+# the dashboard and the web UI show the last run. The per-request side lives in the proxy: nim-auto (src/25-throttle.sh).
+T_de+=(
+  [ap_title]="Autopilot" [h_autopilot]="nächtlicher Lauf jetzt: nimctl aktualisieren, alle Anbieter scannen, Funde übernehmen, Ketten neu bauen (--quiet)"
+  [ap_off]="aus (NIMCTL_AUTOPILOT=0), nur von Hand" [ap_updated]="nimctl aktualisiert auf %s – der Lauf geht mit der neuen Version weiter"
+  [ap_or_skip]="OpenRouter übersprungen (zuletzt vor %s Tagen gescannt, wöchentlich)" [ap_taken]="übernommen für %s: %s" [ap_nothing]="keine neuen Modelle außerhalb der Ranglisten"
+  [ap_changed]="Ketten neu gebaut: %s" [ap_same]="Ketten unverändert" [ap_done]="Autopilot fertig in %s s"
+  [ap_line]="Autopilot %s · %s" [ap_never]="noch nie gelaufen (nimctl autopilot)" [ap_next]="nächster Lauf gegen %s Uhr" [ap_sum_taken]="%s Modelle übernommen" [ap_sum_none]="nichts Neues" [ap_sum_errors]="Fehler: %s"
+  [auto_line]="Auto     %s Anfragen verteilt: %s" [ide_auto]="nimctl wählt je Anfrage" [wz_autopilot]="Autopilot: jede Nacht gegen %s Uhr – nimctl aktualisieren, alle Anbieter scannen, Ketten neu bauen. Sofort: nimctl autopilot" [watch_launchd_on]="Watchdog aktiv (launchd: ~/Library/LaunchAgents/nimctl.watch.plist, stündlich)"
+)
+T_en+=(
+  [ap_title]="Autopilot" [h_autopilot]="the nightly run, now: update nimctl, scan every provider, take the finds over, rebuild the chains (--quiet)"
+  [ap_off]="off (NIMCTL_AUTOPILOT=0), by hand only" [ap_updated]="nimctl updated to %s – the run continues with the new version"
+  [ap_or_skip]="OpenRouter skipped (scanned %s days ago, weekly)" [ap_taken]="taken over for %s: %s" [ap_nothing]="no new models outside the rankings"
+  [ap_changed]="chains rebuilt: %s" [ap_same]="chains unchanged" [ap_done]="autopilot done in %s s"
+  [ap_line]="Autopilot %s · %s" [ap_never]="never run yet (nimctl autopilot)" [ap_next]="next run around %s:00" [ap_sum_taken]="%s models taken over" [ap_sum_none]="nothing new" [ap_sum_errors]="errors: %s"
+  [auto_line]="Auto     %s requests distributed: %s" [ide_auto]="nimctl picks per request" [wz_autopilot]="Autopilot: every night around %s:00 – update nimctl, scan every provider, rebuild the chains. Right now: nimctl autopilot" [watch_launchd_on]="watchdog active (launchd: ~/Library/LaunchAgents/nimctl.watch.plist, hourly)"
+)
+AUTOPILOT_FILE="$NIM_DIR/autopilot.json"
+ap_log() { mkdir -p "$LOG_DIR"; printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$1" >>"$LOG_DIR/autopilot.log"; }
+ap_read() { [[ -s "$AUTOPILOT_FILE" ]] && jq -r "$1" "$AUTOPILOT_FILE" 2>/dev/null; return 0; }
+ap_hour() { local h="${NIMCTL_AUTOPILOT_HOUR:-3}"; [[ "$h" =~ ^[0-9]+$ ]] && h=$((10#$h)) && (( h < 24 )) || h=3; echo "$h"; }
+autopilot_due() { # 0 when the nightly run should start now: switched on, inside its hours, more than 20 h since the last run
+  [[ "${NIMCTL_AUTOPILOT:-1}" != 0 ]] || return 1
+  local hour last h; hour=$(ap_hour); h=$((10#$(date +%H)))
+  (( h >= hour && h < hour + 3 )) || return 1
+  last=$(ap_read '.at // 0'); [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  (( $(date +%s) - last > 20 * 3600 ))
+}
+cmd_autopilot() { # cmd_autopilot [--quiet] [--after-update <previous version>]
+  local quiet=0 from="" t0 self; t0=$(date +%s); self=$(realpath_ "$0")
+  while (($#)); do case "$1" in --quiet) quiet=1;; --after-update) from="${2:-}"; shift;; esac; shift; done
+  # 1. nimctl itself – a new version takes over the rest of the run
+  if [[ -z "$from" && "${NIMCTL_AUTOPILOT_UPDATE:-1}" != 0 ]]; then
+    local after yes_was="$YES"; YES=1; self_update >"$TMP_ROOT/ap.update" 2>&1 || true; YES="$yes_was"
+    after=$(grep -m1 '^VERSION=' "$self" 2>/dev/null | cut -d'"' -f2)
+    if [[ -n "$after" && "$after" != "$VERSION" ]]; then ap_log "$(tf ap_updated "$after")"; (( quiet )) || info "$(tf ap_updated "$after")"
+      if (( quiet )); then exec "$self" autopilot --quiet --after-update "$VERSION"; else exec "$self" autopilot --after-update "$VERSION"; fi; fi
+  fi
+  local cap="$TMP_ROOT/ap.cap" errors=() provs=() p or_at changed=0 taken="{}" before after n_taken=0 slot found rep=() ob=() new i=0
+  or_at=$(ap_read '.openrouter_at // 0'); [[ "$or_at" =~ ^[0-9]+$ ]] || or_at=0
+  {
+    sect "$(t ap_title)"; [[ -n "$from" ]] && ok "$(tf update_ok "$from" "$VERSION")"
+    check_key; [[ "$KEY_STATE" == ok ]] || { bad "$(tf watch_keybad "$KEY_STATE")"; errors+=(key); }
+    if [[ "$KEY_STATE" == ok ]]; then
+      # 2. fresh catalogs, then every provider with a key at its pace (OpenRouter weekly)
+      rm -f "$MODEL_CACHE"; for p in $(pool_active); do rm -f "$NIM_DIR/models.$p.cache"; done
+      provs=(nim)
+      for p in $(pool_active); do
+        if [[ "$p" == openrouter ]] && (( t0 - or_at < 6 * 86400 )); then info "$(tf ap_or_skip "$(( (t0 - or_at) / 86400 ))")"; continue; fi
+        provs+=("$p"); done
+      SCAN_ROWS=(); for p in "${provs[@]}"; do scan_provider "$p" 0 || errors+=("scan:$p"); [[ "$p" == openrouter ]] && or_at=$t0; done
+      printf "\n  ${B}%s${R}\n" "$(t scan_summary)"; for p in "${SCAN_ROWS[@]}"; do out "  $p"; done
+      # 3. finds outside the rankings join them (like `scan --use`)
+      for slot in "${SLOTS[@]}"; do mapfile -t found < <(scan_found "$slot" "${provs[@]}"); ((${#found[@]})) || continue
+        scan_use "$slot" "${found[@]}"; n_taken=$((n_taken + ${#found[@]})); info "$(tf ap_taken "$slot" "${found[*]}")"
+        taken=$(jq -n --argjson a "$taken" --arg s "$slot" --arg v "${found[*]}" '$a + {($s): ($v | split(" "))}'); done
+      (( n_taken )) || info "$(t ap_nothing)"
+      # 4. chains from the fresh probes; the proxy and the chat follow when they changed
+      before="$CHAIN_CODE|$CHAIN_FAST|$CHAIN_CHAT|$CHAIN_REVIEW"; for slot in "${SLOTS[@]}"; do ob+=("$(slot_model "$slot")"); done
+      auto_all || errors+=(auto)
+      after="$CHAIN_CODE|$CHAIN_FAST|$CHAIN_CHAT|$CHAIN_REVIEW"
+      for slot in "${SLOTS[@]}"; do new=$(slot_model "$slot"); [[ "$new" != "${ob[i]}" ]] && rep+=("$slot ${ob[i]:-–} → ${new:-–}"); ((i++)); done
+      if [[ "$before" != "$after" ]]; then changed=1; info "$(tf ap_changed "${rep[*]:-$(t ap_same)}")"; svc_running proxy && { restart_svc proxy || errors+=(proxy); }; else ok "$(t ap_same)"; fi
+      svc_running chat && chat_sync_db >/dev/null 2>&1
+    fi
+    ok "$(tf ap_done "$(( $(date +%s) - t0 ))")"
+  } >"$cap" 2>&1
+  (( quiet )) || cat "$cap"
+  local summary; if ((${#errors[@]})); then summary=$(tf ap_sum_errors "${errors[*]}"); elif (( n_taken )); then summary=$(tf ap_sum_taken "$n_taken"); else summary=$(t ap_sum_none); fi
+  (( changed )) && summary+=" · $(tf ap_changed "${rep[*]:-$(t ap_same)}")"
+  jq -n --argjson at "$t0" --argjson seconds "$(( $(date +%s) - t0 ))" --arg version "$VERSION" --arg from "$from" --arg provs "${provs[*]}" --argjson taken "$taken" \
+    --argjson changed "$changed" --arg rep "$(printf '%s\n' "${rep[@]}")" --arg errors "${errors[*]}" --argjson or_at "$or_at" --arg summary "$summary" \
+    '{at: $at, seconds: $seconds, version: $version, updated_from: (if $from == "" then null else $from end), providers: ($provs | split(" ") | map(select(. != ""))),
+      taken: $taken, chains_changed: ($changed == 1), replaced: ($rep | split("\n") | map(select(. != ""))), errors: ($errors | split(" ") | map(select(. != ""))),
+      openrouter_at: $or_at, summary: $summary}' >"$AUTOPILOT_FILE.tmp" && mv "$AUTOPILOT_FILE.tmp" "$AUTOPILOT_FILE"
+  ap_log "$summary"; watch_notify "$(t ap_title): $summary"
+  if (( quiet )); then if ((${#errors[@]})); then bad "$summary"; else ok "$summary"; fi; fi
+  ((${#errors[@]} == 0))
+}
+autopilot_line() { # one dashboard line: the last run and when the next one is due
+  local at summary next; at=$(ap_read '.at // 0'); summary=$(ap_read '.summary // ""')
+  if [[ "${NIMCTL_AUTOPILOT:-1}" == 0 ]]; then next=$(t ap_off); else next=$(tf ap_next "$(ap_hour)"); fi
+  if [[ ! "$at" =~ ^[0-9]+$ ]] || (( at == 0 )); then tf ap_line "$(t ap_never)" "$next"; return 0; fi
+  tf ap_line "$(fmt_time "$at" '+%d.%m. %H:%M') · $summary" "$next"
+}
+auto_line() { # one dashboard line from health.json: how nim-auto distributed the requests since the proxy started (fresh only)
+  local f="$NIM_DIR/health.json" updated total parts; [[ -s "$f" ]] || return 1
+  updated=$(jq -r '.updated // 0' "$f" 2>/dev/null); [[ "$updated" =~ ^[0-9]+$ ]] && (( $(date +%s) - updated < 120 )) || return 1
+  total=$(jq -r '[(.auto // {})[]] | add // 0' "$f" 2>/dev/null); [[ "$total" =~ ^[0-9]+$ ]] && (( total > 0 )) || return 1
+  parts=$(jq -r '(.auto // {}) | to_entries | sort_by(-.value) | map("\(.key) \(.value)") | join(" · ")' "$f" 2>/dev/null)
+  tf auto_line "$total" "$parts"
+}
+
 # ══════ 48-watch.sh ══════
 # ── Watch: keep the configured slots healthy from a timer/cron ───────────────
 T_de+=(
@@ -2163,15 +2332,36 @@ cmd_watch() { # cmd_watch [--quiet] – probe every configured slot, auto-replac
     for part in "${parts[@]}"; do msg+="${msg:+; }$part"; case "$part" in dead*) bad "$part";; *) warn "$part";; esac; done
   fi
   watch_log "$msg"; [[ "$msg" == ok\ * ]] || watch_notify "$msg"
+  if declare -F autopilot_due >/dev/null && autopilot_due; then cmd_autopilot --quiet || true; fi   # once a day, in its hour (src/47-autopilot.sh)
   ((${#dead[@]})) && return 4
   return 0
 }
-inst_watch_timer() {
-  has systemctl || { bad "$(t no_systemd)"; return 1; }
-  local d self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
-  printf '[Unit]\nDescription=nimctl watch\n\n[Service]\nType=oneshot\nExecStart=%s watch --quiet\nEnvironment=NIMCTL_HOME=%s\n' "$self" "$NIM_DIR" >"$d/nimctl-watch.service"
-  printf '[Unit]\nDescription=nimctl watch timer\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' >"$d/nimctl-watch.timer"
-  systemctl --user daemon-reload && systemctl --user enable --now nimctl-watch.timer && ok "$(t watch_timer_on)" || { bad "$(tf inst_fail systemd)"; return 1; }
+launchd_plist() { echo "$HOME/Library/LaunchAgents/nimctl.watch.plist"; }
+inst_watch_timer() { # hourly `nimctl watch --quiet` (which starts the autopilot once a day): systemd --user, or launchd on macOS
+  local self kind="${NIMCTL_TIMER:-}"; self=$(realpath_ "$0")   # NIMCTL_TIMER=systemd|launchd forces the kind (tests)
+  if [[ -z "$kind" ]]; then if has systemctl; then kind=systemd; elif has launchctl; then kind=launchd; fi; fi
+  if [[ "$kind" == systemd ]]; then
+    local d; d=$(unit_dir); mkdir -p "$d"
+    printf '[Unit]\nDescription=nimctl watch\n\n[Service]\nType=oneshot\nExecStart=%s watch --quiet\nEnvironment=NIMCTL_HOME=%s\n' "$self" "$NIM_DIR" >"$d/nimctl-watch.service"
+    printf '[Unit]\nDescription=nimctl watch timer\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' >"$d/nimctl-watch.timer"
+    systemctl --user daemon-reload && systemctl --user enable --now nimctl-watch.timer && ok "$(t watch_timer_on)" || { bad "$(tf inst_fail systemd)"; return 1; }
+  elif [[ "$kind" == launchd ]]; then
+    local f; f=$(launchd_plist); mkdir -p "${f%/*}" "$LOG_DIR"
+    cat >"$f" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>nimctl.watch</string>
+  <key>ProgramArguments</key><array><string>$self</string><string>watch</string><string>--quiet</string></array>
+  <key>EnvironmentVariables</key><dict><key>NIMCTL_HOME</key><string>$NIM_DIR</string><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$LOG_DIR/watch-launchd.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/watch-launchd.log</string>
+</dict></plist>
+EOF
+    launchctl unload "$f" >/dev/null 2>&1; launchctl load -w "$f" >/dev/null 2>&1 && ok "$(t watch_launchd_on)" || { bad "$(tf inst_fail launchd)"; return 1; }
+  else bad "$(t no_systemd)"; return 1; fi
 }
 
 # ══════ 49-completion.sh ══════
@@ -2197,6 +2387,7 @@ _nimctl() {
     web) COMPREPLY=(\$(compgen -W "open start stop disable url candidates discover" -- "\$cur"));;
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     scan) COMPREPLY=(\$(compgen -W "all nvidia groq gemini cerebras openrouter mistral --sizes --use --clear" -- "\$cur"));;
+    autopilot|watch) COMPREPLY=(\$(compgen -W "--quiet" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
     install) COMPREPLY=(\$(compgen -W "all alias systemd nosystemd completion watch_timer" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;
@@ -2269,6 +2460,8 @@ render_dashboard() {
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
   declare -F throttle_line >/dev/null && { local tl2; tl2=$(throttle_line 2>/dev/null) && printf "  %s\n" "$tl2"; }
   declare -F cooldown_line >/dev/null && { local cl; cl=$(cooldown_line 2>/dev/null) && printf "  %s\n" "$cl"; }
+  declare -F auto_line >/dev/null && { local al; al=$(auto_line 2>/dev/null) && printf "  %s\n" "$al"; }
+  declare -F autopilot_line >/dev/null && printf "  %s\n" "$(autopilot_line 2>/dev/null)"
   sect "$(t models)"
   local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && { (( COLS >= 100 )) || continue; }; slot_line "$s" "$n"; done
   (( COLS >= 100 )) && info "$(t slots_hint)"
@@ -2458,6 +2651,7 @@ ide_write_config() { # ide_write_config [--force] – code-server.yaml, settings
   else cmd=python3; args=$(jq -cn --arg t "$tool" '[$t]'); info "$(t ide_mcp_no_uv)"; fi
   {
     printf '%s – rewritten on every `nimctl ide` start; remove this line to keep your own edits\nname: nimctl\nversion: 1.0.0\nschema: v1\nmodels:\n' "$IDE_MARK"
+    printf '  - name: "auto · %s"\n    provider: openai\n    model: nim-auto\n    apiBase: %s\n    apiKey: %s\n    roles: [chat, edit, apply]\n    capabilities: [tool_use]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 8192 }\n' "$(t ide_auto)" "$base" "$MASTER_KEY" "$ctx"
     printf '  - name: "code · %s"\n    provider: openai\n    model: nim-code\n    apiBase: %s\n    apiKey: %s\n    roles: [chat, edit, apply]\n    capabilities: [tool_use]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 8192 }\n' "$MODEL_CODE" "$base" "$MASTER_KEY" "$ctx"
     printf '  - name: "fast · %s"\n    provider: openai\n    model: nim-fast\n    apiBase: %s\n    apiKey: %s\n    roles: [chat]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 4096 }\n' "$MODEL_FAST" "$base" "$MASTER_KEY" "$ctx"
     if [[ -n "$MODEL_REVIEW" ]]; then more=", review"
@@ -2714,7 +2908,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
       if [[ "$PROBE_RES" == ok ]]; then if [[ "$TOOL_SLOTS" == *" $s "* && "$PROBE_TOOLS" != ok ]]; then warn "$s: $(tf auto_notools "$m" "$s")"; doc_issue "model:$s"; else ok "$s: $m (${PROBE_MS} ms)"; fi
       else bad "$s: $m – $PROBE_RES"; doc_issue "model:$s"; fi; done
   elif [[ "$KEY_STATE" == ok ]]; then warn "$(tf slot_unconfigured code)"; doc_issue "model:code"; fi
-  if svc_running proxy; then proxy_roundtrip nim-code || doc_issue proxy; proxy_roundtrip nim-code tools || doc_issue proxy; proxy_roundtrip nim-fast || doc_issue proxy; fi
+  if svc_running proxy; then proxy_roundtrip nim-auto || doc_issue proxy; proxy_roundtrip nim-code || doc_issue proxy; proxy_roundtrip nim-code tools || doc_issue proxy; proxy_roundtrip nim-fast || doc_issue proxy; fi
   printf '\n'
   ((${#DOC_ISSUES[@]} == 0)) && { ok "$(t doc_ok)"; return 0; }
   bad "$(tf doc_issues "${#DOC_ISSUES[@]}" "${DOC_ISSUES[*]}")"
@@ -2750,7 +2944,7 @@ T_de+=(
   [wz_tools]="Werkzeuge" [wz_tools_ok]="alles vorhanden" [wz_tools_q]="Fehlende jetzt installieren (dauert 2–5 Min.)?"
   [wz_models]="Modelle" [wz_models_hint]="Ich teste alle Kandidaten parallel mit echten Anfragen (max. %ss je Modell) und prüfe, ob das Code-Modell Tool-Calls kann."
   [wz_start]="Dienste" [wz_start_q]="Proxy und Chat jetzt starten?" [wz_done]="Fertig!"
-  [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle und ersetzt tote automatisch)?"
+  [wz_watch_q]="Watchdog-Timer einrichten (prüft stündlich die Modelle, ersetzt tote und lässt nachts den Autopiloten laufen: Update, Scan aller Anbieter, Ketten)?"
   [wz_ide_q]="IDE im Browser einrichten (VS Code + Continue, ~150 MB Download)?" [wz_search_q]="Websuche für den Chat einrichten (SearXNG, ~60 MB)?" [wz_web_q]="Web-Oberfläche einrichten (Dashboard, Einstellungen und Statistik im Browser)?"
   [wz_next]="Ab jetzt:  nimctl        Dashboard\n           nimctl code   Claude Code mit NIM (in einem Projektordner)\n           nimctl chat   Chat im Browser öffnen\n           nimctl help   alle Befehle"
   [wz_chat_hint]="Chat: Das erste Konto, das sich unter http://localhost:%s registriert, wird Admin. Passwort vergessen? nimctl chat passwd"
@@ -2763,7 +2957,7 @@ T_en+=(
   [wz_tools]="Tools" [wz_tools_ok]="all present" [wz_tools_q]="Install missing tools now (2–5 min)?"
   [wz_models]="Models" [wz_models_hint]="I probe all candidates in parallel with real requests (max %ss per model) and check that the code model can make tool calls."
   [wz_start]="Services" [wz_start_q]="Start proxy and chat now?" [wz_done]="Done!"
-  [wz_watch_q]="Set up the watchdog timer (probes the models hourly and replaces dead ones automatically)?"
+  [wz_watch_q]="Set up the watchdog timer (probes the models hourly, replaces dead ones and runs the autopilot at night: update, scan of every provider, chains)?"
   [wz_ide_q]="Set up the browser IDE (VS Code + Continue, ~150 MB download)?" [wz_search_q]="Set up web search for the chat (SearXNG, ~60 MB)?" [wz_web_q]="Set up the web UI (dashboard, settings and statistics in the browser)?"
   [wz_next]="From now on:  nimctl        dashboard\n              nimctl code   Claude Code on NIM (inside a project folder)\n              nimctl chat   open the chat in your browser\n              nimctl help   all commands"
   [wz_chat_hint]="Chat: the first account registered at http://localhost:%s becomes admin. Forgot the password? nimctl chat passwd"
@@ -2798,9 +2992,9 @@ wizard() { # wizard [--yes]
   auto_select code fast chat review
   sect "$(tf wz_step 4 5 "$(t wz_start)")"
   if ask "$(t wz_start_q)" y; then start_all; fi
-  if has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]] && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
+  if { { has systemctl && [[ -n "${XDG_RUNTIME_DIR:-}" ]]; } || has launchctl; } && declare -F inst_watch_timer >/dev/null && ask "$(t wz_watch_q)" y; then inst_watch_timer; fi
   sect "$(tf wz_step 5 5 "$(t wz_done)")"; local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && continue; slot_line "$s" "$n"; done
-  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; [[ "$WEB_ENABLED" == 1 ]] && info "$(tf web_url "$WEB_PORT")"; path_hint; printf '\n'
+  printf "\n  %b\n" "$(t wz_next)"; info "$(tf wz_chat_hint "$CHAT_PORT")"; [[ "$IDE_ENABLED" == 1 ]] && declare -F ide_url >/dev/null && info "$(tf ide_url "$(ide_url)")"; [[ "$WEB_ENABLED" == 1 ]] && info "$(tf web_url "$WEB_PORT")"; declare -F ap_hour >/dev/null && info "$(tf wz_autopilot "$(ap_hour)")"; path_hint; printf '\n'
 }
 
 # ══════ 70-update.sh ══════
@@ -3175,6 +3369,10 @@ de: {
   running:'läuft: %s', done_ok:'fertig (%s s)', done_fail:'beendet mit Code %s (%s s)', busy:'Es läuft bereits ein Befehl.', abort:'Abbrechen', clear:'Leeren', offline:'Web-UI nicht erreichbar – läuft der Dienst? nimctl web', forbidden:'Zugriff verweigert (Token) – Seite neu laden.',
   extra_models:'Zusätzliche Modelle im Proxy', help_slots:'code = Claude Code · fast = Nebenaufgaben & Fallback · chat = Browser-Chat · review = großes Modell', version_hint:'nimctl %s · %s', ago_s:'vor %ss', ago_m:'vor %s min', ago_h:'vor %s h', ago_d:'vor %s d', never:'nie',
   tools_row:'Werkzeuge', links:'Links', open_chat:'Chat öffnen', open_ide:'IDE öffnen', open_search:'Suche öffnen', proxy_url:'Proxy-URL', quick:'Schnellzugriff',
+  autopilot:'Autopilot', ap_on:'an', ap_off:'aus', ap_last:'Letzter Lauf', ap_never:'noch nie gelaufen', ap_next:'nächster Lauf gegen %s Uhr', ap_run:'Jetzt laufen lassen', ap_taken:'%s Modelle übernommen', ap_replaced:'Ränge geändert: %s', ap_errors:'Fehler: %s', ap_disabled:'aus – nur von Hand', ap_secs:'%s s',
+  ap_hint:'Jede Nacht: nimctl aktualisieren, alle Anbieter scannen, Funde in die Ranglisten übernehmen, Ketten neu bauen. Anfragen an „auto“ verteilt der Proxy selbst: Nebenaufgaben → fast, Tool-Calls → code, lange Eingaben → review, alles andere → chat. Chat, Claude Code und IDE nutzen auto.',
+  auto_title:'Auto-Verteilung', auto_none:'noch keine Anfragen an auto seit Proxy-Start', auto_last:'zuletzt → %s (%s)',
+  s_autopilot:'Autopilot', s_ap:'Nächtlicher Lauf', s_ap_h:'Update, Scan aller Anbieter, Funde übernehmen, Ketten neu bauen – gestartet vom Watchdog-Timer', s_ap_hour:'Stunde (lokale Zeit)', s_ap_hour_h:'der Lauf startet in dieser Stunde oder den zwei danach', s_ap_update:'nimctl selbst aktualisieren', s_ap_update_h:'vor dem Lauf die neue Version holen (Prüfsumme wird verifiziert)', s_auto_review:'Review ab (Tokens Eingabe)', s_auto_review_h:'Anfragen an auto mit mehr Eingabe gehen an die Review-Kette',
 },
 en: {
   overview:'Overview', models:'Models', providers:'Providers', services:'Services', stats:'Statistics', settings:'Settings', console:'Console', loading:'loading …',
@@ -3216,6 +3414,10 @@ en: {
   running:'running: %s', done_ok:'done (%s s)', done_fail:'exited with code %s (%s s)', busy:'A command is already running.', abort:'Abort', clear:'Clear', offline:'Web UI unreachable – is the service running? nimctl web', forbidden:'Access denied (token) – reload the page.',
   extra_models:'Extra models in the proxy', help_slots:'code = Claude Code · fast = side tasks & fallback · chat = browser chat · review = big model', version_hint:'nimctl %s · %s', ago_s:'%ss ago', ago_m:'%s min ago', ago_h:'%s h ago', ago_d:'%s d ago', never:'never',
   tools_row:'Tools', links:'Links', open_chat:'Open chat', open_ide:'Open IDE', open_search:'Open search', proxy_url:'Proxy URL', quick:'Quick actions',
+  autopilot:'Autopilot', ap_on:'on', ap_off:'off', ap_last:'Last run', ap_never:'never run yet', ap_next:'next run around %s:00', ap_run:'Run now', ap_taken:'%s models taken over', ap_replaced:'ranks changed: %s', ap_errors:'errors: %s', ap_disabled:'off – by hand only', ap_secs:'%s s',
+  ap_hint:'Every night: update nimctl, scan every provider, take the finds into the rankings, rebuild the chains. Requests to “auto” are distributed by the proxy itself: side tasks → fast, tool calls → code, long input → review, everything else → chat. Chat, Claude Code and the IDE use auto.',
+  auto_title:'Auto distribution', auto_none:'no requests to auto since the proxy started', auto_last:'last → %s (%s)',
+  s_autopilot:'Autopilot', s_ap:'Nightly run', s_ap_h:'update, scan of every provider, take finds over, rebuild the chains – started by the watchdog timer', s_ap_hour:'Hour (local time)', s_ap_hour_h:'the run starts in this hour or the two after it', s_ap_update:'Update nimctl itself', s_ap_update_h:'fetch the new version before the run (checksum verified)', s_auto_review:'Review from (input tokens)', s_auto_review_h:'requests to auto with more input go to the review chain',
 }};
 const t = (k, ...a) => { let s = (T[L][k] ?? T.en[k] ?? k); a.forEach(v => { s = s.replace('%s', v); }); return s; };
 const SLOTS = ['code', 'fast', 'chat', 'review'];
@@ -3225,7 +3427,7 @@ const POOL = PROVIDERS.slice(1);
 const PCOL = { nvidia: 'var(--s6)', groq: 'var(--s2)', gemini: 'var(--s1)', cerebras: 'var(--s4)', openrouter: 'var(--s5)', mistral: 'var(--s3)' };
 const SCAN_RPM = { nvidia: 30, groq: 25, gemini: 8, cerebras: 25, openrouter: 15, mistral: 40 };   // src/21-scan.sh
 const SIZE_CLASSES = [32000, 12000, 8000];
-const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'8', NIMCTL_CHAIN_PER_PROVIDER:'2', NIMCTL_SCAN_RPM:'', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
+const DEFAULTS = { NIMCTL_RPM:'40', NIMCTL_RPM_MAX_WAIT:'45', NIMCTL_STALL_TIMEOUT:'120', NIMCTL_COOLDOWN:'90', NIMCTL_COOLDOWN_RATELIMIT:'15', NIMCTL_CHAIN_LEN:'8', NIMCTL_CHAIN_PER_PROVIDER:'2', NIMCTL_SCAN_RPM:'', NIMCTL_AUTOPILOT:'1', NIMCTL_AUTOPILOT_HOUR:'3', NIMCTL_AUTOPILOT_UPDATE:'1', NIMCTL_AUTO_REVIEW_TOKENS:'6000', NIMCTL_MAX_OUTPUT_TOKENS:'16384', NIMCTL_CHAT_VIA_PROXY:'1', NIMCTL_PROXY_PORT:'4000', NIMCTL_CHAT_PORT:'3000', NIMCTL_IDE_PORT:'8080', NIMCTL_SEARCH_PORT:'8888', NIMCTL_WEB_PORT:'4040', NIMCTL_BIND:'127.0.0.1', NIMCTL_PROBE_TIMEOUT:'45', NIMCTL_REPROBE_HOURS:'6', NIMCTL_KEY_WARN_DAYS:'165', NIMCTL_IDE_CONTEXT:'32768', NIMCTL_IDE_EXTENSIONS:'', NIMCTL_SEARCH_RESULTS:'10', NIMCTL_SEARCH_CONCURRENT:'8', NIMCTL_LANG:'' };
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...kids) {
@@ -3429,8 +3631,19 @@ function chainList(slot, sl, withButtons) { const chain = sl.chain || []; if (ch
     return h('li', { class: pi ? 'paused' : '' }, h('span', { class: 'rk' }, (i + 1) + '.'), h('span', { class: 'id', title: m }, plainId(m)), h('span', { class: 'meta' }, provTag(provOf(m)), pr && pr.result === 'ok' ? h('span', { class: 'small muted tnum' }, fmtN(pr.ms) + ' ms') : pr && pr.result ? pill('crit', pr.result) : null, pi ? pill('warn', t('paused', hhmm(pi.until), pi.reason)) : null, withButtons && i > 0 ? btn(t('make_rank1'), () => run(['pick', slot, m]), 'small ghost') : null)); })); }
 function slotState(sl) { if (!sl.model) return pill('', t('none')); if (sl.state === 'ok') return pill('good', t('answers')); if (sl.state === 'unprobed') return pill('', t('unprobed')); return pill('crit', sl.error || 'error'); }
 
+function dtime(epoch) { return epoch ? new Date(epoch * 1000).toLocaleString(L === 'de' ? 'de-DE' : 'en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–'; }
+function autopilotCard() { // the nightly run and how nim-auto distributes the requests
+  const ap = S.autopilot || {}; const on = setting('NIMCTL_AUTOPILOT') !== '0'; const hour = setting('NIMCTL_AUTOPILOT_HOUR');
+  const auto = (S.health && S.health.auto) || {}; const total = Object.values(auto).reduce((a, b) => a + b, 0); const last = S.health && S.health.auto_last;
+  const bits = []; if (ap.at) { const nT = Object.values(ap.taken || {}).reduce((a, l) => a + l.length, 0); if (nT) bits.push(t('ap_taken', nT)); if ((ap.replaced || []).length) bits.push(t('ap_replaced', ap.replaced.join(', '))); if ((ap.errors || []).length) bits.push(t('ap_errors', ap.errors.join(', '))); if (!bits.length && ap.summary) bits.push(ap.summary); if (ap.seconds != null) bits.push(t('ap_secs', ap.seconds)); }
+  return h('div', { class: 'card', style: 'margin-bottom:12px' },
+    h('div', { class: 'row between' }, h('h2', { class: 'row', style: 'gap:8px;margin:0' }, t('autopilot'), pill(on ? 'good' : 'warn', on ? t('ap_on') : t('ap_off'))), h('div', { class: 'row' }, btn(t('ap_run'), () => run(['autopilot']), 'small primary'), btn(t('settings') + ' →', () => show('settings'), 'small ghost'))),
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('b', null, t('ap_last') + ':'), ap.at ? h('span', null, dtime(ap.at) + (bits.length ? ' · ' + bits.join(' · ') : '')) : h('span', { class: 'muted' }, t('ap_never')), h('span', { class: 'muted small' }, on ? t('ap_next', hour) : t('ap_disabled'))),
+    h('div', { class: 'row', style: 'margin-top:6px' }, h('b', null, t('auto_title') + ':'), total ? [...SLOTS.map(s => auto[s] ? h('span', { class: 'tag' }, s + ' ' + fmtN(auto[s])) : null), last && last.slot ? h('span', { class: 'muted small' }, t('auto_last', last.slot, last.why || '')) : null] : h('span', { class: 'muted small' }, t('auto_none'))),
+    h('div', { class: 'small muted', style: 'margin-top:8px' }, t('ap_hint')));
+}
 function renderOverview(host) {
-  clear(host);
+  clear(host); host.append(autopilotCard());
   const req = STATS && STATS.requests || {}; const by = req.by_status || {}; const b = bins(1).rows; const sp = (k) => spark(bins(6).rows.slice(-24).map(r => r[k]), 'var(--s1)');
   const started = S.notices && S.notices.proxy_started;
   const tile = (label, value, sub, sparkEl) => h('div', { class: 'card tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), h('div', { class: 'sub' }, h('span', null, sub || ''), sparkEl));
@@ -3635,14 +3848,15 @@ function renderStats(host) {
 function renderSettings(host) {
   clear(host);
   const set = S.settings || {}; const env = new Set(S.env_overrides || []); const inputs = {};
-  const sf = (key, label, help, kind) => { const ov = env.has(key); let input; if (kind === 'select') { input = h('select', { disabled: ov }, key === 'NIMCTL_CHAT_VIA_PROXY' ? [h('option', { value: '', selected: !set[key] }, t('s_default', t('s_yes'))), h('option', { value: '1', selected: set[key] === '1' }, t('s_yes')), h('option', { value: '0', selected: set[key] === '0' }, t('s_no'))] : [h('option', { value: '', selected: !set[key] }, t('s_lang_auto')), h('option', { value: 'de', selected: set[key] === 'de' }, 'Deutsch'), h('option', { value: 'en', selected: set[key] === 'en' }, 'English')]); } else input = h('input', { type: 'text', value: set[key] || '', placeholder: DEFAULTS[key] || '', disabled: ov }); inputs[key] = input; return field(label, input, [ov ? t('s_env') : (DEFAULTS[key] ? t('s_default', DEFAULTS[key]) : ''), help || ''].filter(Boolean).join(' · ')); };
+  const sf = (key, label, help, kind) => { const ov = env.has(key); let input; if (kind === 'select' || kind === 'yesno') { input = h('select', { disabled: ov }, kind === 'yesno' ? [h('option', { value: '', selected: !set[key] }, t('s_default', t('s_yes'))), h('option', { value: '1', selected: set[key] === '1' }, t('s_yes')), h('option', { value: '0', selected: set[key] === '0' }, t('s_no'))] : [h('option', { value: '', selected: !set[key] }, t('s_lang_auto')), h('option', { value: 'de', selected: set[key] === 'de' }, 'Deutsch'), h('option', { value: 'en', selected: set[key] === 'en' }, 'English')]); } else input = h('input', { type: 'text', value: set[key] || '', placeholder: DEFAULTS[key] || '', disabled: ov }); inputs[key] = input; return field(label, input, [ov ? t('s_env') : (DEFAULTS[key] ? t('s_default', DEFAULTS[key]) : ''), help || ''].filter(Boolean).join(' · ')); };
   const group = (title, kids) => h('div', { class: 'card' }, h('h2', null, title), h('div', { class: 'stack' }, kids));
   const saveBtn = btn(t('save'), async () => { const v = {}; Object.entries(inputs).forEach(([k, i]) => { if (!i.disabled) v[k] = i.value; }); try { await api('/api/settings', { settings: v }); settingsSaved = true; toast(t('saved'), 'good'); refresh(true); } catch (e) { toast(String(e), 'crit'); } }, 'primary');
   const keyIn = h('input', { type: 'password', placeholder: 'nvapi-…', autocomplete: 'off' });
   host.append(h('div', { class: 'grid wide' },
     h('div', { class: 'card' }, h('h2', null, t('s_key')), h('div', { class: 'row', style: 'margin-bottom:8px' }, keyPill(), h('span', { class: 'mono' }, S.config.nvidia_key || ''), h('span', { class: 'small muted' }, S.key && S.key.expires_in_days != null ? t('expires', S.key.expires_in_days) : '')), h('div', { class: 'small muted', style: 'margin-bottom:8px' }, t('s_key_hint')), h('div', { class: 'row' }, h('div', { style: 'flex:1;min-width:200px' }, keyIn), btn(t('s_key_save'), () => { const k = keyIn.value.trim(); if (!k) return; keyIn.value = ''; run(['key'], { stdin: k }); }, 'primary small'))),
-    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'select')]),
+    group(t('s_proxy'), [sf('NIMCTL_RPM', t('s_rpm'), t('s_rpm_h')), sf('NIMCTL_RPM_MAX_WAIT', t('s_rpm_wait'), t('s_rpm_wait_h')), sf('NIMCTL_STALL_TIMEOUT', t('s_stall'), t('s_stall_h')), sf('NIMCTL_COOLDOWN', t('s_cooldown'), t('s_cooldown_h')), sf('NIMCTL_COOLDOWN_RATELIMIT', t('s_cooldown_rl'), t('s_cooldown_rl_h')), sf('NIMCTL_MAX_OUTPUT_TOKENS', t('s_maxout')), sf('NIMCTL_CHAT_VIA_PROXY', t('s_chat_via'), '', 'yesno')]),
     group(t('s_chains'), [sf('NIMCTL_CHAIN_LEN', t('s_chainlen'), t('s_chainlen_h')), sf('NIMCTL_CHAIN_PER_PROVIDER', t('s_perprov'), t('s_perprov_h')), sf('NIMCTL_SCAN_RPM', t('s_scan_rpm'), t('s_scan_rpm_h'))]),
+    group(t('s_autopilot'), [sf('NIMCTL_AUTOPILOT', t('s_ap'), t('s_ap_h'), 'yesno'), sf('NIMCTL_AUTOPILOT_HOUR', t('s_ap_hour'), t('s_ap_hour_h')), sf('NIMCTL_AUTOPILOT_UPDATE', t('s_ap_update'), t('s_ap_update_h'), 'yesno'), sf('NIMCTL_AUTO_REVIEW_TOKENS', t('s_auto_review'), t('s_auto_review_h'))]),
     group(t('s_net'), [sf('NIMCTL_PROXY_PORT', t('s_port_proxy')), sf('NIMCTL_CHAT_PORT', t('s_port_chat')), sf('NIMCTL_IDE_PORT', t('s_port_ide')), sf('NIMCTL_SEARCH_PORT', t('s_port_search')), sf('NIMCTL_WEB_PORT', t('s_port_web')), sf('NIMCTL_BIND', t('s_bind'), t('s_bind_h'))]),
     group(t('s_probe'), [sf('NIMCTL_PROBE_TIMEOUT', t('s_probe_to')), sf('NIMCTL_REPROBE_HOURS', t('s_reprobe')), sf('NIMCTL_KEY_WARN_DAYS', t('s_keywarn'))]),
     group(t('s_ide'), [sf('NIMCTL_IDE_CONTEXT', t('s_ide_ctx')), sf('NIMCTL_IDE_EXTENSIONS', t('s_ide_ext')), sf('NIMCTL_SEARCH_RESULTS', t('s_search_n')), sf('NIMCTL_SEARCH_CONCURRENT', t('s_search_c'))]),
@@ -3715,14 +3929,14 @@ SLOTS = ["code", "fast", "chat", "review"]
 PROVIDERS = ["groq", "gemini", "cerebras", "openrouter", "mistral"]
 SERVICES = ["proxy", "chat", "ide", "search", "web"]
 LOGS = {"proxy": "litellm.log", "chat": "open-webui.log", "ide": "code-server.log", "search": "searxng.log",
-        "web": "web.log", "watch": "watch.log", "searxng-install": "searxng-install.log", "code-server-install": "code-server-install.log"}
+        "web": "web.log", "watch": "watch.log", "autopilot": "autopilot.log", "searxng-install": "searxng-install.log", "code-server-install": "code-server-install.log"}
 HISTORY_FILE = os.path.join(WEB, "history.json")
 HISTORY_MAX = 2880          # 24 h of samples
 SAMPLE_EVERY = 30.0
 STATE_TTL = 3.0
 # nimctl commands the page may run (first argument). Interactive ones (code, setup, _fg) and the shell completion are out.
 COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "scan", "pick", "find", "test", "proxy", "pool", "ide", "search",
-            "key", "doctor", "install", "update", "watch", "bench", "stats", "chat", "models", "web"}
+            "key", "doctor", "install", "update", "watch", "autopilot", "bench", "stats", "chat", "models", "web"}
 RUN_ENV_KEYS = {"NIMCTL_CHAT_PASSWORD"}          # secrets a command may receive through its environment
 RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same shape nimctl accepts when it reads the file)
 RE_CAND_KEY = re.compile(r"^[a-z]+(\.[a-z]+)?$")
@@ -3932,6 +4146,7 @@ def build_state():
     st["candidates"] = candidates_file()
     st["discovered"] = discovered_file()
     st["bench"] = bench_last()
+    st["autopilot"] = read_json(os.path.join(HOME, "autopilot.json"), {}) or {}
     st["workspace"] = read_text(os.path.join(HOME, "ide-workspace")).strip()
     st["state_file"] = read_kv(os.path.join(HOME, "state"))
     proxy_started = _num(read_text(os.path.join(HOME, "run", "proxy.started")).strip() or "0") or 0

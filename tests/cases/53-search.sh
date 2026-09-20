@@ -54,13 +54,13 @@ data = {"version": 0, "ui": {"default_models": "nvidia/nemotron-3-super-120b", "
         "rag": {"web": {"search": {"enable": True, "engine": "searxng", "searxng_query_url": "https://searx.example.org/search?q=<query>&format=json"}}}}
 con.execute("INSERT INTO config (id, data, version) VALUES (1, ?, 0)", (json.dumps(data),)); con.commit()
 PY
-check "chat start: stored Open WebUI settings aligned (json blob schema)" "Open-WebUI-Einstellungen angeglichen: connection → http://127.0.0.1:$PP/v1, search → searxng http://127.0.0.1:$SP/search\?q=<query>&format=json, default model → nim-chat" < <(timeout 90 "$N" start)
+check "chat start: stored Open WebUI settings aligned (json blob schema)" "Open-WebUI-Einstellungen angeglichen: connection → http://127.0.0.1:$PP/v1, search → searxng http://127.0.0.1:$SP/search\?q=<query>&format=json, default model → nim-auto" < <(timeout 90 "$N" start)
 python3 - "$DB" "$PP" "$SP" <<'PY'
 import json, sqlite3, sys
 d = json.loads(sqlite3.connect(sys.argv[1]).execute("SELECT data FROM config").fetchone()[0])
 ok = (d["openai"]["api_base_urls"] == [f"http://127.0.0.1:{sys.argv[2]}/v1"] and d["openai"]["api_keys"][0].startswith("sk-nimctl-")
       and d["rag"]["web"]["search"]["searxng_query_url"] == f"http://127.0.0.1:{sys.argv[3]}/search?q=<query>&format=json" and d["rag"]["web"]["search"]["enable"] is True
-      and d["ui"]["default_models"] == "nim-chat" and d["ui"]["enable_signup"] is False and d["openai"]["api_configs"] == {"0": {}})
+      and d["ui"]["default_models"] == "nim-auto" and d["ui"]["enable_signup"] is False and d["openai"]["api_configs"] == {"0": {}})
 sys.exit(0 if ok else 1)
 PY
 assert "chat start: connection, key, search url and default model written, other settings untouched" [ $? -eq 0 ]
@@ -76,12 +76,12 @@ rows = {"openai.api_base_urls": ["https://api.example.org/v1", "https://integrat
 for k, v in rows.items(): con.execute("INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)", (k, json.dumps(v), int(time.time())))
 con.commit()
 PY
-check "chat start: stored settings aligned (one row per key schema)" "angeglichen: connection → http://127.0.0.1:$PP/v1, connection on, search → searxng http://127.0.0.1:$SP/search.*default model → nim-chat" < <(timeout 90 "$N" start)
+check "chat start: stored settings aligned (one row per key schema)" "angeglichen: connection → http://127.0.0.1:$PP/v1, connection on, search → searxng http://127.0.0.1:$SP/search.*default model → nim-auto" < <(timeout 90 "$N" start)
 python3 - "$DB" "$PP" <<'PY'
 import json, sqlite3, sys
 con = sqlite3.connect(sys.argv[1]); g = lambda k: json.loads(con.execute("SELECT value FROM config WHERE key=?", (k,)).fetchone()[0])
 ok = (g("openai.api_base_urls") == ["https://api.example.org/v1", f"http://127.0.0.1:{sys.argv[2]}/v1"] and g("openai.api_keys")[0] == "sk-other"
-      and g("openai.api_keys")[1].startswith("sk-nimctl-") and g("openai.enable") is True and g("ui.default_models") == "nim-chat" and g("web.search.engine") == "searxng")
+      and g("openai.api_keys")[1].startswith("sk-nimctl-") and g("openai.enable") is True and g("ui.default_models") == "nim-auto" and g("web.search.engine") == "searxng")
 sys.exit(0 if ok else 1)
 PY
 assert "chat start: only nimctl's connection replaced, the other one kept" [ $? -eq 0 ]

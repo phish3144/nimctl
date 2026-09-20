@@ -5,7 +5,7 @@ timeout 60 "$N" start >/dev/null 2>&1
 grep -q 'callbacks: nimctl_hooks.throttle' "$TMP/home/litellm.yaml" && pass "throttle: hook registered in litellm.yaml" || fail "throttle: hook registered in litellm.yaml"
 python3 -m py_compile "$TMP/home/nimctl_hooks.py" 2>/dev/null && [[ $(stat -c %a "$TMP/home/nimctl_hooks.py") == 600 ]] && pass "throttle: hook file written, compiles, 600" || fail "throttle: hook file written, compiles, 600"
 check "throttle: proxy gets budget and PYTHONPATH" "rpm=40 pythonpath=$TMP/home" < "$TMP/home/logs/litellm.log"
-check "chat: through the proxy by default" "default=nim-chat base=http://127.0.0.1:$PP/v1" < "$TMP/home/logs/open-webui.log"
+check "chat: through the proxy by default" "default=nim-auto base=http://127.0.0.1:$PP/v1" < "$TMP/home/logs/open-webui.log"
 nocheck "litellm.yaml: no per-deployment rpm any more" "rpm:" < "$TMP/home/litellm.yaml"
 check "litellm.yaml: every rank falls down its chain, then to the fast model" 'fallbacks: \[ \{ nim-code: \["nim-code-r2", .*"nim-fast"\] \}, \{ nim-code-r2: \[.*"nim-fast"\] \}' < "$TMP/home/litellm.yaml"
 mkdir -p "$TMP/pystub/litellm/integrations"; touch "$TMP/pystub/litellm/__init__.py" "$TMP/pystub/litellm/integrations/__init__.py"
@@ -108,3 +108,25 @@ echo 'nimctl throttle: waited 1.2s (nim-code, budget 36/min)' >>"$TMP/home/logs/
 check "stats: counts throttled requests" "Gebremst \(Budget\): 1" < <(timeout 20 "$N" stats)
 check "stats --json: throttled" '"throttled":1' < <(timeout 20 "$N" stats --json | jq -c .)
 timeout 30 "$N" stop >/dev/null 2>&1
+# nim-auto: the hook picks the chain per request
+grep -q '^  - model_name: nim-auto$' "$TMP/home/litellm.yaml" && grep -q 'nim-auto: \["nim-chat", "nim-fast"\]' "$TMP/home/litellm.yaml" && pass "litellm.yaml: nim-auto listed with a fallback" || fail "litellm.yaml: nim-auto listed with a fallback"
+printf '{"code":["nim-code"],"fast":["nim-fast"],"chat":["nim-chat"],"review":["nim-review"],"nim":[],"models":{"nim-code":"a","nim-fast":"b","nim-chat":"c","nim-review":"d"}}' >"$TMP/chains-auto.json"
+cat >"$TMP/auto_test.py" <<'PY'
+import asyncio, json, os
+import nimctl_hooks as h
+t = h.throttle
+async def pick(data):
+    d = dict(data); d["model"] = "nim-auto"; await t.async_pre_call_hook(None, None, d, "completion"); return d["model"]
+async def main():
+    assert await pick({"messages": [{"role": "user", "content": "hi"}]}) == "nim-chat"
+    assert await pick({"messages": [{"role": "user", "content": "read the file"}], "tools": [{"type": "function", "function": {"name": "read"}}]}) == "nim-code"
+    assert await pick({"system": [{"type": "text", "text": "You are Claude Code"}], "messages": [{"role": "user", "content": [{"type": "text", "text": "fix it"}]}], "tools": [{"name": "bash"}]}) == "nim-code", "anthropic shape"
+    assert await pick({"messages": [{"role": "system", "content": "### Task:\nGenerate a concise, 3-5 word title"}, {"role": "user", "content": "..."}]}) == "nim-fast"
+    assert await pick({"messages": [{"role": "user", "content": "x" * 40000}]}) == "nim-review"
+    t.chains.pop("review"); assert await pick({"messages": [{"role": "user", "content": "x" * 40000}]}) == "nim-code", "no review chain → code"
+    hj = json.load(open(os.environ["NIMCTL_HEALTH"]))
+    assert hj["auto"] == {"chat": 1, "code": 3, "fast": 1, "review": 1} and hj["auto_last"]["slot"] == "code", hj["auto"]
+    print("auto ok", json.dumps(hj["auto"]))
+asyncio.run(main())
+PY
+check "nim-auto: side task → fast, tools → code (OpenAI and Anthropic shape), long input → review, else chat; counted in health.json" "auto ok" < <(PYTHONPATH="$TMP/pystub:$TMP/home" NIMCTL_RPM=600 NIMCTL_CHAINS="$TMP/chains-auto.json" NIMCTL_HEALTH="$TMP/health-auto.json" timeout 30 python3 "$TMP/auto_test.py" 2>&1)

@@ -34,6 +34,7 @@ check "web: discover endpoint" '^true$' < <(curl -s -H "$H" "$U/api/discover" | 
 check "web: discovered saved" '"code": \["deepseek-ai/deepseek-v4-flash-0731"\]' < <(curl -s -H "$H" -d '{"discovered":{"code":["deepseek-ai/deepseek-v4-flash-0731"]}}' "$U/api/discovered")
 grep -qx 'code: deepseek-ai/deepseek-v4-flash-0731' "$TMP/home/discovered" && pass "web: discovered file" || fail "web: discovered file"
 check "discovered file: nimctl appends it to the ranking" '"code":"glm-5 deepseek-v4-pro deepseek-ai/deepseek-v4-flash-0731"' < <(curl -s -H "$H" "$U/api/candidates" | jq -c .)
+check "web: state has the autopilot report and its settings keys" '"NIMCTL_AUTOPILOT".*"autopilot":\{' < <(curl -s -H "$H" "$U/api/state" | jq -c '{k: .settings_keys, autopilot: .autopilot}')
 check "web: state carries the taken-over models" '"discovered":\{"code":\["deepseek-ai/deepseek-v4-flash-0731"\]\}' < <(curl -s -H "$H" "$U/api/state" | jq -c '{discovered}')
 check "web: a taken-over model leaves the finds" '^false$' < <(curl -s -H "$H" "$U/api/discover" | jq -c '.found.code | index("deepseek-ai/deepseek-v4-flash-0731") != null')
 check "web: a bad model id is refused" '"error": "bad discovered code"' < <(curl -s -H "$H" -d '{"discovered":{"code":["x; rm -rf /"]}}' "$U/api/discovered")
