@@ -44,6 +44,8 @@ render_dashboard() {
   declare -F stats_summary >/dev/null && { local st; st=$(stats_summary 2>/dev/null); [[ -n "$st" ]] && printf "  %-8s %s\n" "$(t today)" "$st"; }
   declare -F throttle_line >/dev/null && { local tl2; tl2=$(throttle_line 2>/dev/null) && printf "  %s\n" "$tl2"; }
   declare -F cooldown_line >/dev/null && { local cl; cl=$(cooldown_line 2>/dev/null) && printf "  %s\n" "$cl"; }
+  declare -F auto_line >/dev/null && { local al; al=$(auto_line 2>/dev/null) && printf "  %s\n" "$al"; }
+  declare -F autopilot_line >/dev/null && printf "  %s\n" "$(autopilot_line 2>/dev/null)"
   sect "$(t models)"
   local n=0 s; for s in "${SLOTS[@]}"; do ((n++)); [[ "$s" == review && -z "$MODEL_REVIEW" ]] && { (( COLS >= 100 )) || continue; }; slot_line "$s" "$n"; done
   (( COLS >= 100 )) && info "$(t slots_hint)"

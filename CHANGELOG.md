@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.12.0] – 2026-09-20
+
+### Added
+- **`nim-auto`: the proxy picks the chain per request.** One model for every client; the hook sends Open WebUI's
+  side tasks (system prompt `### Task:`) to `fast`, requests with tool calling to `code`, more than
+  `NIMCTL_AUTO_REVIEW_TOKENS` (6,000) tokens of input to `review` and everything else to `chat`, then down the
+  chain as before. Chat default, `nimctl code`, `nimctl env` and the IDE's first model are `nim-auto`; the dashboard's
+  `Auto` line and the web UI's overview show the distribution.
+- **`nimctl autopilot`: the nightly run.** Updates nimctl (`NIMCTL_AUTOPILOT_UPDATE=0` skips it), fetches fresh
+  catalogs, scans every provider with a key (OpenRouter weekly), takes the finds into the rankings, rebuilds the
+  chains, restarts the proxy when they changed, aligns the chat, and writes `~/.nimctl/autopilot.json` plus
+  `logs/autopilot.log`. `nimctl watch` starts it once a day in the hour `NIMCTL_AUTOPILOT_HOUR` (3) or the two after
+  it; `NIMCTL_AUTOPILOT=0` leaves it to the command. Dashboard line, web UI card on the overview (run now, last run,
+  next run) and an Autopilot group on the Settings page.
+- **Watchdog timer on macOS**: `install watch_timer` (and the wizard) set up a launchd agent when there is no systemd.
+
 ## [1.11.1] – 2026-09-19
 
 ### Fixed

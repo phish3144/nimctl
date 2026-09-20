@@ -37,3 +37,22 @@ timeout 10 "$N" install completion >/dev/null 2>&1
 
 # restore config for any later test files
 sed -i 's#^MODEL_FAST=.*#MODEL_FAST=deepseek-ai/deepseek-v4-flash-0731#' "$TMP/home/config"
+# autopilot: the nightly run by hand (no self-update here: the mock update server carries a fake 99.0.0)
+check "autopilot: scans, takes finds over, rebuilds the chains, reports" "Autopilot fertig in [0-9]+ s" < <(NIMCTL_AUTOPILOT_UPDATE=0 NIMCTL_INTERACTIVE=0 timeout 600 "$N" autopilot 2>&1)
+check "autopilot.json: report with providers, summary and time" '"providers":\["nim".*"summary":"' < <(jq -c '{providers, summary, at, seconds, errors}' "$TMP/home/autopilot.json")
+check "autopilot: log line" "^[0-9-]+ [0-9:]+ " < "$TMP/home/logs/autopilot.log"
+check "autopilot: dashboard line" "Autopilot [0-9.]+ [0-9:]+ · .* · nächster Lauf gegen 3 Uhr" < <(timeout 20 "$N" status 2>&1)
+check "autopilot: off in the dashboard line when disabled" "Autopilot .* · aus \(NIMCTL_AUTOPILOT=0\), nur von Hand" < <(NIMCTL_AUTOPILOT=0 timeout 20 "$N" status 2>&1)
+n0=$(wc -l <"$TMP/home/logs/autopilot.log")
+NIMCTL_AUTOPILOT=1 NIMCTL_AUTOPILOT_HOUR=$(date +%H) NIMCTL_AUTOPILOT_UPDATE=0 timeout 600 "$N" watch --quiet >/dev/null 2>&1
+[[ $(wc -l <"$TMP/home/logs/autopilot.log") -eq "$n0" ]] && pass "watch: no autopilot run within 20 h of the last one" || fail "watch: no autopilot run within 20 h of the last one"
+rm -f "$TMP/home/autopilot.json"; NIMCTL_AUTOPILOT=1 NIMCTL_AUTOPILOT_HOUR=$(date +%H) NIMCTL_AUTOPILOT_UPDATE=0 timeout 600 "$N" watch --quiet >"$TMP/watch-ap.txt" 2>&1
+[[ $(wc -l <"$TMP/home/logs/autopilot.log") -eq $((n0 + 1)) && -s "$TMP/home/autopilot.json" ]] && pass "watch: starts the autopilot in its hour when it has not run today" || fail "watch: starts the autopilot in its hour"
+rm -f "$TMP/home/autopilot.json"; NIMCTL_AUTOPILOT=1 NIMCTL_AUTOPILOT_HOUR=$(( ($(date +%H | sed 's/^0//') + 5) % 24 )) NIMCTL_AUTOPILOT_UPDATE=0 timeout 600 "$N" watch --quiet >/dev/null 2>&1
+[[ -f "$TMP/home/autopilot.json" ]] && fail "watch: no autopilot outside its hours" || pass "watch: no autopilot outside its hours"
+rm -f "$TMP/home/autopilot.json"; NIMCTL_AUTOPILOT=0 NIMCTL_AUTOPILOT_HOUR=$(date +%H) timeout 600 "$N" watch --quiet >/dev/null 2>&1
+[[ -f "$TMP/home/autopilot.json" ]] && fail "watch: no autopilot when switched off" || pass "watch: no autopilot when switched off"
+# launchd: the watchdog timer on a Mac (fake launchctl, no systemctl on PATH)
+mkdir -p "$TMP/launchbin"; printf '#!/usr/bin/env bash\necho "launchctl $*" >>"%s/launchctl.log"\n' "$TMP" >"$TMP/launchbin/launchctl"; chmod +x "$TMP/launchbin/launchctl"
+check "install watch_timer: launchd agent when there is no systemd" "Watchdog aktiv \(launchd" < <(NIMCTL_TIMER=launchd PATH="$TMP/launchbin:$PATH" timeout 30 "$N" install watch_timer 2>&1)
+grep -q '<string>watch</string><string>--quiet</string>' "$TMP/Library/LaunchAgents/nimctl.watch.plist" && grep -q "load -w $TMP/Library/LaunchAgents/nimctl.watch.plist" "$TMP/launchctl.log" && pass "launchd: plist written and loaded" || fail "launchd: plist written and loaded"

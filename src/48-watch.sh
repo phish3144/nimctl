@@ -53,13 +53,34 @@ cmd_watch() { # cmd_watch [--quiet] – probe every configured slot, auto-replac
     for part in "${parts[@]}"; do msg+="${msg:+; }$part"; case "$part" in dead*) bad "$part";; *) warn "$part";; esac; done
   fi
   watch_log "$msg"; [[ "$msg" == ok\ * ]] || watch_notify "$msg"
+  if declare -F autopilot_due >/dev/null && autopilot_due; then cmd_autopilot --quiet || true; fi   # once a day, in its hour (src/47-autopilot.sh)
   ((${#dead[@]})) && return 4
   return 0
 }
-inst_watch_timer() {
-  has systemctl || { bad "$(t no_systemd)"; return 1; }
-  local d self; d=$(unit_dir); mkdir -p "$d"; self=$(realpath_ "$0")
-  printf '[Unit]\nDescription=nimctl watch\n\n[Service]\nType=oneshot\nExecStart=%s watch --quiet\nEnvironment=NIMCTL_HOME=%s\n' "$self" "$NIM_DIR" >"$d/nimctl-watch.service"
-  printf '[Unit]\nDescription=nimctl watch timer\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' >"$d/nimctl-watch.timer"
-  systemctl --user daemon-reload && systemctl --user enable --now nimctl-watch.timer && ok "$(t watch_timer_on)" || { bad "$(tf inst_fail systemd)"; return 1; }
+launchd_plist() { echo "$HOME/Library/LaunchAgents/nimctl.watch.plist"; }
+inst_watch_timer() { # hourly `nimctl watch --quiet` (which starts the autopilot once a day): systemd --user, or launchd on macOS
+  local self kind="${NIMCTL_TIMER:-}"; self=$(realpath_ "$0")   # NIMCTL_TIMER=systemd|launchd forces the kind (tests)
+  if [[ -z "$kind" ]]; then if has systemctl; then kind=systemd; elif has launchctl; then kind=launchd; fi; fi
+  if [[ "$kind" == systemd ]]; then
+    local d; d=$(unit_dir); mkdir -p "$d"
+    printf '[Unit]\nDescription=nimctl watch\n\n[Service]\nType=oneshot\nExecStart=%s watch --quiet\nEnvironment=NIMCTL_HOME=%s\n' "$self" "$NIM_DIR" >"$d/nimctl-watch.service"
+    printf '[Unit]\nDescription=nimctl watch timer\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1h\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' >"$d/nimctl-watch.timer"
+    systemctl --user daemon-reload && systemctl --user enable --now nimctl-watch.timer && ok "$(t watch_timer_on)" || { bad "$(tf inst_fail systemd)"; return 1; }
+  elif [[ "$kind" == launchd ]]; then
+    local f; f=$(launchd_plist); mkdir -p "${f%/*}" "$LOG_DIR"
+    cat >"$f" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>nimctl.watch</string>
+  <key>ProgramArguments</key><array><string>$self</string><string>watch</string><string>--quiet</string></array>
+  <key>EnvironmentVariables</key><dict><key>NIMCTL_HOME</key><string>$NIM_DIR</string><key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$LOG_DIR/watch-launchd.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/watch-launchd.log</string>
+</dict></plist>
+EOF
+    launchctl unload "$f" >/dev/null 2>&1; launchctl load -w "$f" >/dev/null 2>&1 && ok "$(t watch_launchd_on)" || { bad "$(tf inst_fail launchd)"; return 1; }
+  else bad "$(t no_systemd)"; return 1; fi
 }

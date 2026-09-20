@@ -119,6 +119,7 @@ ide_write_config() { # ide_write_config [--force] – code-server.yaml, settings
   else cmd=python3; args=$(jq -cn --arg t "$tool" '[$t]'); info "$(t ide_mcp_no_uv)"; fi
   {
     printf '%s – rewritten on every `nimctl ide` start; remove this line to keep your own edits\nname: nimctl\nversion: 1.0.0\nschema: v1\nmodels:\n' "$IDE_MARK"
+    printf '  - name: "auto · %s"\n    provider: openai\n    model: nim-auto\n    apiBase: %s\n    apiKey: %s\n    roles: [chat, edit, apply]\n    capabilities: [tool_use]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 8192 }\n' "$(t ide_auto)" "$base" "$MASTER_KEY" "$ctx"
     printf '  - name: "code · %s"\n    provider: openai\n    model: nim-code\n    apiBase: %s\n    apiKey: %s\n    roles: [chat, edit, apply]\n    capabilities: [tool_use]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 8192 }\n' "$MODEL_CODE" "$base" "$MASTER_KEY" "$ctx"
     printf '  - name: "fast · %s"\n    provider: openai\n    model: nim-fast\n    apiBase: %s\n    apiKey: %s\n    roles: [chat]\n    defaultCompletionOptions: { contextLength: %s, maxTokens: 4096 }\n' "$MODEL_FAST" "$base" "$MASTER_KEY" "$ctx"
     if [[ -n "$MODEL_REVIEW" ]]; then more=", review"

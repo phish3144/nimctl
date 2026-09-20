@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.11.1                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.12.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -166,7 +166,8 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl web` | Web UI in the browser (dashboard, models, providers, services, statistics, settings): start it and open it; `start`, `stop`, `disable`, `url`, `candidates`, `discover` |
 | `nimctl env` | Export lines for other tools: `eval "$(nimctl env)"` |
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
-| `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers) |
+| `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers); starts the autopilot once a day |
+| `nimctl autopilot [--quiet]` | The nightly run, now: update nimctl, scan every provider, take the finds over, rebuild the chains |
 | `nimctl key [nvapi-…]` | Check or set the API key |
 | `nimctl doctor [--fix]` | Diagnose tools, key, network, ports, permissions, models, proxy – repair with `--fix` or on request |
 | `nimctl logs [proxy\|chat\|watch\|ide\|web] [-f]` | Show or follow a log |
@@ -373,6 +374,22 @@ catalog are validated before they touch any file; the config is parsed, never so
 verify the downloaded script against `SHA256SUMS` from this repository before installing it. The installer is one short
 file; read it before piping it into `bash`.
 
+## Autopilot
+
+Nobody has to pick models. Every client asks the proxy for one model, **`nim-auto`**, and the proxy decides per
+request which chain answers: Open WebUI's side tasks (titles, tags, search queries, follow-ups – their system prompt
+starts with `### Task:`) go to `fast`, a request with tool calling to `code`, more than `NIMCTL_AUTO_REVIEW_TOKENS`
+(6,000) tokens of input to `review`, everything else to `chat`. The chat's default model, `nimctl code`, `nimctl env`
+and the IDE's first model are `nim-auto`; `nimctl code --model review` and the slot names still pick a chain by hand.
+The dashboard's `Auto` line and the web UI's overview show how requests were distributed.
+
+`nimctl autopilot` is the nightly run behind it: update nimctl (`NIMCTL_AUTOPILOT_UPDATE=0` skips that), fetch
+fresh catalogs, scan every provider with a key at its pace (OpenRouter once a week), take the finds into the rankings
+(`~/.nimctl/discovered`, like `scan --use`), rebuild the chains, restart the proxy when they changed, align the
+chat. The watchdog timer starts it once a day in the hour `NIMCTL_AUTOPILOT_HOUR` (local, default 3) or the two after
+it; `NIMCTL_AUTOPILOT=0` leaves it to the command. Report: `~/.nimctl/autopilot.json`, `nimctl logs autopilot`, the
+dashboard's `Autopilot` line and the web UI's overview (with a button to run it now).
+
 ## Rate limiting
 
 NVIDIA's free tier allows roughly 40 requests per minute per key, across all models, and does not publish the exact
@@ -476,6 +493,10 @@ All optional, via environment variables:
 | `NIMCTL_BIND` | `127.0.0.1` | Address the services listen on |
 | `NIMCTL_PROBE_TIMEOUT` | `45` | Seconds a model may take to answer a probe |
 | `NIMCTL_REPROBE_HOURS` | `6` | Dashboard re-probes slots whose last probe is older |
+| `NIMCTL_AUTOPILOT` | `1` | `0` leaves the nightly run to `nimctl autopilot` by hand |
+| `NIMCTL_AUTOPILOT_HOUR` | `3` | Local hour the watchdog starts the nightly run (that hour or the two after it) |
+| `NIMCTL_AUTOPILOT_UPDATE` | `1` | `0`: the nightly run does not update nimctl itself |
+| `NIMCTL_AUTO_REVIEW_TOKENS` | `6000` | Requests to `nim-auto` with more input (estimated tokens) go to the review chain |
 | `NIMCTL_HOME` | `~/.nimctl` | Data directory |
 | `NIMCTL_API_BASE` | NVIDIA endpoint | Point at a self-hosted NIM container instead |
 | `NIMCTL_API_KEY` | | Key for unattended `setup --yes` (also `NVIDIA_API_KEY`) |
@@ -504,7 +525,7 @@ All optional, via environment variables:
 
 Autostart at login: `nimctl install systemd` (or dashboard → `i` → `3`) creates `systemd --user` units `nimctl-proxy`
 and `nimctl-chat`; the dashboard and `nimctl restart` keep them under systemd. The watchdog timer (`i` → `6`) runs
-`nimctl watch` hourly.
+`nimctl watch` hourly and the autopilot once a day; on macOS it is a launchd agent (`~/Library/LaunchAgents/nimctl.watch.plist`).
 
 ## Requirements and compatibility
 

@@ -44,7 +44,7 @@ doctor() { # doctor [--fix] → exit 0 when nothing is wrong
       if [[ "$PROBE_RES" == ok ]]; then if [[ "$TOOL_SLOTS" == *" $s "* && "$PROBE_TOOLS" != ok ]]; then warn "$s: $(tf auto_notools "$m" "$s")"; doc_issue "model:$s"; else ok "$s: $m (${PROBE_MS} ms)"; fi
       else bad "$s: $m – $PROBE_RES"; doc_issue "model:$s"; fi; done
   elif [[ "$KEY_STATE" == ok ]]; then warn "$(tf slot_unconfigured code)"; doc_issue "model:code"; fi
-  if svc_running proxy; then proxy_roundtrip nim-code || doc_issue proxy; proxy_roundtrip nim-code tools || doc_issue proxy; proxy_roundtrip nim-fast || doc_issue proxy; fi
+  if svc_running proxy; then proxy_roundtrip nim-auto || doc_issue proxy; proxy_roundtrip nim-code || doc_issue proxy; proxy_roundtrip nim-code tools || doc_issue proxy; proxy_roundtrip nim-fast || doc_issue proxy; fi
   printf '\n'
   ((${#DOC_ISSUES[@]} == 0)) && { ok "$(t doc_ok)"; return 0; }
   bad "$(tf doc_issues "${#DOC_ISSUES[@]}" "${DOC_ISSUES[*]}")"

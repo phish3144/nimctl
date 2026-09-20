@@ -36,14 +36,14 @@ SLOTS = ["code", "fast", "chat", "review"]
 PROVIDERS = ["groq", "gemini", "cerebras", "openrouter", "mistral"]
 SERVICES = ["proxy", "chat", "ide", "search", "web"]
 LOGS = {"proxy": "litellm.log", "chat": "open-webui.log", "ide": "code-server.log", "search": "searxng.log",
-        "web": "web.log", "watch": "watch.log", "searxng-install": "searxng-install.log", "code-server-install": "code-server-install.log"}
+        "web": "web.log", "watch": "watch.log", "autopilot": "autopilot.log", "searxng-install": "searxng-install.log", "code-server-install": "code-server-install.log"}
 HISTORY_FILE = os.path.join(WEB, "history.json")
 HISTORY_MAX = 2880          # 24 h of samples
 SAMPLE_EVERY = 30.0
 STATE_TTL = 3.0
 # nimctl commands the page may run (first argument). Interactive ones (code, setup, _fg) and the shell completion are out.
 COMMANDS = {"start", "stop", "restart", "status", "check", "auto", "scan", "pick", "find", "test", "proxy", "pool", "ide", "search",
-            "key", "doctor", "install", "update", "watch", "bench", "stats", "chat", "models", "web"}
+            "key", "doctor", "install", "update", "watch", "autopilot", "bench", "stats", "chat", "models", "web"}
 RUN_ENV_KEYS = {"NIMCTL_CHAT_PASSWORD"}          # secrets a command may receive through its environment
 RE_VALUE = re.compile(r"^[A-Za-z0-9._:/,+ -]*$")  # settings values (the same shape nimctl accepts when it reads the file)
 RE_CAND_KEY = re.compile(r"^[a-z]+(\.[a-z]+)?$")
@@ -253,6 +253,7 @@ def build_state():
     st["candidates"] = candidates_file()
     st["discovered"] = discovered_file()
     st["bench"] = bench_last()
+    st["autopilot"] = read_json(os.path.join(HOME, "autopilot.json"), {}) or {}
     st["workspace"] = read_text(os.path.join(HOME, "ide-workspace")).strip()
     st["state_file"] = read_kv(os.path.join(HOME, "state"))
     proxy_started = _num(read_text(os.path.join(HOME, "run", "proxy.started")).strip() or "0") or 0

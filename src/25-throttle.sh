@@ -6,6 +6,9 @@
 #     upstream 429 shrinks the budget for five minutes. Requests routed to a pool provider do not touch the bucket.
 #  2. Chain routing: every slot is a chain of ranks (model groups nim-<slot>, nim-<slot>-r2, …, see write_litellm_yaml);
 #     a request for nim-<slot> is sent to the best rank that is not cooling down.
+#  4. nim-auto: the one model every client may ask for; the hook decides per request which chain answers – Open WebUI's
+#     side tasks (title, tags, queries; system prompt "### Task:") → fast, tool calling → code, more than
+#     NIMCTL_AUTO_REVIEW_TOKENS (6000) of input → review, everything else → chat. Counted per slot in health.json.
 #  3. Cooldowns: a rank that fails (stall, 429, 5xx – also mid-stream, where LiteLLM's own cooldown does not apply to a
 #     single-deployment group) is registered in LiteLLM's cooldown cache, so the fallback chain of the running request
 #     and every later request skip it: RateLimitError starts at NIMCTL_COOLDOWN_RATELIMIT (15 s), timeouts/5xx at
@@ -22,7 +25,7 @@ T_en+=(
 )
 throttle_env() { # the hook's settings, exported for the proxy process
   export NIMCTL_RPM="${NIMCTL_RPM:-40}" NIMCTL_RPM_MAX_WAIT="${NIMCTL_RPM_MAX_WAIT:-45}" NIMCTL_RPM_STATE="$NIM_DIR/rpm.json"
-  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-15}"
+  export NIMCTL_CHAINS="$NIM_DIR/chains.json" NIMCTL_HEALTH="$NIM_DIR/health.json" NIMCTL_COOLDOWN="$COOLDOWN" NIMCTL_COOLDOWN_RATELIMIT="${NIMCTL_COOLDOWN_RATELIMIT:-15}" NIMCTL_AUTO_REVIEW_TOKENS="${NIMCTL_AUTO_REVIEW_TOKENS:-6000}"
   export PYTHONPATH="$NIM_DIR${PYTHONPATH:+:$PYTHONPATH}"
 }
 write_litellm_hooks() { # $NIM_DIR/nimctl_hooks.py – rewritten on every proxy start
@@ -51,6 +54,35 @@ COOLDOWN = float(os.environ.get("NIMCTL_COOLDOWN", "90") or 90)   # first timeou
 COOLDOWN_RATELIMIT = float(os.environ.get("NIMCTL_COOLDOWN_RATELIMIT", "15") or 15)  # first 429 / RateLimitError
 COOLDOWN_MAX = 1800.0
 PENALTY_SECONDS = 300.0
+AUTO_REVIEW_TOKENS = int(os.environ.get("NIMCTL_AUTO_REVIEW_TOKENS", "6000") or 6000)   # nim-auto: input beyond this (estimated) goes to the review chain
+AUTO_FALLBACK = {"review": ("code", "chat"), "code": ("chat",), "fast": ("chat", "code"), "chat": ("code",)}
+
+
+def _text_len(x):
+    """Characters of text in a message, a content list or a block – OpenAI or Anthropic shape."""
+    if isinstance(x, str):
+        return len(x)
+    if isinstance(x, list):
+        return sum(_text_len(i) for i in x)
+    if isinstance(x, dict):
+        return sum(_text_len(x.get(k)) for k in ("content", "text") if x.get(k) is not None)
+    return 0
+
+
+def _as_text(c):
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(str(b.get("text", "")) for b in c if isinstance(b, dict))
+    return ""
+
+
+def _first_system(data):
+    """The system prompt, from the first system message (OpenAI) or the system field (Anthropic)."""
+    for m in data.get("messages") or []:
+        if isinstance(m, dict) and m.get("role") == "system":
+            return _as_text(m.get("content"))
+    return _as_text(data.get("system"))
 
 
 def _load_chains():
@@ -88,7 +120,30 @@ class Throttle(CustomLogger):
         self.fails = {}     # group → consecutive failures
         self.recent = {}    # group → monotonic time of the last counted failure
         self.routed = 0
+        self.auto = {}      # slot → requests nim-auto sent there
+        self.auto_last = {}
         self._save()
+
+    # ── nim-auto: which chain answers a request ───────────────────────────────────────────────────
+    def _classify(self, data):
+        """(slot, why): side tasks → fast, tool calling → code, long input → review, everything else → chat."""
+        if _first_system(data).lstrip().startswith("### Task:"):
+            return "fast", "side task"                     # Open WebUI's title, tags, query and follow-up generation
+        tokens = (_text_len(data.get("messages")) + _text_len(data.get("system"))) // 4
+        if data.get("tools") or data.get("functions") or data.get("tool_choice"):
+            return "code", f"tool calling, ~{tokens} tokens"
+        if tokens > AUTO_REVIEW_TOKENS:
+            return "review", f"~{tokens} tokens of input"
+        return "chat", f"~{tokens} tokens"
+
+    def _available(self, slot):
+        """The slot when its chain exists, else the nearest one that does."""
+        if slot in self.chains:
+            return slot
+        for alt in AUTO_FALLBACK.get(slot, ()):
+            if alt in self.chains:
+                return alt
+        return slot
 
     # ── routing ───────────────────────────────────────────────────────────────────────────────────
     def _route(self, model):
@@ -123,6 +178,14 @@ class Throttle(CustomLogger):
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         model = str((data or {}).get("model", "?"))
+        if model == "nim-auto":
+            slot, why = self._classify(data or {})
+            slot = self._available(slot)
+            model = "nim-" + slot
+            data["model"] = model
+            self.auto[slot] = self.auto.get(slot, 0) + 1
+            self.auto_last = {"slot": slot, "why": why, "at": int(time.time())}
+            print(f"nimctl auto: → {model} ({why})", flush=True)
         target = self._route(model)
         if target != model:
             data["model"] = target
@@ -232,7 +295,7 @@ class Throttle(CustomLogger):
             cool = {g: {"model": self.models.get(g, ""), "slot": self.rank[g][0], "rank": self.rank[g][1] + 1, "reason": r,
                         "until": int(time.time() + (u - now)), "fails": self.fails.get(g, 0)}
                     for g, (u, r) in self.cool.items() if u > now and g in self.rank}
-            self._write(HEALTH, {"cooldown": cool, "routed": self.routed, "updated": int(time.time())})
+            self._write(HEALTH, {"cooldown": cool, "routed": self.routed, "auto": self.auto, "auto_last": self.auto_last, "updated": int(time.time())})
 
     @staticmethod
     def _write(path, obj):

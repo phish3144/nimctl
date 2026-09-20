@@ -281,6 +281,10 @@ EOF
       n=${#groups[@]}; for ((i = 0; i < n; i++)); do local list=""; local j; for ((j = i + 1; j < n; j++)); do list+="${list:+, }\"${groups[j]}\""; done
         [[ -n "$tail" ]] && list+="${list:+, }$tail"; [[ -n "$list" ]] && fbs+=("{ ${groups[i]}: [$list] }"); done
     done
+    # nim-auto: the model every client may ask for – nimctl_hooks decides per request which chain answers (src/25-throttle.sh);
+    # the deployment here only makes it a listed model and gives LiteLLM a fallback
+    m=$(slot_model chat); { [[ -n "$m" ]] && { [[ -z "$(pool_of "$m")" ]] || pool_configured "$(pool_of "$m")"; }; } || m="$MODEL_CODE"
+    entry nim-auto "${m:-none}" "${NIMCTL_MAX_OUTPUT_TOKENS:-16384}"; fbs+=('{ nim-auto: ["nim-chat", "nim-fast"] }')
     # every model that answered a probe is reachable by its own id, so `nimctl code --model <id>` needs no restart
     for m in $(probe_ok_models) $EXTRA_MODELS $CHAIN_CODE $CHAIN_FAST $CHAIN_CHAT $CHAIN_REVIEW; do valid_model "$m" || continue; [[ "$seen" == *" $m "* ]] && continue; seen+="$m "; entry "$m" "$m" 16384; done
     fb=$(printf '%s, ' "${fbs[@]}"); fb="${fb%, }"
