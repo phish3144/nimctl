@@ -28,7 +28,7 @@ chmod +x "$BIN/nimctl"
 line='export PATH="$HOME/.local/bin:$PATH"'; touched=()
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [[ -f "$rc" ]] || { [[ "$rc" == *bashrc ]] || continue; }
-  grep -qF '.local/bin' "$rc" 2>/dev/null || { echo "$line" >>"$rc"; touched+=("${rc/#$HOME/~}"); }
+  grep -qF '.local/bin' "$rc" 2>/dev/null || { echo "$line" >>"$rc"; touched+=("${rc/#"$HOME"/\~}"); }
 done
 export PATH="$BIN:$PATH"
 ((${#touched[@]})) && echo "→ added ~/.local/bin to PATH in ${touched[*]}"

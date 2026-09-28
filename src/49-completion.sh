@@ -21,6 +21,7 @@ _nimctl() {
     pool) COMPREPLY=(\$(compgen -W "add remove auto test models groq gemini cerebras openrouter mistral" -- "\$cur"));;
     scan) COMPREPLY=(\$(compgen -W "all nvidia groq gemini cerebras openrouter mistral --sizes --use --clear" -- "\$cur"));;
     autopilot|watch) COMPREPLY=(\$(compgen -W "--quiet" -- "\$cur"));;
+    uninstall) COMPREPLY=(\$(compgen -W "--all --data --keep-data --tools --claude --yes" -- "\$cur"));;
     chat) COMPREPLY=(\$(compgen -W "open users passwd reset" -- "\$cur"));;
     install) COMPREPLY=(\$(compgen -W "all alias systemd nosystemd completion watch_timer" -- "\$cur"));;
     update) COMPREPLY=(\$(compgen -W "--check" -- "\$cur"));;
