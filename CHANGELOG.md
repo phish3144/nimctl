@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [SemVer](https://semver.org/).
 
+## [1.13.0] – 2026-09-28
+
+### Added
+- **`nimctl uninstall`**: stops the services, removes autostart and the watchdog timer (systemd or launchd),
+  `~/.local/bin/nimctl` and the completion lines in `~/.bashrc`/`~/.zshrc`; asks about (or takes `--data`, `--tools`,
+  `--claude`, `--all`, `--keep-data`) `~/.nimctl` with keys, chats and logs, the tools the wizard installed (litellm,
+  open-webui, code-server, the Continue config nimctl wrote) and Claude Code. Shows the plan and asks once more before
+  touching anything; `--yes` skips the questions and keeps what no flag names (required without a terminal). The
+  `PATH` line stays.
+
 ## [1.12.0] – 2026-09-20
 
 ### Added

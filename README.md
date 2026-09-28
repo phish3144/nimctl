@@ -25,7 +25,7 @@ dashboard. That is the whole workflow.
 
 ```
 $ nimctl
- nimctl · NVIDIA NIM 1.12.0                                            2026-09-14 20:15
+ nimctl · NVIDIA NIM 1.13.0                                            2026-09-14 20:15
 ────────────────────────────────────────────────────────────────────────────────────
   Key      ✓ valid  (nvapi-…k3f9 · checked 20:14 · expires in ~150 days)
   Proxy    ✓ up     :4000  nimctl · pid 41205
@@ -168,6 +168,7 @@ nimctl chat       # opens http://localhost:3000
 | `nimctl stats [--json]` | Requests, status classes, rate limits and fallbacks from the proxy log |
 | `nimctl watch [--quiet]` | Probe the slots, replace dead models, restart the proxy, log and notify (for timers); starts the autopilot once a day |
 | `nimctl autopilot [--quiet]` | The nightly run, now: update nimctl, scan every provider, take the finds over, rebuild the chains |
+| `nimctl uninstall [--all\|--data\|--keep-data\|--tools\|--claude] [--yes]` | Remove nimctl: services, autostart, the command, completion; data, tools and Claude Code on request |
 | `nimctl key [nvapi-…]` | Check or set the API key |
 | `nimctl doctor [--fix]` | Diagnose tools, key, network, ports, permissions, models, proxy – repair with `--fix` or on request |
 | `nimctl logs [proxy\|chat\|watch\|ide\|web] [-f]` | Show or follow a log |
@@ -543,15 +544,18 @@ Nothing else runs at install time: the script is one file you can read before pi
 ## Uninstall
 
 ```bash
-nimctl stop                                   # stop proxy, chat, IDE and search
-nimctl install                                # → 4 removes the systemd units and the watchdog timer, if you enabled them
-rm -rf ~/.nimctl ~/.local/bin/nimctl          # config, logs, chat data (chats and uploads live in ~/.nimctl/webui-data)
-rm -rf ~/.local/lib/code-server-* ~/.local/bin/code-server ~/.continue   # the browser IDE, if you enabled it
-uv tool uninstall litellm open-webui          # the tools the wizard installed, if you no longer need them
-npm uninstall -g @anthropic-ai/claude-code    # only if nimctl installed it for you
+nimctl uninstall            # asks what to remove; stops the services, removes autostart/timer, the command, completion
+nimctl uninstall --all      # and ~/.nimctl (keys, chats, logs), litellm/open-webui/code-server, Claude Code – no questions with --yes
 ```
 
-Remove the `PATH` and `completion` lines the installer added to `~/.bashrc` / `~/.zshrc` if you like; they are harmless.
+What always goes: the running services, the `systemd --user` units or the launchd agent, `~/.local/bin/nimctl` and
+the `nimctl completion` lines in `~/.bashrc`/`~/.zshrc`. What is asked for (or chosen with `--data`, `--tools`,
+`--claude`, `--keep-data`): `~/.nimctl` with keys, config, logs, the chat's data (chats and uploads live in
+`~/.nimctl/webui-data`), the search engine and IDE data; the tools the wizard installed (`uv tool uninstall litellm
+open-webui`, `~/.local/lib/code-server-*`, the Continue config nimctl wrote); Claude Code (`npm uninstall -g
+@anthropic-ai/claude-code`, only if nimctl installed it for you). `--yes` skips the questions and keeps what no flag
+names, so `nimctl uninstall --yes` alone removes only nimctl itself; without a terminal `--yes` is required. The
+`PATH` line the installer added stays – other tools use `~/.local/bin`; remove it by hand if you like.
 
 ## Claude Code on open models – what to expect
 
